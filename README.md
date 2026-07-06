@@ -17,7 +17,7 @@ gets a changelog entry there.
 
 | Part | Notes |
 |---|---|
-| ESP32-S3 camera board | Primary target — e.g. Seeed XIAO ESP32S3 Sense, Freenove ESP32-S3 CAM. 8 MB PSRAM required for species ID. |
+| ESP32-S3 camera board | Primary target — reference unit is a generic "ESP32-S3-CAM" (N16R8, OV2640); XIAO ESP32S3 Sense and Freenove S3 CAM also supported. 8 MB PSRAM required for species ID. |
 | AI-Thinker ESP32-CAM | Works, but without species identification (FSD §3.2) |
 | microSD card, FAT32 | Capture storage + visit log |
 | PIR sensor *(optional)* | First-stage motion trigger |

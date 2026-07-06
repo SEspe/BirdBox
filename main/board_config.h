@@ -4,11 +4,45 @@
  * block for your hardware. Camera DVP pins follow the esp32-camera component's
  * naming (PWDN/RESET/XCLK/SIOD/SIOC/Y2..Y9/VSYNC/HREF/PCLK). */
 
-#define BOARD_XIAO_ESP32S3_SENSE   1
-/* #define BOARD_FREENOVE_ESP32S3_CAM 1 */
+#define BOARD_ESP32S3_CAM_GENERIC  1   /* project's reference unit */
+/* #define BOARD_XIAO_ESP32S3_SENSE   1 */
 /* #define BOARD_AITHINKER_ESP32CAM   1 */
 
-#if defined(BOARD_XIAO_ESP32S3_SENSE)
+#if defined(BOARD_ESP32S3_CAM_GENERIC)
+/* Generic "ESP32-S3-CAM" board (N16R8: 16 MB flash, 8 MB octal PSRAM,
+ * OV2640). Shares the ESP32-S3-EYE / Freenove ESP32-S3-WROOM CAM camera
+ * pin map — verified by SCCB probe against the project's reference unit
+ * (sensor PID 0x26 = OV2640, test frame OK). */
+#define CAM_PIN_PWDN    -1
+#define CAM_PIN_RESET   -1
+#define CAM_PIN_XCLK    15
+#define CAM_PIN_SIOD    4
+#define CAM_PIN_SIOC    5
+#define CAM_PIN_Y9      16
+#define CAM_PIN_Y8      17
+#define CAM_PIN_Y7      18
+#define CAM_PIN_Y6      12
+#define CAM_PIN_Y5      10
+#define CAM_PIN_Y4      8
+#define CAM_PIN_Y3      9
+#define CAM_PIN_Y2      11
+#define CAM_PIN_VSYNC   6
+#define CAM_PIN_HREF    7
+#define CAM_PIN_PCLK    13
+
+#define PIN_STATUS_LED  2      /* TODO: verify against the physical unit */
+#define PIN_PIR         -1     /* optional PIR (FSD §3.1); -1 = not fitted */
+#define PIN_IR_LED      -1     /* optional IR illuminator (FSD §2.1) */
+/* microSD: most S3-CAM clones route the slot as SDMMC 1-bit CLK=39 CMD=38
+ * D0=40 (Freenove layout). TODO: verify against the physical unit before
+ * implementing storage.c. */
+#define SD_USE_SDMMC    1
+#define SD_PIN_CLK      39
+#define SD_PIN_CMD      38
+#define SD_PIN_D0       40
+#define SD_PIN_CS       -1
+
+#elif defined(BOARD_XIAO_ESP32S3_SENSE)
 /* Seeed Studio XIAO ESP32S3 Sense — OV2640 on the Sense expansion board */
 #define CAM_PIN_PWDN    -1
 #define CAM_PIN_RESET   -1
@@ -28,8 +62,8 @@
 #define CAM_PIN_PCLK    13
 
 #define PIN_STATUS_LED  21     /* onboard user LED */
-#define PIN_PIR         -1     /* optional PIR (FSD §3.1); -1 = not fitted */
-#define PIN_IR_LED      -1     /* optional IR illuminator (FSD §2.1) */
+#define PIN_PIR         -1
+#define PIN_IR_LED      -1
 /* microSD: XIAO Sense onboard slot, SPI mode */
 #define SD_USE_SDMMC    0
 #define SD_PIN_CS       21     /* NOTE: shares the LED pin on this board — verify against your revision */
