@@ -12,6 +12,8 @@
 #include "wifi.h"
 #include "camera.h"
 #include "storage.h"
+#include "motion.h"
+#include "capture.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -113,9 +115,12 @@ static const char INDEX_HTML[] =
 "<code>POST /api/reboot</code></p>"
 "<script>"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
-"document.getElementById('sts').textContent="
-"s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s';"
-"}).catch(()=>{});}tick();setInterval(tick,5000);"
+"var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
+"+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
+"+' | motion '+(s.motion?'ACTIVE':'idle')+' | events '+s.events;"
+"if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
+"document.getElementById('sts').innerHTML=t;"
+"}).catch(()=>{});}tick();setInterval(tick,2000);"
 "</script>"
 "</div></body></html>";
 
@@ -406,18 +411,22 @@ static esp_err_t h_status(httpd_req_t *req)
     uint64_t sd_total, sd_free;
     storage_get_info(&sd_total, &sd_free);
 
-    char buf[320];
+    char buf[448];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
-        "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu}",
+        "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
+        "\"motion\":%s,\"events\":%lu,\"lastEvent\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
         wifi_in_portal_mode() ? "true" : "false",
         (unsigned long) g_wifi_disconnect_count,
         storage_sd_present() ? "true" : "false",
-        sd_total / (1024 * 1024), sd_free / (1024 * 1024));
+        sd_total / (1024 * 1024), sd_free / (1024 * 1024),
+        motion_active() ? "true" : "false",
+        (unsigned long) capture_event_count(),
+        capture_last_event_path());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

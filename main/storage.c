@@ -123,3 +123,35 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
         strlcpy(path_out, path + strlen(STORAGE_MOUNT_POINT), path_out_len);
     return ESP_OK;
 }
+
+esp_err_t storage_append_visit_log(const char *line)
+{
+    if (!s_sd_present) return ESP_ERR_INVALID_STATE;
+
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+
+    char path[64];
+    if (tm_now.tm_year + 1900 < 2020)
+        strlcpy(path, STORAGE_MOUNT_POINT "/log/visits-no-date.csv", sizeof(path));
+    else
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%04d-%02d.csv",
+                 tm_now.tm_year + 1900, tm_now.tm_mon + 1);
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    struct stat st;
+    bool is_new = (stat(path, &st) != 0);
+    FILE *f = fopen(path, "a");
+    bool ok = false;
+    if (f) {
+        if (is_new)
+            fputs("timestamp,species,confidence,frames,first_frame,corrected\n", f);
+        ok = (fputs(line, f) >= 0) && (fputc('\n', f) != EOF);
+        fclose(f);
+    }
+    xSemaphoreGive(s_write_mtx);
+
+    if (!ok) ESP_LOGE(TAG, "visit log write failed: %s", path);
+    return ok ? ESP_OK : ESP_FAIL;
+}

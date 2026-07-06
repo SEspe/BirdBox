@@ -27,3 +27,7 @@ void storage_get_info(uint64_t *total, uint64_t *free_bytes);
  * into path_out. */
 esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
                             char *path_out, size_t path_out_len);
+
+/* Appends one CSV row to the monthly visit log (/sd/log/visits-YYYY-MM.csv),
+ * writing the header line first when the file is new (FSD §3.4). */
+esp_err_t storage_append_visit_log(const char *line);
