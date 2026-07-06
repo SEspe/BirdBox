@@ -10,6 +10,7 @@
 #include "web_server.h"
 #include "version.h"
 #include "wifi.h"
+#include "camera.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_camera.h"
 
 static const char *TAG = "web";
 
@@ -87,23 +89,103 @@ static const char WIFI_SETUP_HTML[] =
 "</script>"
 "</div></body></html>";
 
-/* Placeholder dashboard until the real tabbed UI lands (FSD §5) */
+/* Dashboard: Live view now real; remaining tabs land with their subsystems (FSD §5) */
 static const char INDEX_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>BirdBox</title>"
 "<style>body{font-family:Arial,sans-serif;background:#16281c;color:#eee;"
-"display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}"
-".box{background:#1e3826;border-radius:10px;padding:24px;max-width:420px}"
+"display:flex;justify-content:center;align-items:flex-start;min-height:100vh;margin:0;padding:16px;box-sizing:border-box}"
+".box{background:#1e3826;border-radius:10px;padding:20px;max-width:840px;width:100%}"
 "h2{color:#7fc98b;margin:0 0 10px}"
 "p{font-size:.9rem;line-height:1.5}code{color:#7fc98b}"
-"a{color:#8fd39b}</style></head>"
+"a{color:#8fd39b}"
+".live{width:100%;border-radius:8px;background:#000;min-height:200px}"
+".sts{font-size:.78rem;color:#9ab;margin-top:8px}</style></head>"
 "<body><div class='box'><h2>&#128038; " FIRMWARE_NAME " v" FIRMWARE_VERSION "</h2>"
-"<p>Connected and running. The dashboard (Live | Gallery | Stats | Settings | "
-"Debug | WiFi | OTA) is under construction.</p>"
-"<p>Available now: <code><a href='/wifi-setup'>/wifi-setup</a></code>, "
-"<code>/api/status</code>, <code>/api/scan</code>, <code>POST /api/reboot</code></p>"
+"<img class='live' id='live' src='/stream' alt='live stream'"
+" onerror=\"this.alt='no camera / stream unavailable';\">"
+"<div class='sts' id='sts'></div>"
+"<p>Direct stream URL for VLC/Home Assistant: <code>/stream</code> &nbsp;|&nbsp; "
+"<code><a href='/wifi-setup'>/wifi-setup</a></code>, <code>/api/status</code>, "
+"<code>POST /api/reboot</code></p>"
+"<script>"
+"function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
+"document.getElementById('sts').textContent="
+"s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s';"
+"}).catch(()=>{});}tick();setInterval(tick,5000);"
+"</script>"
 "</div></body></html>";
+
+/* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
+ * multipart/x-mixed-replace, one JPEG per part. ESP-IDF's httpd is single-
+ * threaded, so an endless synchronous handler would block every other
+ * request; each stream client instead runs in its own task on an async
+ * request copy (httpd_req_async_handler_begin), keeping the UI responsive.
+ * Max 2 concurrent clients (memory bound, §3.3) — further clients get 503. */
+#define STREAM_MAX_CLIENTS  2
+#define STREAM_BOUNDARY     "\r\n--frame\r\n"
+#define STREAM_PART_HDR     "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n"
+
+static volatile int s_stream_clients = 0;
+
+static void stream_task(void *arg)
+{
+    httpd_req_t *req = (httpd_req_t *) arg;
+    httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
+
+    char hdr[64];
+    for (;;) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            ESP_LOGW(TAG, "stream: no frame from camera");
+            break;
+        }
+        int hlen = snprintf(hdr, sizeof(hdr), STREAM_PART_HDR, (unsigned) fb->len);
+        bool fail =
+            httpd_resp_send_chunk(req, STREAM_BOUNDARY, sizeof(STREAM_BOUNDARY) - 1) != ESP_OK ||
+            httpd_resp_send_chunk(req, hdr, hlen) != ESP_OK ||
+            httpd_resp_send_chunk(req, (const char *) fb->buf, fb->len) != ESP_OK;
+        esp_camera_fb_return(fb);
+        if (fail) break;               /* client went away */
+        vTaskDelay(pdMS_TO_TICKS(30)); /* pace ≈ sensor rate, yield to httpd */
+    }
+
+    httpd_resp_send_chunk(req, NULL, 0);
+    httpd_req_async_handler_complete(req);
+    s_stream_clients--;
+    ESP_LOGI(TAG, "stream client disconnected (%d active)", s_stream_clients);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t h_stream(httpd_req_t *req)
+{
+    if (!camera_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "no camera detected");
+        return ESP_OK;
+    }
+    if (s_stream_clients >= STREAM_MAX_CLIENTS) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "stream busy: max 2 concurrent clients");
+        return ESP_OK;
+    }
+
+    httpd_req_t *copy = NULL;
+    if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "async begin failed");
+        return ESP_OK;
+    }
+    s_stream_clients++;
+    if (xTaskCreate(stream_task, "stream", 6144, copy, 5, NULL) != pdPASS) {
+        s_stream_clients--;
+        httpd_req_async_handler_complete(copy);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory for stream task");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "stream client connected (%d active)", s_stream_clients);
+    return ESP_OK;
+}
 
 /* ── Handlers ───────────────────────────────────────────────────────────── */
 static esp_err_t h_root(httpd_req_t *req)
@@ -291,6 +373,7 @@ esp_err_t web_server_start(void)
 
     static const httpd_uri_t routes[] = {
         { .uri = "/",            .method = HTTP_GET,  .handler = h_root       },
+        { .uri = "/stream",      .method = HTTP_GET,  .handler = h_stream     },
         { .uri = "/wifi-setup",  .method = HTTP_GET,  .handler = h_wifi_setup },
         { .uri = "/wifi-save",   .method = HTTP_POST, .handler = h_wifi_save  },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
