@@ -18,6 +18,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -93,27 +97,66 @@ static const char WIFI_SETUP_HTML[] =
 "</script>"
 "</div></body></html>";
 
-/* Dashboard: Live view now real; remaining tabs land with their subsystems (FSD §5) */
+/* Tabbed dashboard (FSD §5): Live + Gallery implemented; Stats/Settings/
+ * Debug/WiFi/OTA tabs land with their subsystems. */
 static const char INDEX_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>BirdBox</title>"
-"<style>body{font-family:Arial,sans-serif;background:#16281c;color:#eee;"
-"display:flex;justify-content:center;align-items:flex-start;min-height:100vh;margin:0;padding:16px;box-sizing:border-box}"
-".box{background:#1e3826;border-radius:10px;padding:20px;max-width:840px;width:100%}"
-"h2{color:#7fc98b;margin:0 0 10px}"
-"p{font-size:.9rem;line-height:1.5}code{color:#7fc98b}"
-"a{color:#8fd39b}"
+"<style>"
+"*{box-sizing:border-box}"
+"body{font-family:Arial,sans-serif;background:#16281c;color:#eee;margin:0}"
+".hdr{background:#1e3826;padding:12px 20px;display:flex;align-items:center;gap:14px;"
+"border-bottom:2px solid #7fc98b}"
+".hdr h1{font-size:1.1rem;color:#7fc98b;margin:0}.hdr .v{font-size:.75rem;color:#9ab}"
+".tabs{display:flex;background:#1e3826}"
+".tab{padding:10px 20px;cursor:pointer;color:#aac;border:none;background:none;"
+"font-size:.9rem;border-bottom:3px solid transparent}"
+".tab.on{color:#7fc98b;border-bottom-color:#7fc98b;font-weight:bold}"
+".pane{display:none;padding:16px;max-width:960px;margin:0 auto}.pane.on{display:block}"
 ".live{width:100%;border-radius:8px;background:#000;min-height:200px}"
-".sts{font-size:.78rem;color:#9ab;margin-top:8px}</style></head>"
-"<body><div class='box'><h2>&#128038; " FIRMWARE_NAME " v" FIRMWARE_VERSION "</h2>"
+".sts{font-size:.78rem;color:#9ab;margin-top:8px}"
+"a{color:#8fd39b}"
+"button.act{padding:8px 16px;border:none;border-radius:5px;background:#3f8a4f;"
+"color:#fff;cursor:pointer;font-size:.85rem;margin:8px 8px 0 0}"
+"select{background:#1e3826;color:#eee;border:1px solid #444;border-radius:5px;"
+"padding:7px;font-size:.85rem}"
+".gbar{display:flex;gap:10px;align-items:center;margin-bottom:12px}"
+".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}"
+".gitem{background:#1e3826;border-radius:8px;overflow:hidden}"
+".gitem img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#000}"
+".gmeta{display:flex;justify-content:space-between;align-items:center;"
+"padding:6px 8px;font-size:.72rem;color:#9ab}"
+".gmeta button{background:none;border:none;color:#e77;cursor:pointer;font-size:.9rem}"
+"</style></head><body>"
+"<div class='hdr'><h1>&#128038; " FIRMWARE_NAME "</h1>"
+"<span class='v'>v" FIRMWARE_VERSION "</span></div>"
+"<div class='tabs'>"
+"<button class='tab on' onclick='show(\"livep\",this)'>Live</button>"
+"<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
+"<button class='tab' onclick='location.href=\"/wifi-setup\"'>WiFi</button>"
+"</div>"
+"<div id='livep' class='pane on'>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror=\"this.alt='no camera / stream unavailable';\">"
 "<div class='sts' id='sts'></div>"
-"<p>Direct stream URL for VLC/Home Assistant: <code>/stream</code> &nbsp;|&nbsp; "
-"<code><a href='/wifi-setup'>/wifi-setup</a></code>, <code>/api/status</code>, "
-"<code>POST /api/reboot</code></p>"
+"<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
+"</div>"
+"<div id='galleryp' class='pane'>"
+"<div class='gbar'><select id='day' onchange='loadDay()'></select>"
+"<button class='act' style='margin:0' onclick='loadDays()'>&#8635; Refresh</button>"
+"<span class='sts' id='gsts' style='margin:0'></span></div>"
+"<div class='grid' id='grid'></div>"
+"</div>"
 "<script>"
+"function show(id,btn){"
+"document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
+"document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
+"document.getElementById(id).classList.add('on');btn.classList.add('on');"
+"var lv=document.getElementById('live');"
+"if(id==='livep'){if(!lv.src.endsWith('/stream'))lv.src='/stream';}"
+"else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
+"if(id==='galleryp')loadDays();}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
 "+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
@@ -121,8 +164,31 @@ static const char INDEX_HTML[] =
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "document.getElementById('sts').innerHTML=t;"
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
-"</script>"
-"</div></body></html>";
+"function snap(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
+".then(o=>{alert(o.path?('Saved '+o.path):JSON.stringify(o));}).catch(()=>alert('failed'));}"
+"function loadDays(){fetch('/api/days').then(r=>r.json()).then(a=>{"
+"a.sort((x,y)=>y.d.localeCompare(x.d));"
+"var s=document.getElementById('day');var prev=s.value;s.innerHTML='';"
+"a.forEach(o=>{var op=document.createElement('option');op.value=o.d;"
+"op.textContent=o.d+' ('+o.n+')';s.appendChild(op);});"
+"if(prev&&[...s.options].some(o=>o.value===prev))s.value=prev;"
+"if(a.length)loadDay();else{document.getElementById('grid').innerHTML='';"
+"document.getElementById('gsts').textContent='no captures yet';}});}"
+"function loadDay(){var d=document.getElementById('day').value;if(!d)return;"
+"fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
+"a.sort((x,y)=>y.f.localeCompare(x.f));"
+"document.getElementById('gsts').textContent=a.length+' capture'+(a.length!==1?'s':'');"
+"var g=document.getElementById('grid');g.innerHTML='';"
+"a.forEach(o=>{var p='/captures/'+d+'/'+o.f;"
+"var div=document.createElement('div');div.className='gitem';"
+"div.innerHTML='<a href=\"'+p+'\" target=\"_blank\">"
+"<img loading=\"lazy\" src=\"'+p+'\"></a>"
+"<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
+"<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></div>';"
+"g.appendChild(div);});});}"
+"function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
+"fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
+"</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
  * multipart/x-mixed-replace, one JPEG per part. ESP-IDF's httpd is single-
@@ -395,6 +461,103 @@ static esp_err_t h_captures_file(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/days — capture day-folders with file counts (Gallery tab).
+ * Chunked JSON so a card full of days never needs one big buffer. */
+static esp_err_t h_days(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    DIR *d = storage_sd_present() ? opendir(STORAGE_MOUNT_POINT "/captures") : NULL;
+    if (!d) {
+        httpd_resp_sendstr(req, "[]");
+        return ESP_OK;
+    }
+    httpd_resp_send_chunk(req, "[", 1);
+    struct dirent *e;
+    bool first = true;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_DIR || e->d_name[0] == '.') continue;
+        char sub[112];
+        snprintf(sub, sizeof(sub), STORAGE_MOUNT_POINT "/captures/%.64s", e->d_name);
+        int n = 0;
+        DIR *d2 = opendir(sub);
+        if (d2) {
+            struct dirent *e2;
+            while ((e2 = readdir(d2)) != NULL)
+                if (e2->d_type == DT_REG) n++;
+            closedir(d2);
+        }
+        char item[112];
+        int len = snprintf(item, sizeof(item), "%s{\"d\":\"%.64s\",\"n\":%d}",
+                           first ? "" : ",", e->d_name, n);
+        httpd_resp_send_chunk(req, item, len);
+        first = false;
+    }
+    closedir(d);
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* GET /api/events?date=YYYY-MM-DD — files of one capture day (Gallery tab) */
+static esp_err_t h_events(httpd_req_t *req)
+{
+    char query[64] = {0}, date[36] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "date", date, sizeof(date));
+    for (const char *c = date; *c; c++) {            /* dirname chars only */
+        if (!isalnum((unsigned char) *c) && *c != '-') {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad date");
+            return ESP_OK;
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    char dir[112];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.36s", date);
+    DIR *d = (storage_sd_present() && date[0]) ? opendir(dir) : NULL;
+    if (!d) {
+        httpd_resp_sendstr(req, "[]");
+        return ESP_OK;
+    }
+    httpd_resp_send_chunk(req, "[", 1);
+    struct dirent *e;
+    bool first = true;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
+        char fpath[176];
+        snprintf(fpath, sizeof(fpath), "%s/%.48s", dir, e->d_name);
+        struct stat st = {0};
+        stat(fpath, &st);
+        char item[128];
+        int len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld}",
+                           first ? "" : ",", e->d_name, (long) st.st_size);
+        httpd_resp_send_chunk(req, item, len);
+        first = false;
+    }
+    closedir(d);
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* DELETE /captures/... — remove one stored capture (Gallery tab) */
+static esp_err_t h_captures_delete(httpd_req_t *req)
+{
+    if (!storage_sd_present() || strstr(req->uri, "..") || strlen(req->uri) > 120) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+    char path[160];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
+    if (unlink(path) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "deleted %s", path);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 /* GET /api/status — minimal for now, grows with the subsystems (FSD §6) */
 static esp_err_t h_status(httpd_req_t *req)
 {
@@ -469,7 +632,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
+        { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
+        { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
+        { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
