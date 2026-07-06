@@ -1,0 +1,5 @@
+# Secondary/constrained target: AI-Thinker ESP32-CAM, 4 MB flash (FSD §2.1).
+# Species-ID inference is disabled on this target; capture/stream/gallery work.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-esp32.csv"
+CONFIG_SPIRAM=y

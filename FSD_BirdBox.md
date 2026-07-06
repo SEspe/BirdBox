@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 1.0
+**Version:** 1.1
 **Author:** SEspe
 **Date:** 2026-07-06
 **Changelog:**
+- v1.1 — Project scaffolded (firmware 0.1.0): ESP-IDF project at repo root with per-target `sdkconfig.defaults.esp32s3`/`.esp32` and partition tables (8 MB S3 with 2×3 MB OTA slots; 4 MB ESP32-CAM with the RemoteStart layout), one stub module per subsystem in `main/` (`wifi` `web_server` `camera` `motion` `capture` `classify` `settings` `storage`, each marked `TODO(FSD §…)`), `esp32-camera` as a managed component, `board_config.h` with pin maps for Seeed XIAO ESP32S3 Sense (default) and AI-Thinker ESP32-CAM, CI workflow (build both targets on every push; `v*` tag → GitHub Release with both `.bin`s), README, MIT LICENSE, docs/ placeholder. No functional requirements changed.
 - v1.0 — Initial specification.
 
 ---

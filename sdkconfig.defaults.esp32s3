@@ -1,0 +1,9 @@
+# Primary target: ESP32-S3 camera board with 8 MB flash + PSRAM (FSD §2.1)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-esp32s3.csv"
+
+# PSRAM is required on the S3 target (frame buffers + inference arena).
+# NOTE: SPIRAM mode is board-specific — octal matches ESP32-S3 modules with
+# embedded 8 MB PSRAM (XIAO ESP32S3 Sense); Freenove ESP32-S3 CAM is quad.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y

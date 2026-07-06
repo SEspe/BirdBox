@@ -1,0 +1,21 @@
+# ESP-IDF build artifacts
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# ESP-IDF generated files (regenerated from sdkconfig.defaults / idf_component.yml)
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# IDE files
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
