@@ -33,9 +33,9 @@
 #define PIN_STATUS_LED  2      /* TODO: verify against the physical unit */
 #define PIN_PIR         -1     /* optional PIR (FSD §3.1); -1 = not fitted */
 #define PIN_IR_LED      -1     /* optional IR illuminator (FSD §2.1) */
-/* microSD: most S3-CAM clones route the slot as SDMMC 1-bit CLK=39 CMD=38
- * D0=40 (Freenove layout). TODO: verify against the physical unit before
- * implementing storage.c. */
+/* microSD: SDMMC 1-bit CLK=39 CMD=38 D0=40 (Freenove layout) — verified
+ * live against the reference unit 2026-07-06 (64 GB card mounts, files
+ * write and read back correctly). */
 #define SD_USE_SDMMC    1
 #define SD_PIN_CLK      39
 #define SD_PIN_CMD      38

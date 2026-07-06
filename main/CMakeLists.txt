@@ -21,4 +21,6 @@ idf_component_register(
         app_update
         log
         fatfs
+        sdmmc
+        esp_driver_sdmmc
 )

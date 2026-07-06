@@ -11,9 +11,11 @@
 #include "version.h"
 #include "wifi.h"
 #include "camera.h"
+#include "storage.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -316,6 +318,78 @@ static esp_err_t h_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/capture — manual snapshot to SD (FSD §6) */
+static esp_err_t h_capture(httpd_req_t *req)
+{
+    if (!camera_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "{\"error\":\"no camera\"}");
+        return ESP_OK;
+    }
+    if (!storage_sd_present()) {
+        httpd_resp_set_status(req, "507 Insufficient Storage");
+        httpd_resp_sendstr(req, "{\"error\":\"no SD card\"}");
+        return ESP_OK;
+    }
+
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no frame");
+        return ESP_OK;
+    }
+    char path[96] = {0};
+    esp_err_t err = storage_save_jpeg(fb->buf, fb->len, path, sizeof(path));
+    unsigned bytes = fb->len;
+    esp_camera_fb_return(fb);
+
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD write failed");
+        return ESP_OK;
+    }
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"path\":\"%s\",\"bytes\":%u}", path, bytes);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* GET /captures/... — static serving of stored JPEGs from SD (FSD §6) */
+static esp_err_t h_captures_file(httpd_req_t *req)
+{
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
+        return ESP_OK;
+    }
+    if (strstr(req->uri, "..") || strlen(req->uri) > 120) {   /* no traversal out of /sd */
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+
+    char path[160];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    char *buf = malloc(4096);
+    if (!buf) {
+        fclose(f);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        return ESP_OK;
+    }
+    size_t n;
+    while ((n = fread(buf, 1, 4096, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) break;
+    }
+    free(buf);
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 /* GET /api/status — minimal for now, grows with the subsystems (FSD §6) */
 static esp_err_t h_status(httpd_req_t *req)
 {
@@ -329,15 +403,21 @@ static esp_err_t h_status(httpd_req_t *req)
     int rssi = 0, ch = 0;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) { rssi = ap.rssi; ch = ap.primary; }
 
-    char buf[256];
+    uint64_t sd_total, sd_free;
+    storage_get_info(&sd_total, &sd_free);
+
+    char buf[320];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
-        "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu}",
+        "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
+        "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
         wifi_in_portal_mode() ? "true" : "false",
-        (unsigned long) g_wifi_disconnect_count);
+        (unsigned long) g_wifi_disconnect_count,
+        storage_sd_present() ? "true" : "false",
+        sd_total / (1024 * 1024), sd_free / (1024 * 1024));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -365,6 +445,7 @@ esp_err_t web_server_start(void)
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
                                       pool and wedge the server (RemoteStart v1.35) */
+    cfg.uri_match_fn     = httpd_uri_match_wildcard;   /* for the /captures wildcard route */
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -378,6 +459,8 @@ esp_err_t web_server_start(void)
         { .uri = "/wifi-save",   .method = HTTP_POST, .handler = h_wifi_save  },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
+        { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
+        { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

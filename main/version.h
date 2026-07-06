@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "0.3.0"
+#define FIRMWARE_VERSION    "0.4.0"
 #define FIRMWARE_NAME       "BirdBox"
 #define WIFI_AP_SSID        "BirdBox-Config"
 #define WIFI_AP_PASSWORD    "birdbox1234"
