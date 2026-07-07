@@ -163,7 +163,12 @@ static bool load_labels(const char *model_name)
 }
 
 /* ── JPEG → 224x224 RGB888 model input ──────────────────────────────────── */
-static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst224)
+/* rot: mount-correction rotation (§5). 0/180 are already baked into the JPEG
+ * bytes by the sensor (camera_set_rotation, hmirror+vflip) — the OV2640 has
+ * no 90/270 hardware path, so those two angles are corrected here instead by
+ * permuting the crop/resize indices; the sampling itself (nearest-neighbor,
+ * same source pixels) is unchanged, so rotation costs no extra quality. */
+static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst224, rotation_t rot)
 {
     esp_jpeg_image_cfg_t cfg = {};
     cfg.indata      = (uint8_t *) jpeg;
@@ -213,15 +218,32 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
     /* Center-crop to square, nearest-neighbor resize to 224x224 */
     int side = w < h ? w : h;
     int x0 = (w - side) / 2, y0 = (h - side) / 2;
+    bool sw_rotate = (rot == ROTATE_90 || rot == ROTATE_270);
     for (int y = 0; y < CLS_INPUT_SIDE; y++) {
-        int sy = y0 + y * side / CLS_INPUT_SIDE;
-        const uint8_t *row = rgb + ((size_t) sy * w + x0) * 3;
+        int py = y * side / CLS_INPUT_SIDE;
         uint8_t *drow = dst224 + (size_t) y * CLS_INPUT_SIDE * 3;
-        for (int x = 0; x < CLS_INPUT_SIDE; x++) {
-            int sx = x * side / CLS_INPUT_SIDE;
-            drow[x * 3 + 0] = row[sx * 3 + 0];
-            drow[x * 3 + 1] = row[sx * 3 + 1];
-            drow[x * 3 + 2] = row[sx * 3 + 2];
+        if (!sw_rotate) {
+            int sy = y0 + py;
+            const uint8_t *row = rgb + ((size_t) sy * w + x0) * 3;
+            for (int x = 0; x < CLS_INPUT_SIDE; x++) {
+                int sx = x * side / CLS_INPUT_SIDE;
+                drow[x * 3 + 0] = row[sx * 3 + 0];
+                drow[x * 3 + 1] = row[sx * 3 + 1];
+                drow[x * 3 + 2] = row[sx * 3 + 2];
+            }
+        } else {
+            for (int x = 0; x < CLS_INPUT_SIDE; x++) {
+                int px = x * side / CLS_INPUT_SIDE;
+                /* rotate the (px,py) crop-local coordinate 90/270 within the
+                 * side x side square before mapping back to source pixels */
+                int lx, ly;
+                if (rot == ROTATE_90) { lx = py;              ly = side - 1 - px; }
+                else                  { lx = side - 1 - py;   ly = px; }
+                const uint8_t *sp = rgb + ((size_t) (y0 + ly) * w + (x0 + lx)) * 3;
+                drow[x * 3 + 0] = sp[0];
+                drow[x * 3 + 1] = sp[1];
+                drow[x * 3 + 2] = sp[2];
+            }
         }
     }
     free(rgb);
@@ -272,7 +294,7 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
     memset(out, 0, sizeof(*out));
     TfLiteTensor *in = s_interp->input(0);
 
-    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8);
+    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8, g_settings.rotation);
     if (err != ESP_OK) return err;
     /* Decoder writes uint8 pixels; the int8 model expects pixel - 128
      * (same scale, zero point shifted). XOR 0x80 is that, in place. */

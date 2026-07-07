@@ -19,6 +19,7 @@ settings_t g_settings = {
     .sd_cap_pct         = 80,
     .stream_quality     = 12,
     .ir_led_mode        = 0,
+    .rotation           = ROTATE_0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
     .region             = "",
     .ntp_server         = "pool.ntp.org",
@@ -44,6 +45,7 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_cap",  &u8)  == ESP_OK) g_settings.sd_cap_pct = u8;
     if (nvs_get_u8 (h, "s_qual", &u8)  == ESP_OK) g_settings.stream_quality = u8;
     if (nvs_get_u8 (h, "s_ir",   &u8)  == ESP_OK) g_settings.ir_led_mode = u8;
+    if (nvs_get_u8 (h, "s_rot",  &u8)  == ESP_OK) g_settings.rotation = (rotation_t) u8;
     l = sizeof(g_settings.timezone);
     nvs_get_str(h, "s_tz", g_settings.timezone, &l);
     l = sizeof(g_settings.region);
@@ -75,6 +77,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_cap",  g_settings.sd_cap_pct);
     nvs_set_u8 (h, "s_qual", g_settings.stream_quality);
     nvs_set_u8 (h, "s_ir",   g_settings.ir_led_mode);
+    nvs_set_u8 (h, "s_rot",  (uint8_t) g_settings.rotation);
     nvs_set_str(h, "s_tz",   g_settings.timezone);
     nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);

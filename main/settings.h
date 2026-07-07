@@ -7,6 +7,11 @@
 
 typedef enum { MODE_NESTBOX = 0, MODE_FEEDER = 1 } placement_mode_t;
 typedef enum { LANG_EN = 0, LANG_NO = 1 } species_lang_t;
+/* Mount-correction rotation (FSD §5). 0/180 are applied at the sensor
+ * (OV2640 hmirror+vflip, free); 90/270 aren't supported in OV2640 hardware,
+ * so those are corrected in software per-consumer instead (see camera.c and
+ * classify.cpp). */
+typedef enum { ROTATE_0 = 0, ROTATE_90 = 1, ROTATE_180 = 2, ROTATE_270 = 3 } rotation_t;
 
 typedef struct {
     placement_mode_t mode;
@@ -18,6 +23,7 @@ typedef struct {
     uint8_t  sd_cap_pct;            /* retention cap, default 80 */
     uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
     uint8_t  ir_led_mode;           /* 0 off, 1 auto */
+    rotation_t rotation;            /* mount-correction rotation, default ROTATE_0 */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
     char     region[32];            /* species-model region: filename under
                                        /sd/model (FSD §3.2), "" = auto */

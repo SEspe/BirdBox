@@ -121,7 +121,13 @@ static const char INDEX_HTML[] =
 "font-size:.9rem;border-bottom:3px solid transparent}"
 ".tab.on{color:#7fc98b;border-bottom-color:#7fc98b;font-weight:bold}"
 ".pane{display:none;padding:16px;max-width:960px;margin:0 auto}.pane.on{display:block}"
-".live{width:100%;border-radius:8px;background:#000;min-height:200px}"
+".liveWrap{max-width:960px;margin:0 auto;position:relative;overflow:hidden;"
+"border-radius:8px;background:#000;padding-top:75%}"
+".liveWrap.r1,.liveWrap.r3{padding-top:133.33%}"
+".live{position:absolute;top:50%;left:50%;width:100%;transform:translate(-50%,-50%)}"
+".live.r1{width:133.33%;transform:translate(-50%,-50%) rotate(90deg)}"
+".live.r3{width:133.33%;transform:translate(-50%,-50%) rotate(270deg)}"
+".rotbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}"
 ".sts{font-size:.78rem;color:#9ab;margin-top:8px}"
 "a{color:#8fd39b}"
 "button.act{padding:8px 16px;border:none;border-radius:5px;background:#3f8a4f;"
@@ -170,8 +176,15 @@ static const char INDEX_HTML[] =
 "<button class='tab' onclick='show(\"otap\",this)'>OTA Update</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
+"<div class='rotbar'><label class='sts' style='margin:0'>Rotation</label>"
+"<select id='lvRot' onchange='lvRotChange()'>"
+"<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
+"<option value='2'>180&deg;</option><option value='3'>270&deg;</option>"
+"</select></div>"
+"<div class='liveWrap' id='liveWrap'>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror=\"this.alt='no camera / stream unavailable';\">"
+"</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
 "</div>"
@@ -220,6 +233,15 @@ static const char INDEX_HTML[] =
 "<option value='8'>Best</option><option value='10'>High</option>"
 "<option value='12'>Standard</option><option value='18'>Low</option>"
 "<option value='25'>Lowest</option></select>"
+"<label class='wl'>Image rotation (correct mount vs. subject)</label>"
+"<select class='wi' id='stRot'>"
+"<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
+"<option value='2'>180&deg;</option><option value='3'>270&deg;</option>"
+"</select>"
+"<p class='sts' style='margin-top:2px'>0&deg;/180&deg; rotate the sensor itself (applies to "
+"stream, saved photos, and species ID). 90&deg;/270&deg; aren't supported by this camera's "
+"hardware, so only the live view (here) and species ID are corrected; saved photos keep "
+"the camera's native orientation.</p>"
 "<h3 class='sh'>System</h3>"
 "<label class='wl'>Timezone</label>"
 "<select class='wi' id='stTz'>"
@@ -322,6 +344,17 @@ static const char INDEX_HTML[] =
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 "function snap(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
 ".then(o=>{alert(o.path?('Saved '+o.path):JSON.stringify(o));}).catch(()=>alert('failed'));}"
+"function applyRot(v){v=String(v);var w=$g('liveWrap'),l=$g('live');"
+"w.classList.remove('r1','r3');l.classList.remove('r1','r3');"
+"if(v==='1'){w.classList.add('r1');l.classList.add('r1');}"
+"if(v==='3'){w.classList.add('r3');l.classList.add('r3');}}"
+"function lvRotChange(){var v=$g('lvRot').value;applyRot(v);"
+"if($g('stRot'))$g('stRot').value=v;"
+"fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'rot='+v});}"
+"function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
+"$g('lvRot').value=c.rot;applyRot(c.rot);}).catch(()=>{});}"
+"loadRot();"
 "function loadDays(){fetch('/api/days').then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.d.localeCompare(x.d));"
 "var s=document.getElementById('day');var prev=s.value;s.innerHTML='';"
@@ -399,6 +432,7 @@ static const char INDEX_HTML[] =
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;"
+"$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -433,6 +467,7 @@ static const char INDEX_HTML[] =
 "+'&civl='+$g('stCivl').value+'&cool='+$g('stCool').value"
 "+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
+"+'&rot='+$g('stRot').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&region='+encodeURIComponent($g('stRegion').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
@@ -441,6 +476,7 @@ static const char INDEX_HTML[] =
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
 "$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
+"$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
 "function drow(k,v,cls){return '<div class=drow><span>'+k+'</span>"
@@ -1007,12 +1043,12 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     char buf[448];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
-        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"tz\":\"%s\","
+        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
-        g_settings.stream_quality, g_settings.ir_led_mode,
+        g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang);
     httpd_resp_send_chunk(req, buf, n);
@@ -1071,6 +1107,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.sd_cap_pct          = field_num(body, "cap=",  50,  95,    g_settings.sd_cap_pct);
     g_settings.stream_quality      = field_num(body, "qual=", 5,   40,    g_settings.stream_quality);
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
+    g_settings.rotation  = (rotation_t) field_num(body, "rot=", 0,  3,    g_settings.rotation);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
     /* region becomes a /sd/model/<region> path when §3.2 lands — reject
@@ -1088,6 +1125,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     setenv("TZ", g_settings.timezone, 1);
     tzset();
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
+    camera_set_rotation(g_settings.rotation);        /* no-op without camera */
     wifi_restart_sntp();                             /* no-op before first connect */
 
     httpd_resp_set_type(req, "application/json");

@@ -50,6 +50,7 @@ esp_err_t camera_init(void)
     sensor_t *s = esp_camera_sensor_get();
     ESP_LOGI(TAG, "camera ready — sensor PID 0x%04x", s ? s->id.PID : 0);
     s_available = true;
+    camera_set_rotation(g_settings.rotation);   /* settings_load ran first */
     return ESP_OK;
 }
 
@@ -68,5 +69,18 @@ esp_err_t camera_set_quality(uint8_t quality)
     sensor_t *s = esp_camera_sensor_get();
     if (!s || s->set_quality(s, quality) != 0) return ESP_FAIL;
     ESP_LOGI(TAG, "JPEG quality set to %u", quality);
+    return ESP_OK;
+}
+
+esp_err_t camera_set_rotation(rotation_t rot)
+{
+    if (!s_available) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) return ESP_FAIL;
+    bool flip180 = (rot == ROTATE_180);
+    s->set_hmirror(s, flip180);
+    s->set_vflip(s, flip180);
+    ESP_LOGI(TAG, "rotation %u deg requested; sensor set to %u deg (90/270 handled in software)",
+             rot * 90, flip180 ? 180 : 0);
     return ESP_OK;
 }
