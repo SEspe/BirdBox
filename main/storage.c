@@ -258,3 +258,28 @@ esp_err_t storage_append_visit_log(const char *line)
     if (!ok) ESP_LOGE(TAG, "visit log write failed: %s", path);
     return ok ? ESP_OK : ESP_FAIL;
 }
+
+int storage_reset_stats(void)
+{
+    if (!s_sd_present) return 0;
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    int deleted = 0;
+    DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_type != DT_REG) continue;
+            if (strncmp(e->d_name, "visits-", 7) != 0) continue;
+            if (!strstr(e->d_name, ".csv")) continue;
+            char path[sizeof(STORAGE_MOUNT_POINT "/log/") + sizeof(e->d_name)];
+            snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%s", e->d_name);
+            if (unlink(path) == 0) deleted++;
+        }
+        closedir(d);
+    }
+    xSemaphoreGive(s_write_mtx);
+
+    ESP_LOGI(TAG, "stats reset: deleted %d visit-log file(s)", deleted);
+    return deleted;
+}

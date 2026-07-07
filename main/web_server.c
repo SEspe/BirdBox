@@ -199,6 +199,9 @@ static const char INDEX_HTML[] =
 "<h3 class='sh'>Activity by hour of day</h3><div class='hwrap' id='sHourly'></div>"
 "<h3 class='sh'>Species</h3><table class='st' id='sSpecies'></table>"
 "<div class='sts' id='sTotal'></div>"
+"<button class='act' style='margin-left:0;background:#8a3f3f' onclick='statsReset()'>"
+"&#128465; Reset Statistics</button>"
+"<span class='sts' id='sResetSts'></span>"
 "</div>"
 "<div id='setp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>Placement</h3>"
@@ -397,6 +400,15 @@ static const char INDEX_HTML[] =
 "sp.map(o=>'<tr><td>'+o.s+'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
 "document.getElementById('sTotal').textContent=sp.reduce((a,o)=>a+o.n,0)+' visits total';"
 "});}"
+"function statsReset(){"
+"if(!confirm('Reset all statistics? This permanently deletes the visit-log "
+"history (daily/species/hourly charts). Saved photos on SD are not affected. "
+"This cannot be undone.'))return;"
+"fetch('/api/stats/reset',{method:'POST'}).then(r=>r.json()).then(function(o){"
+"$g('sResetSts').textContent=o.ok?'Statistics reset \\u2713':'Reset failed';"
+"loadStats();"
+"setTimeout(function(){$g('sResetSts').textContent='';},4000);})"
+".catch(function(){$g('sResetSts').textContent='Reset failed';});}"
 "var g_liveIp='',g_liveMask='',g_liveGw='';"
 "function ipLoad(){fetch('/api/ipconfig').then(r=>r.json()).then(c=>{"
 "g_liveIp=c.liveIp;g_liveMask=c.liveMask;g_liveGw=c.liveGw;"
@@ -949,6 +961,18 @@ static esp_err_t h_stats_hourly(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/stats/reset — deletes the visit-log CSVs (FSD §3.4), clearing
+ * historic species recognition; saved photos on SD are untouched. */
+static esp_err_t h_stats_reset(httpd_req_t *req)
+{
+    int deleted = storage_reset_stats();
+    char buf[48];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"deleted\":%d}", deleted);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* ── IP configuration endpoints (FSD §4.5, RemoteStart v1.37/38) ────────── */
 static esp_err_t h_ipcfg_get(httpd_req_t *req)
 {
@@ -1456,6 +1480,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
+        { .uri = "/api/stats/reset",   .method = HTTP_POST, .handler = h_stats_reset  },
         { .uri = "/api/ipconfig",      .method = HTTP_GET,  .handler = h_ipcfg_get  },
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },

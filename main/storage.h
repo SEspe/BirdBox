@@ -42,6 +42,11 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
  * writing the header line first when the file is new (FSD §3.4). */
 esp_err_t storage_append_visit_log(const char *line);
 
+/* Deletes every /sd/log/visits-*.csv file — clears historic species
+ * recognition / stats (FSD §3.4) without touching saved photos on SD.
+ * Returns the number of files deleted (0 if none/no SD). */
+int storage_reset_stats(void);
+
 /* The single-writer lock (FSD §7) for callers doing their own SD writes
  * (model upload) — capture/log writes take it internally. */
 void storage_write_lock(void);
