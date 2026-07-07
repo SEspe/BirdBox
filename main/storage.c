@@ -248,7 +248,7 @@ esp_err_t storage_append_visit_log(const char *line)
     bool ok = false;
     if (f) {
         if (is_new)
-            fputs("timestamp,species,confidence,frames,first_frame,corrected\n", f);
+            fputs("timestamp,species,confidence,frames,first_frame,corrected,latin\n", f);
         ok = (fputs(line, f) >= 0) && (fputc('\n', f) != EOF);
         fclose(f);
     }

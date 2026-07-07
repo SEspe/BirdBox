@@ -20,6 +20,8 @@ typedef struct {
     uint16_t sp_n[STATS_MAX_SPECIES];
     char     sp_first[STATS_MAX_SPECIES][20];  /* ISO timestamps */
     char     sp_last[STATS_MAX_SPECIES][20];
+    char     sp_latin[STATS_MAX_SPECIES][40];  /* "" if unknown (older rows,
+                                                   or a user-corrected label) */
 
     uint16_t hour[24];
     uint32_t total;

@@ -11,20 +11,45 @@
 static const char *TAG = "stats";
 
 /* Row format (storage_append_visit_log, FSD §3.4):
- * timestamp,species,confidence,frames,first_frame,corrected
- * A non-empty "corrected" column wins over "species" (user relabels, §3.2). */
+ * timestamp,species,confidence,frames,first_frame,corrected,latin
+ * A non-empty "corrected" column wins over "species" (user relabels, §3.2).
+ * "latin" is empty on rows written before that column existed, same as
+ * "unknown". A corrected label has no matching latin name, so it's
+ * dropped rather than misattributed to the original (uncorrected)
+ * species' binomial.
+ *
+ * Fields are split by hand rather than with strtok_r: the "corrected"
+ * column is always empty today (no relabeling UI yet), and strtok_r
+ * treats runs of adjacent delimiters as one separator — it would silently
+ * skip that empty field and misread "latin" as "corrected" instead. */
+static char *next_field(char **p)
+{
+    char *start = *p;
+    char *comma = strchr(start, ',');
+    if (comma) {
+        *comma = '\0';
+        *p = comma + 1;
+    } else {
+        char *end = start + strcspn(start, "\r\n");
+        *end = '\0';
+        *p = end;
+    }
+    return start;
+}
+
 static void ingest_line(stats_t *st, char *line)
 {
-    char *save = NULL;
-    char *ts        = strtok_r(line, ",", &save);
-    char *species   = strtok_r(NULL, ",", &save);
-    strtok_r(NULL, ",", &save);                    /* confidence */
-    strtok_r(NULL, ",", &save);                    /* frames */
-    strtok_r(NULL, ",", &save);                    /* first_frame */
-    char *corrected = strtok_r(NULL, ",\r\n", &save);
+    char *p = line;
+    char *ts        = next_field(&p);
+    char *species   = next_field(&p);
+    next_field(&p);                    /* confidence */
+    next_field(&p);                    /* frames */
+    next_field(&p);                    /* first_frame */
+    char *corrected = next_field(&p);
+    char *latin     = next_field(&p);
 
-    if (!ts || !species) return;
-    if (corrected && corrected[0]) species = corrected;
+    if (!ts[0] || !species[0]) return;
+    if (corrected[0]) { species = corrected; latin = ""; }
     st->total++;
 
     /* Daily + hourly buckets need a synced timestamp ("YYYY-MM-DDTHH:...");
@@ -57,6 +82,8 @@ static void ingest_line(stats_t *st, char *line)
     if (i < st->sp_count) {
         st->sp_n[i]++;
         strlcpy(st->sp_last[i], ts, sizeof(st->sp_last[0]));
+        if (latin && latin[0] && !st->sp_latin[i][0])
+            strlcpy(st->sp_latin[i], latin, sizeof(st->sp_latin[0]));
     }
 }
 

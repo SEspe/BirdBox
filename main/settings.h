@@ -6,6 +6,7 @@
 /* Runtime settings, persisted in NVS (FSD §5 Settings tab). */
 
 typedef enum { MODE_NESTBOX = 0, MODE_FEEDER = 1 } placement_mode_t;
+typedef enum { LANG_EN = 0, LANG_NO = 1 } species_lang_t;
 
 typedef struct {
     placement_mode_t mode;
@@ -22,6 +23,9 @@ typedef struct {
                                        /sd/model (FSD §3.2), "" = auto */
     char     ntp_server[64];        /* SNTP hostname (FSD §3.4), default
                                        "pool.ntp.org" */
+    species_lang_t lang;            /* species display language (FSD §3.2),
+                                       default LANG_EN; scientific name is
+                                       always shown alongside it */
 } settings_t;
 
 extern settings_t g_settings;

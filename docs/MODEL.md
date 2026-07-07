@@ -81,3 +81,14 @@ Any TFLite image classifier works if it is:
 
 Labels of the form `Scientific name (Common Name)` display as the common
 name; anything else is shown as-is.
+
+## Display language
+
+Settings → **Species name language** switches the common name between
+English and Norwegian; the scientific (Latin) binomial is always shown
+alongside it either way, so a result is never ambiguous. Norwegian names
+come from a curated table in `main/species_i18n.c` covering common
+Northern-European garden/feeder/nestbox species — species outside that
+table still display correctly (English name + Latin), they just don't
+have a Norwegian translation yet. Changing the language re-labels past
+visits immediately; nothing needs re-classifying.

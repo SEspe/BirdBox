@@ -13,6 +13,7 @@
 #include "stats.h"
 #include "settings.h"
 #include "classify.h"
+#include "species_i18n.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -206,6 +207,11 @@ static const char INDEX_HTML[] =
 "<div class='sts' id='stModels'></div>"
 "<label class='wl'>Confidence threshold (%)</label>"
 "<input class='wi' type='number' min='30' max='95' id='stConf'>"
+"<label class='wl'>Species name language</label>"
+"<select class='wi' id='stLang'>"
+"<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
+"</select>"
+"<p class='sts' style='margin-top:2px'>The scientific (Latin) name is always shown too.</p>"
 "<h3 class='sh'>Storage &amp; Stream</h3>"
 "<label class='wl'>SD retention cap (%)</label>"
 "<input class='wi' type='number' min='50' max='95' id='stCap'>"
@@ -392,6 +398,7 @@ static const char INDEX_HTML[] =
 "$g('stSens').value=c.sens;stSensShow();"
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
+"$g('stLang').value=c.lang;"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -428,7 +435,8 @@ static const char INDEX_HTML[] =
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&region='+encodeURIComponent($g('stRegion').value)"
-"+'&ntp='+encodeURIComponent(ntp);"
+"+'&ntp='+encodeURIComponent(ntp)"
+"+'&lang='+$g('stLang').value;"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
@@ -871,10 +879,13 @@ static esp_err_t h_stats_species(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send_chunk(req, "[", 1);
     for (int i = 0; i < st->sp_count; i++) {
-        char item[144];
+        char species[80];
+        species_localize(st->sp[i], st->sp_latin[i], g_settings.lang,
+                          species, sizeof(species));
+        char item[192];
         int len = snprintf(item, sizeof(item),
                            "%s{\"s\":\"%s\",\"n\":%u,\"first\":\"%s\",\"last\":\"%s\"}",
-                           i ? "," : "", st->sp[i], st->sp_n[i],
+                           i ? "," : "", species, st->sp_n[i],
                            st->sp_first[i], st->sp_last[i]);
         httpd_resp_send_chunk(req, item, len);
     }
@@ -997,12 +1008,13 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"tz\":\"%s\","
-        "\"region\":\"%s\",\"ntp\":\"%s\",\"models\":[",
+        "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
         g_settings.stream_quality, g_settings.ir_led_mode,
-        g_settings.timezone, g_settings.region, g_settings.ntp_server);
+        g_settings.timezone, g_settings.region, g_settings.ntp_server,
+        (unsigned) g_settings.lang);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -1068,6 +1080,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         strlcpy(g_settings.region, region, sizeof(g_settings.region));
     if (ntp[0] && !strchr(ntp, '"') && !strchr(ntp, ' '))
         strlcpy(g_settings.ntp_server, ntp, sizeof(g_settings.ntp_server));
+    g_settings.lang = (species_lang_t) field_num(body, "lang=", 0, 1, g_settings.lang);
 
     settings_save();
 
@@ -1098,6 +1111,10 @@ static esp_err_t h_status(httpd_req_t *req)
     uint64_t sd_total, sd_free;
     storage_get_info(&sd_total, &sd_free);
 
+    char species[80];
+    species_localize(classify_last_species(), classify_last_latin(),
+                      g_settings.lang, species, sizeof(species));
+
     char buf[560];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
@@ -1114,7 +1131,7 @@ static esp_err_t h_status(httpd_req_t *req)
         motion_active() ? "true" : "false",
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
-        classify_last_species());
+        classify_last_species()[0] ? species : "");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -1274,12 +1291,15 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char buf[448];
+    char species[80];
+    species_localize(r.species, r.latin, g_settings.lang, species, sizeof(species));
+
+    char buf[512];
     snprintf(buf, sizeof(buf),
         "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
         "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
         "{\"label\":\"%s\",\"pct\":%u}]}",
-        r.species, r.confidence_pct, (long) r.duration_ms,
+        species, r.confidence_pct, (long) r.duration_ms,
         r.top_label[0], r.top_pct[0], r.top_label[1], r.top_pct[1],
         r.top_label[2], r.top_pct[2]);
     httpd_resp_set_type(req, "application/json");

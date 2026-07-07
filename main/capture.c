@@ -68,7 +68,7 @@ void capture_event_finish(int frames, const char *first_path)
     if (!queued) {
         free(s_best_jpeg);
         char line[200];
-        snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,", ts, frames, first_path);
+        snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,", ts, frames, first_path);
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
     }

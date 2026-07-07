@@ -24,8 +24,13 @@ bool classify_available(void);
 typedef struct {
     char    top_label[3][64];   /* raw model labels, best first */
     uint8_t top_pct[3];         /* confidence 0-100 */
-    char    species[64];        /* decision: common name, "Unidentified bird"
-                                   or "no bird" (threshold + guard applied) */
+    char    species[64];        /* decision: English common name,
+                                   "Unidentified bird" or "no bird" (threshold
+                                   + guard applied) */
+    char    latin[64];          /* scientific binomial; empty for the three
+                                   sentinel values above (§3.2 language
+                                   selection — species_i18n.h always shows
+                                   this regardless of display language) */
     uint8_t confidence_pct;     /* top-1 confidence */
     int32_t duration_ms;        /* inference (Invoke) time */
 } classify_result_t;
@@ -48,6 +53,7 @@ int32_t     classify_last_duration_ms(void);   /* -1 = none yet */
 const char *classify_model_name(void);         /* "" when no model loaded */
 int         classify_label_count(void);
 const char *classify_last_species(void);       /* last event decision, "" */
+const char *classify_last_latin(void);         /* matching binomial, "" */
 
 #ifdef __cplusplus
 }

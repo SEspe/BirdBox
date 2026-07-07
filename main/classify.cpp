@@ -52,6 +52,7 @@ static char           **s_labels = NULL;      /* pointers into s_label_buf */
 static char            *s_label_buf = NULL;
 static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
+static char             s_last_latin[64] = "";
 
 #if CONFIG_IDF_TARGET_ESP32S3
 
@@ -231,13 +232,20 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
 static void make_decision(classify_result_t *r)
 {
     /* Common name is the text in parens ("Erithacus rubecula (European
-     * Robin)" -> "European Robin"); labels without parens pass through. */
+     * Robin)" -> "European Robin"); labels without parens (e.g.
+     * "background") pass through with no latin binomial. */
     char name[64];
+    char latin[64] = "";
     const char *open = strrchr(r->top_label[0], '(');
     if (open && strchr(open, ')')) {
         strlcpy(name, open + 1, sizeof(name));
         char *close = strrchr(name, ')');
         if (close) *close = '\0';
+        size_t llen = (size_t) (open - r->top_label[0]);
+        if (llen >= sizeof(latin)) llen = sizeof(latin) - 1;
+        memcpy(latin, r->top_label[0], llen);
+        latin[llen] = '\0';
+        while (llen > 0 && latin[llen - 1] == ' ') latin[--llen] = '\0';
     } else {
         strlcpy(name, r->top_label[0], sizeof(name));
     }
@@ -245,14 +253,16 @@ static void make_decision(classify_result_t *r)
         if (*c == ',') *c = ';';
 
     r->confidence_pct = r->top_pct[0];
+    r->latin[0] = '\0';
     if (strcasecmp(r->top_label[0], "background") == 0)
         strlcpy(r->species,
                 r->top_pct[0] >= g_settings.confidence_pct ? "no bird"
                                                            : "Unidentified bird",
                 sizeof(r->species));
-    else if (r->top_pct[0] >= g_settings.confidence_pct)
+    else if (r->top_pct[0] >= g_settings.confidence_pct) {
         strlcpy(r->species, name, sizeof(r->species));
-    else
+        strlcpy(r->latin, latin, sizeof(r->latin));
+    } else
         strlcpy(r->species, "Unidentified bird", sizeof(r->species));
 }
 
@@ -315,16 +325,18 @@ static void classify_task(void *arg)
         xSemaphoreGive(s_run_mtx);
         free(job.jpeg);
 
-        char line[224];
+        char line[288];
         if (err == ESP_OK) {
             strlcpy(s_last_species, r.species, sizeof(s_last_species));
+            strlcpy(s_last_latin, r.latin, sizeof(s_last_latin));
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %ld ms)",
                      job.ts, r.species, r.confidence_pct, r.top_label[0],
                      (long) r.duration_ms);
-            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,",
-                     job.ts, r.species, r.confidence_pct, job.frames, job.first_path);
+            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s",
+                     job.ts, r.species, r.confidence_pct, job.frames, job.first_path,
+                     r.latin);
         } else {
-            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,",
+            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,",
                      job.ts, job.frames, job.first_path);
         }
         if (storage_append_visit_log(line) != ESP_OK)
@@ -460,3 +472,4 @@ int32_t     classify_last_duration_ms(void) { return s_last_ms; }
 const char *classify_model_name(void)       { return s_model_name; }
 int         classify_label_count(void)      { return s_label_count; }
 const char *classify_last_species(void)     { return s_last_species; }
+const char *classify_last_latin(void)       { return s_last_latin; }

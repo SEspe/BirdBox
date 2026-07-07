@@ -22,6 +22,7 @@ settings_t g_settings = {
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
     .region             = "",
     .ntp_server         = "pool.ntp.org",
+    .lang               = LANG_EN,
 };
 
 esp_err_t settings_load(void)
@@ -49,6 +50,7 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_region", g_settings.region, &l);
     l = sizeof(g_settings.ntp_server);
     nvs_get_str(h, "s_ntp", g_settings.ntp_server, &l);
+    if (nvs_get_u8 (h, "s_lang", &u8)  == ESP_OK) g_settings.lang = u8 ? LANG_NO : LANG_EN;
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -76,6 +78,7 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_tz",   g_settings.timezone);
     nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);
+    nvs_set_u8 (h, "s_lang", g_settings.lang == LANG_NO ? 1 : 0);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
