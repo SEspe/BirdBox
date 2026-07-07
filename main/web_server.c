@@ -15,11 +15,13 @@
 #include "motion.h"
 #include "capture.h"
 #include "stats.h"
+#include "settings.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -98,8 +100,8 @@ static const char WIFI_SETUP_HTML[] =
 "</script>"
 "</div></body></html>";
 
-/* Tabbed dashboard (FSD §5): Live + Gallery implemented; Stats/Settings/
- * Debug/WiFi/OTA tabs land with their subsystems. */
+/* Tabbed dashboard (FSD §5): Live/Gallery/Stats/Settings/WiFi implemented;
+ * Debug and OTA tabs land with their subsystems. */
 static const char INDEX_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -154,6 +156,7 @@ static const char INDEX_HTML[] =
 "<button class='tab on' onclick='show(\"livep\",this)'>Live</button>"
 "<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
 "<button class='tab' onclick='show(\"statsp\",this)'>Stats</button>"
+"<button class='tab' onclick='show(\"setp\",this)'>Settings</button>"
 "<button class='tab' onclick='show(\"wifip\",this)'>WiFi</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
@@ -173,6 +176,66 @@ static const char INDEX_HTML[] =
 "<h3 class='sh'>Activity by hour of day</h3><div class='hwrap' id='sHourly'></div>"
 "<h3 class='sh'>Species</h3><table class='st' id='sSpecies'></table>"
 "<div class='sts' id='sTotal'></div>"
+"</div>"
+"<div id='setp' class='pane'>"
+"<h3 class='sh' style='margin-top:0'>Placement</h3>"
+"<label class='wr'><input type='radio' name='pmode' value='nestbox' id='stNest'> Nest box</label>"
+"<label class='wr'><input type='radio' name='pmode' value='feeder' id='stFeed'> Feeder</label>"
+"<h3 class='sh'>Motion &amp; Capture</h3>"
+"<label class='wl'>Motion sensitivity: <b id='stSensV'></b></label>"
+"<input type='range' min='0' max='100' id='stSens' style='width:100%;max-width:280px'"
+" oninput='stSensShow()'>"
+"<label class='wl'>Frames per event (1&ndash;10)</label>"
+"<input class='wi' type='number' min='1' max='10' id='stCcnt'>"
+"<label class='wl'>Frame interval (ms)</label>"
+"<input class='wi' type='number' min='250' max='10000' step='250' id='stCivl'>"
+"<label class='wl'>Cool-down between events (s)</label>"
+"<input class='wi' type='number' min='1' max='600' id='stCool'>"
+"<h3 class='sh'>Species Identification</h3>"
+"<label class='wl'>Region / species model</label>"
+"<select class='wi' id='stRegion'></select>"
+"<div class='sts' id='stModels'></div>"
+"<label class='wl'>Confidence threshold (%)</label>"
+"<input class='wi' type='number' min='30' max='95' id='stConf'>"
+"<h3 class='sh'>Storage &amp; Stream</h3>"
+"<label class='wl'>SD retention cap (%)</label>"
+"<input class='wi' type='number' min='50' max='95' id='stCap'>"
+"<label class='wl'>Stream / capture JPEG quality</label>"
+"<select class='wi' id='stQual'>"
+"<option value='8'>Best</option><option value='10'>High</option>"
+"<option value='12'>Standard</option><option value='18'>Low</option>"
+"<option value='25'>Lowest</option></select>"
+"<h3 class='sh'>System</h3>"
+"<label class='wl'>Timezone</label>"
+"<select class='wi' id='stTz'>"
+"<option value='CET-1CEST,M3.5.0,M10.5.0/3'>Central Europe (Oslo/Berlin)</option>"
+"<option value='GMT0BST,M3.5.0/1,M10.5.0'>UK / Ireland</option>"
+"<option value='EET-2EEST,M3.5.0/3,M10.5.0/4'>Eastern Europe (Helsinki)</option>"
+"<option value='UTC0'>UTC</option>"
+"<option value='EST5EDT,M3.2.0,M11.1.0'>US Eastern</option>"
+"<option value='CST6CDT,M3.2.0,M11.1.0'>US Central</option>"
+"<option value='MST7MDT,M3.2.0,M11.1.0'>US Mountain</option>"
+"<option value='PST8PDT,M3.2.0,M11.1.0'>US Pacific</option>"
+"</select>"
+"<label class='wl'>NTP server</label>"
+"<select class='wi' id='stNtpSel' onchange='ntpSelChange()'>"
+"<option value='pool.ntp.org'>pool.ntp.org (default)</option>"
+"<option value='europe.pool.ntp.org'>Europe pool</option>"
+"<option value='north-america.pool.ntp.org'>North America pool</option>"
+"<option value='asia.pool.ntp.org'>Asia pool</option>"
+"<option value='time.cloudflare.com'>time.cloudflare.com</option>"
+"<option value='time.google.com'>time.google.com</option>"
+"<option value='time.nist.gov'>time.nist.gov</option>"
+"<option value='__custom'>Custom&hellip;</option>"
+"</select>"
+"<input class='wi' id='stNtpCustom' placeholder='ntp.example.com'"
+" style='display:none;margin-top:6px'>"
+"<label class='wl'>IR LED</label>"
+"<select class='wi' id='stIr'>"
+"<option value='0'>Off</option><option value='1'>Auto (needs IR hardware)</option></select>"
+"<p class='sts'>Settings apply immediately &mdash; no reboot needed.</p>"
+"<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
+"<span class='sts' id='stSts'></span>"
 "</div>"
 "<div id='wifip' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>WiFi Network</h3>"
@@ -212,6 +275,7 @@ static const char INDEX_HTML[] =
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
 "if(id==='galleryp')loadDays();"
 "if(id==='statsp')loadStats();"
+"if(id==='setp')stLoad();"
 "if(id==='wifip')ipLoad();}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
@@ -291,6 +355,56 @@ static const char INDEX_HTML[] =
 "c.appendChild(d);});}).catch(function(){st.textContent='Scan failed';});}"
 "function rebootDev(){if(confirm('Reboot BirdBox?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
+"function $g(i){return document.getElementById(i)}"
+"function stSensShow(){$g('stSensV').textContent=$g('stSens').value;}"
+"function stLoad(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
+"(c.mode===1?$g('stFeed'):$g('stNest')).checked=true;"
+"$g('stSens').value=c.sens;stSensShow();"
+"$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
+"$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
+"var q=$g('stQual');"
+"if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
+"op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
+"q.value=c.qual;"
+"var t=$g('stTz');"
+"if(![...t.options].some(o=>o.value===c.tz)){var ot=document.createElement('option');"
+"ot.value=c.tz;ot.textContent='Custom: '+c.tz;t.appendChild(ot);}"
+"t.value=c.tz;"
+"var ns=$g('stNtpSel');"
+"if([...ns.options].some(o=>o.value===c.ntp&&o.value!=='__custom')){"
+"ns.value=c.ntp;$g('stNtpCustom').style.display='none';}else{"
+"ns.value='__custom';$g('stNtpCustom').style.display='block';"
+"$g('stNtpCustom').value=c.ntp;}"
+"var s=$g('stRegion');s.innerHTML='';"
+"var oa=document.createElement('option');oa.value='';"
+"oa.textContent='(auto \\u2014 first model found)';s.appendChild(oa);"
+"c.models.forEach(function(m){var o=document.createElement('option');"
+"o.value=m;o.textContent=m;s.appendChild(o);});"
+"if(c.region&&!c.models.includes(c.region)){var om=document.createElement('option');"
+"om.value=c.region;om.textContent=c.region+' (missing from SD)';s.appendChild(om);}"
+"s.value=c.region;"
+"$g('stModels').textContent=c.models.length?"
+"c.models.length+' model file'+(c.models.length!==1?'s':'')+' in /model on SD':"
+"'no model files in /model on SD \\u2014 species ID arrives in a later firmware';"
+"});}"
+"function ntpSelChange(){var c=$g('stNtpSel').value==='__custom';"
+"$g('stNtpCustom').style.display=c?'block':'none';}"
+"function stSave(){"
+"var ntp=$g('stNtpSel').value==='__custom'?$g('stNtpCustom').value:$g('stNtpSel').value;"
+"var b='mode='+($g('stFeed').checked?'feeder':'nestbox')"
+"+'&sens='+$g('stSens').value+'&ccnt='+$g('stCcnt').value"
+"+'&civl='+$g('stCivl').value+'&cool='+$g('stCool').value"
+"+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
+"+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
+"+'&tz='+encodeURIComponent($g('stTz').value)"
+"+'&region='+encodeURIComponent($g('stRegion').value)"
+"+'&ntp='+encodeURIComponent(ntp);"
+"fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
+".then(r=>r.json()).then(function(o){"
+"$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
+"setTimeout(function(){$g('stSts').textContent='';},4000);})"
+".catch(function(){$g('stSts').textContent='Save failed';});}"
 "</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
@@ -807,6 +921,96 @@ static esp_err_t h_ipcfg_save(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── Settings endpoints (FSD §5) ────────────────────────────────────────── */
+static esp_err_t h_settings_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    char buf[448];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
+        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"tz\":\"%s\","
+        "\"region\":\"%s\",\"ntp\":\"%s\",\"models\":[",
+        g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
+        g_settings.capture_interval_ms, g_settings.cooldown_s,
+        g_settings.confidence_pct, g_settings.sd_cap_pct,
+        g_settings.stream_quality, g_settings.ir_led_mode,
+        g_settings.timezone, g_settings.region, g_settings.ntp_server);
+    httpd_resp_send_chunk(req, buf, n);
+    /* The region choices are whatever model files sit in /sd/model (§3.2 —
+     * users swap regions by dropping a file on the card, no reflash). */
+    if (storage_sd_present()) {
+        DIR *d = opendir(STORAGE_MOUNT_POINT "/model");
+        if (d) {
+            struct dirent *e;
+            int i = 0;
+            while ((e = readdir(d)) != NULL) {
+                if (e->d_type != DT_REG) continue;
+                n = snprintf(buf, sizeof(buf), "%s\"%s\"", i++ ? "," : "", e->d_name);
+                httpd_resp_send_chunk(req, buf, n);
+            }
+            closedir(d);
+        }
+    }
+    httpd_resp_send_chunk(req, "]}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* Numeric form field, clamped; absent/empty field keeps the current value. */
+static long field_num(const char *body, const char *key, long lo, long hi, long cur)
+{
+    char v[16];
+    form_field(body, key, v, sizeof(v));
+    if (!v[0]) return cur;
+    long n = strtol(v, NULL, 10);
+    return n < lo ? lo : n > hi ? hi : n;
+}
+
+static esp_err_t h_settings_post(httpd_req_t *req)
+{
+    char body[512] = {0};
+    int  len = MIN(req->content_len, (int) sizeof(body) - 1);
+    httpd_req_recv(req, body, len);
+
+    char mode[12], tz[48], region[32], ntp[64];
+    form_field(body, "mode=",   mode,   sizeof(mode));
+    form_field(body, "tz=",     tz,     sizeof(tz));
+    form_field(body, "region=", region, sizeof(region));
+    form_field(body, "ntp=",    ntp,    sizeof(ntp));
+
+    if (mode[0])
+        g_settings.mode = strcmp(mode, "nestbox") == 0 ? MODE_NESTBOX : MODE_FEEDER;
+    g_settings.motion_sensitivity  = field_num(body, "sens=", 0,   100,   g_settings.motion_sensitivity);
+    g_settings.capture_count       = field_num(body, "ccnt=", 1,   10,    g_settings.capture_count);
+    g_settings.capture_interval_ms = field_num(body, "civl=", 250, 10000, g_settings.capture_interval_ms);
+    g_settings.cooldown_s          = field_num(body, "cool=", 1,   600,   g_settings.cooldown_s);
+    g_settings.confidence_pct      = field_num(body, "conf=", 0,   100,   g_settings.confidence_pct);
+    g_settings.sd_cap_pct          = field_num(body, "cap=",  50,  95,    g_settings.sd_cap_pct);
+    g_settings.stream_quality      = field_num(body, "qual=", 5,   40,    g_settings.stream_quality);
+    g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
+    if (tz[0] && !strchr(tz, '"'))
+        strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
+    /* region becomes a /sd/model/<region> path when §3.2 lands — reject
+     * anything that could escape that directory (or break the GET's JSON) */
+    if (!strstr(region, "..") && !strchr(region, '/') &&
+        !strchr(region, '\\') && !strchr(region, '"'))
+        strlcpy(g_settings.region, region, sizeof(g_settings.region));
+    if (ntp[0] && !strchr(ntp, '"') && !strchr(ntp, ' '))
+        strlcpy(g_settings.ntp_server, ntp, sizeof(g_settings.ntp_server));
+
+    settings_save();
+
+    /* Apply live — no reboot (FSD §5) */
+    setenv("TZ", g_settings.timezone, 1);
+    tzset();
+    camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
+    wifi_restart_sntp();                             /* no-op before first connect */
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 /* GET /api/status — minimal for now, grows with the subsystems (FSD §6) */
 static esp_err_t h_status(httpd_req_t *req)
 {
@@ -888,6 +1092,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
         { .uri = "/api/ipconfig",      .method = HTTP_GET,  .handler = h_ipcfg_get  },
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
+        { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
+        { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },

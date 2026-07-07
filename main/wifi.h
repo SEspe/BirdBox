@@ -15,6 +15,11 @@ esp_err_t wifi_start(void);
 bool wifi_is_connected(void);
 bool wifi_in_portal_mode(void);
 
+/* Re-applies g_settings.ntp_server (FSD §3.4/§5): a no-op until the first
+ * successful connect starts SNTP, after which the Settings tab can call
+ * this to switch server without a reboot. */
+void wifi_restart_sntp(void);
+
 /* Credential save handshake with web_server.c (portal form and WiFi tab):
  * the HTTP handler fills g_new_ssid/g_new_pass and sets
  * g_wifi_save_requested; wifi.c persists to NVS and reboots. */

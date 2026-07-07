@@ -55,8 +55,5 @@ void app_main(void)
     ESP_ERROR_CHECK(classify_init());
     ESP_ERROR_CHECK(motion_start());
 
-    /* TODO(FSD §3.4): SNTP start + timezone from settings once wifi.c is
-     * implemented — events before first sync get placeholder timestamps. */
-
     ESP_LOGI(TAG, "boot complete");
 }

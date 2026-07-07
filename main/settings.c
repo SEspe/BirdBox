@@ -1,5 +1,10 @@
+/* NVS-backed runtime settings (FSD §5). One NVS key per field rather than a
+ * blob: fields added in later firmware just fall back to their compiled-in
+ * default instead of invalidating every stored setting. */
 #include "settings.h"
 #include "version.h"
+
+#include "nvs.h"
 #include "esp_log.h"
 
 static const char *TAG = "settings";
@@ -15,18 +20,64 @@ settings_t g_settings = {
     .stream_quality     = 12,
     .ir_led_mode        = 0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
+    .region             = "",
+    .ntp_server         = "pool.ntp.org",
 };
 
 esp_err_t settings_load(void)
 {
-    /* TODO(FSD §5): nvs_get_blob in NVS_NAMESPACE; keep defaults on absence. */
-    ESP_LOGW(TAG, "settings_load: not implemented (scaffold) — using defaults");
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "no stored settings — using defaults");
+        return ESP_OK;
+    }
+    uint8_t  u8;
+    uint16_t u16;
+    size_t   l;
+    if (nvs_get_u8 (h, "s_mode", &u8)  == ESP_OK) g_settings.mode = u8 ? MODE_FEEDER : MODE_NESTBOX;
+    if (nvs_get_u8 (h, "s_sens", &u8)  == ESP_OK) g_settings.motion_sensitivity = u8;
+    if (nvs_get_u8 (h, "s_ccnt", &u8)  == ESP_OK) g_settings.capture_count = u8;
+    if (nvs_get_u16(h, "s_civl", &u16) == ESP_OK) g_settings.capture_interval_ms = u16;
+    if (nvs_get_u16(h, "s_cool", &u16) == ESP_OK) g_settings.cooldown_s = u16;
+    if (nvs_get_u8 (h, "s_conf", &u8)  == ESP_OK) g_settings.confidence_pct = u8;
+    if (nvs_get_u8 (h, "s_cap",  &u8)  == ESP_OK) g_settings.sd_cap_pct = u8;
+    if (nvs_get_u8 (h, "s_qual", &u8)  == ESP_OK) g_settings.stream_quality = u8;
+    if (nvs_get_u8 (h, "s_ir",   &u8)  == ESP_OK) g_settings.ir_led_mode = u8;
+    l = sizeof(g_settings.timezone);
+    nvs_get_str(h, "s_tz", g_settings.timezone, &l);
+    l = sizeof(g_settings.region);
+    nvs_get_str(h, "s_region", g_settings.region, &l);
+    l = sizeof(g_settings.ntp_server);
+    nvs_get_str(h, "s_ntp", g_settings.ntp_server, &l);
+    nvs_close(h);
+    ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
+             g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
+             g_settings.motion_sensitivity, g_settings.stream_quality);
     return ESP_OK;
 }
 
 esp_err_t settings_save(void)
 {
-    /* TODO(FSD §5): nvs_set_blob + commit. */
-    ESP_LOGW(TAG, "settings_save: not implemented (scaffold)");
-    return ESP_OK;
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "settings_save: nvs_open failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+    nvs_set_u8 (h, "s_mode", g_settings.mode == MODE_FEEDER ? 1 : 0);
+    nvs_set_u8 (h, "s_sens", g_settings.motion_sensitivity);
+    nvs_set_u8 (h, "s_ccnt", g_settings.capture_count);
+    nvs_set_u16(h, "s_civl", g_settings.capture_interval_ms);
+    nvs_set_u16(h, "s_cool", g_settings.cooldown_s);
+    nvs_set_u8 (h, "s_conf", g_settings.confidence_pct);
+    nvs_set_u8 (h, "s_cap",  g_settings.sd_cap_pct);
+    nvs_set_u8 (h, "s_qual", g_settings.stream_quality);
+    nvs_set_u8 (h, "s_ir",   g_settings.ir_led_mode);
+    nvs_set_str(h, "s_tz",   g_settings.timezone);
+    nvs_set_str(h, "s_region", g_settings.region);
+    nvs_set_str(h, "s_ntp", g_settings.ntp_server);
+    err = nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "settings saved");
+    return err;
 }

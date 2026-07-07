@@ -15,9 +15,13 @@ typedef struct {
     uint16_t cooldown_s;            /* default 10 */
     uint8_t  confidence_pct;        /* species-ID threshold, default 60 */
     uint8_t  sd_cap_pct;            /* retention cap, default 80 */
-    uint8_t  stream_quality;
+    uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
     uint8_t  ir_led_mode;           /* 0 off, 1 auto */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
+    char     region[32];            /* species-model region: filename under
+                                       /sd/model (FSD §3.2), "" = auto */
+    char     ntp_server[64];        /* SNTP hostname (FSD §3.4), default
+                                       "pool.ntp.org" */
 } settings_t;
 
 extern settings_t g_settings;

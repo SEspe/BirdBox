@@ -47,6 +47,7 @@ static bool               s_wifi_ever_connected = false;
 static bool               s_connected = false;
 static bool               s_portal_mode = false;
 static bool               s_have_stored_creds = false;
+static bool               s_sntp_started = false;
 
 volatile bool     g_wifi_save_requested = false;
 char              g_new_ssid[64] = {0};
@@ -162,6 +163,24 @@ static void apply_static_ip(esp_netif_t *sta_netif)
     }
     ESP_LOGI(TAG, "Static IP applied: %s / %s gw %s", g_ipcfg_ip, g_ipcfg_mask,
              g_ipcfg_gw[0] ? g_ipcfg_gw : "-");
+}
+
+/* ── SNTP (FSD §3.4/§5) ──────────────────────────────────────────────────
+ * Started once on first successful connect; the Settings tab can switch
+ * servers afterward via wifi_restart_sntp() without a reboot. */
+static void start_sntp(void)
+{
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(g_settings.ntp_server);
+    esp_netif_sntp_init(&sntp_cfg);
+    s_sntp_started = true;
+    ESP_LOGI(TAG, "SNTP started (%s)", g_settings.ntp_server);
+}
+
+void wifi_restart_sntp(void)
+{
+    if (!s_connected) return;   /* applies from g_settings on the next connect anyway */
+    if (s_sntp_started) esp_netif_sntp_deinit();
+    start_sntp();
 }
 
 /* ── Boot-button credential reset (FSD §4.6) ────────────────────────────── */
@@ -332,8 +351,7 @@ esp_err_t wifi_start(void)
             ESP_LOGI(TAG, "WiFi connected to %s", ssid);
             /* Clock: SNTP + timezone (FSD §3.4). Best-effort — events before
              * first sync get placeholder timestamps. */
-            esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-            esp_netif_sntp_init(&sntp_cfg);
+            start_sntp();
             setenv("TZ", g_settings.timezone, 1);
             tzset();
             xTaskCreate(config_apply_task, "cfg_apply", 4096, NULL, 3, NULL);

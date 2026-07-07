@@ -6,6 +6,7 @@
  * sensor up; capture (§3.1) will bump resolution per-shot when implemented. */
 #include "camera.h"
 #include "board_config.h"
+#include "settings.h"
 #include "esp_log.h"
 #include "esp_camera.h"
 
@@ -33,7 +34,7 @@ esp_err_t camera_init(void)
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
         .frame_size   = FRAMESIZE_SVGA,
-        .jpeg_quality = 12,
+        .jpeg_quality = g_settings.stream_quality,   /* settings_load ran first */
         .fb_count     = 2,
         .fb_location  = CAMERA_FB_IN_PSRAM,
         .grab_mode    = CAMERA_GRAB_LATEST,
@@ -53,3 +54,12 @@ esp_err_t camera_init(void)
 }
 
 bool camera_available(void) { return s_available; }
+
+esp_err_t camera_set_quality(uint8_t quality)
+{
+    if (!s_available) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s || s->set_quality(s, quality) != 0) return ESP_FAIL;
+    ESP_LOGI(TAG, "JPEG quality set to %u", quality);
+    return ESP_OK;
+}

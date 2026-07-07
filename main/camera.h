@@ -10,3 +10,7 @@ esp_err_t camera_init(void);
 /* False when no sensor was found at boot — the web UI shows a clear
  * "no camera" state instead of a broken stream. */
 bool camera_available(void);
+
+/* Re-programs the sensor's JPEG quality (lower = better) at runtime — the
+ * Settings tab applies stream quality without a reboot (FSD §5). */
+esp_err_t camera_set_quality(uint8_t quality);
