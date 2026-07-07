@@ -14,3 +14,10 @@ bool camera_available(void);
 /* Re-programs the sensor's JPEG quality (lower = better) at runtime — the
  * Settings tab applies stream quality without a reboot (FSD §5). */
 esp_err_t camera_set_quality(uint8_t quality);
+
+/* Sensor PID for the Debug card (FSD §5); 0 when no camera. */
+int camera_get_pid(void);
+
+/* Fixed until §5 grows a resolution setting — matches camera_init()'s
+ * FRAMESIZE_SVGA. */
+#define CAMERA_FRAME_SIZE_STR "SVGA 800x600"

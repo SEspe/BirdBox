@@ -55,6 +55,13 @@ esp_err_t camera_init(void)
 
 bool camera_available(void) { return s_available; }
 
+int camera_get_pid(void)
+{
+    if (!s_available) return 0;
+    sensor_t *s = esp_camera_sensor_get();
+    return s ? s->id.PID : 0;
+}
+
 esp_err_t camera_set_quality(uint8_t quality)
 {
     if (!s_available) return ESP_ERR_INVALID_STATE;

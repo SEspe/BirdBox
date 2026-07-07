@@ -15,3 +15,5 @@ esp_err_t classify_init(void)
     ESP_LOGW(TAG, "classify_init: not implemented (scaffold)");
     return ESP_OK;
 }
+
+int32_t classify_last_duration_ms(void) { return -1; }

@@ -16,6 +16,7 @@
 #include "capture.h"
 #include "stats.h"
 #include "settings.h"
+#include "classify.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -37,6 +38,10 @@
 #include "esp_camera.h"
 
 static const char *TAG = "web";
+
+/* Heap low-water mark, tracked by main.c's housekeeping task (FSD §5) */
+extern uint32_t g_heap_min;
+extern int64_t  g_heap_min_ts_us;
 
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -134,6 +139,10 @@ static const char INDEX_HTML[] =
 "h3.sh{color:#7fc98b;font-size:.9rem;margin:18px 0 6px}"
 ".srow{display:flex;align-items:center;gap:8px;font-size:.78rem;margin:3px 0}"
 ".srow .lbl{width:84px;color:#9ab;flex-shrink:0}"
+".drow{display:flex;justify-content:space-between;gap:12px;font-size:.8rem;"
+"padding:4px 0;border-bottom:1px solid #2a4d34}"
+".drow span:first-child{color:#9ab}"
+".ok{color:#7fc98b}.bad{color:#e77}"
 ".sbar{background:#3f8a4f;height:14px;border-radius:3px;min-width:2px}"
 ".hwrap{display:flex;align-items:flex-end;gap:2px;height:110px}"
 ".hcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%}"
@@ -157,6 +166,7 @@ static const char INDEX_HTML[] =
 "<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
 "<button class='tab' onclick='show(\"statsp\",this)'>Stats</button>"
 "<button class='tab' onclick='show(\"setp\",this)'>Settings</button>"
+"<button class='tab' onclick='show(\"dbgp\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"wifip\",this)'>WiFi</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
@@ -237,6 +247,14 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
 "<span class='sts' id='stSts'></span>"
 "</div>"
+"<div id='dbgp' class='pane'>"
+"<h3 class='sh' style='margin-top:0'>System</h3><div id='dSys'></div>"
+"<h3 class='sh'>WiFi Link</h3><div id='dWifi'></div>"
+"<h3 class='sh'>SD Card</h3><div id='dSd'></div>"
+"<h3 class='sh'>Camera</h3><div id='dCam'></div>"
+"<h3 class='sh'>Species ID</h3><div id='dCls'></div>"
+"<button class='act' style='margin-left:0' onclick='loadDebug()'>&#8635; Refresh</button>"
+"</div>"
 "<div id='wifip' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>WiFi Network</h3>"
 "<button class='act' style='margin:0 0 6px' onclick='wfScan()'>&#128246; Scan Networks</button>"
@@ -276,6 +294,7 @@ static const char INDEX_HTML[] =
 "if(id==='galleryp')loadDays();"
 "if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
+"if(id==='dbgp')loadDebug();"
 "if(id==='wifip')ipLoad();}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
@@ -405,6 +424,31 @@ static const char INDEX_HTML[] =
 "$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
+"function drow(k,v,cls){return '<div class=drow><span>'+k+'</span>"
+"<span'+(cls?' class='+cls:'')+'>'+v+'</span></div>';}"
+"function fmtAge(s){if(s<0)return 'never';"
+"var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+"return d?d+'d '+h+'h':h?h+'h '+m+'m':m?m+'m '+(s%60)+'s':s+'s';}"
+"function loadDebug(){fetch('/api/sysinfo').then(r=>r.json()).then(function(d){"
+"$g('dSys').innerHTML="
+"drow('Free heap',Math.round(d.heap/1024)+' KB')+"
+"drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
+"drow('Uptime',fmtAge(d.uptime))+"
+"drow('WiFi reconnects',d.wifiDisc)+"
+"drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'));"
+"$g('dWifi').innerHTML="
+"drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
+"$g('dSd').innerHTML=d.sdPresent?"
+"drow('Card',d.sdCard)+drow('Size',d.sdTotalMB+' MB total, '+d.sdFreeMB+' MB free')+"
+"drow('Last write',d.sdWriteOk?'OK':'FAILED',d.sdWriteOk?'ok':'bad'):"
+"drow('Status','no SD card','bad');"
+"$g('dCam').innerHTML=d.camPresent?"
+"drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
+"drow('JPEG quality',d.camQuality):drow('Status','no camera','bad');"
+"$g('dCls').innerHTML=d.lastInferenceMs<0?"
+"drow('Status','not available yet (arrives with FSD \\u00a73.2)'):"
+"drow('Last inference',d.lastInferenceMs+' ms');"
+"}).catch(()=>{});}"
 "</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
@@ -1048,6 +1092,53 @@ static esp_err_t h_status(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/sysinfo — Debug tab: heap/low-water/uptime/reconnects, WiFi link,
+ * SD card health, camera sensor status, last-inference timing (FSD §5, §6) */
+static esp_err_t h_sysinfo(httpd_req_t *req)
+{
+    uint8_t mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    wifi_ap_record_t ap = {0};
+    int rssi = 0, ch = 0;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) { rssi = ap.rssi; ch = ap.primary; }
+
+    uint64_t sd_total, sd_free;
+    storage_get_info(&sd_total, &sd_free);
+    char card[24];
+    storage_get_card_name(card, sizeof(card));
+
+    int64_t now_us = esp_timer_get_time();
+
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
+        "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
+        "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
+        "\"sdWriteOk\":%s,"
+        "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
+        "\"lastInferenceMs\":%ld}",
+        (unsigned long) esp_get_free_heap_size(),
+        (unsigned long) g_heap_min,
+        (long long) ((now_us - g_heap_min_ts_us) / 1000000),
+        now_us / 1000000,
+        (unsigned long) g_wifi_disconnect_count,
+        g_wifi_last_disc_ts_us ? (long long) ((now_us - g_wifi_last_disc_ts_us) / 1000000) : -1,
+        mac_str, rssi, ch,
+        storage_sd_present() ? "true" : "false", card,
+        sd_total / (1024 * 1024), sd_free / (1024 * 1024),
+        storage_last_write_ok() ? "true" : "false",
+        camera_available() ? "true" : "false", camera_get_pid(),
+        CAMERA_FRAME_SIZE_STR, g_settings.stream_quality,
+        (long) classify_last_duration_ms());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 /* POST /api/reboot */
 static esp_err_t h_reboot(httpd_req_t *req)
 {
@@ -1094,6 +1185,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
         { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
+        { .uri = "/api/sysinfo",       .method = HTTP_GET,  .handler = h_sysinfo    },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },

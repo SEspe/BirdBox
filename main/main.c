@@ -19,6 +19,9 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "version.h"
 #include "settings.h"
@@ -30,6 +33,23 @@
 #include "classify.h"
 
 static const char *TAG = "main";
+
+/* Heap low-water mark + when it was hit, for the Debug card / /api/sysinfo
+ * (FSD §5 — RemoteStart's leak-spotting convention). Not static: read
+ * directly by web_server.c. */
+uint32_t g_heap_min       = UINT32_MAX;
+int64_t  g_heap_min_ts_us = 0;
+
+static void housekeeping_task(void *arg)
+{
+    g_heap_min       = esp_get_free_heap_size();
+    g_heap_min_ts_us = esp_timer_get_time();
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        uint32_t cur = esp_get_free_heap_size();
+        if (cur < g_heap_min) { g_heap_min = cur; g_heap_min_ts_us = esp_timer_get_time(); }
+    }
+}
 
 void app_main(void)
 {
@@ -54,6 +74,7 @@ void app_main(void)
     ESP_ERROR_CHECK(web_server_start());
     ESP_ERROR_CHECK(classify_init());
     ESP_ERROR_CHECK(motion_start());
+    xTaskCreate(housekeeping_task, "housekeep", 2048, NULL, 2, NULL);
 
     ESP_LOGI(TAG, "boot complete");
 }

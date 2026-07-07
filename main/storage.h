@@ -21,6 +21,15 @@ bool storage_sd_present(void);
 /* Total/free bytes of the mounted card; both 0 when no card. */
 void storage_get_info(uint64_t *total, uint64_t *free_bytes);
 
+/* Card identification (CID name, e.g. "BC2QT") for the Debug card (FSD §5);
+ * out[0] = '\0' when no card. */
+void storage_get_card_name(char *out, size_t out_len);
+
+/* Whether the most recent write attempt (capture or visit-log row) succeeded
+ * — the closest thing to a "health" signal FAT/SDMMC offers without a SMART
+ * equivalent; true (no news is good news) until a write actually fails. */
+bool storage_last_write_ok(void);
+
 /* Saves a JPEG under /sd/captures/<date>/<time>.jpg (SNTP-synced clock, or
  * an uptime-based name under /sd/captures/no-date/ before first sync).
  * On success writes the web path (e.g. "/captures/2026-07-06/183501.jpg")

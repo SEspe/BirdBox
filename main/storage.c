@@ -19,6 +19,7 @@ static const char *TAG = "storage";
 static bool              s_sd_present = false;
 static sdmmc_card_t     *s_card = NULL;
 static SemaphoreHandle_t s_write_mtx;
+static bool              s_last_write_ok = true;
 
 esp_err_t storage_init(void)
 {
@@ -73,6 +74,14 @@ void storage_get_info(uint64_t *total, uint64_t *free_bytes)
     esp_vfs_fat_info(STORAGE_MOUNT_POINT, total, free_bytes);
 }
 
+void storage_get_card_name(char *out, size_t out_len)
+{
+    if (!s_sd_present) { out[0] = '\0'; return; }
+    strlcpy(out, s_card->cid.name, out_len);
+}
+
+bool storage_last_write_ok(void) { return s_last_write_ok; }
+
 esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
                             char *path_out, size_t path_out_len)
 {
@@ -112,7 +121,8 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     }
     xSemaphoreGive(s_write_mtx);
 
-    if (!f || written != len) {
+    s_last_write_ok = f && written == len;
+    if (!s_last_write_ok) {
         ESP_LOGE(TAG, "write failed: %s (%u/%u bytes)", path,
                  (unsigned) written, (unsigned) len);
         return ESP_FAIL;
@@ -152,6 +162,7 @@ esp_err_t storage_append_visit_log(const char *line)
     }
     xSemaphoreGive(s_write_mtx);
 
+    s_last_write_ok = ok;
     if (!ok) ESP_LOGE(TAG, "visit log write failed: %s", path);
     return ok ? ESP_OK : ESP_FAIL;
 }
