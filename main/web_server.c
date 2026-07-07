@@ -136,8 +136,13 @@ static const char INDEX_HTML[] =
 "padding:7px;font-size:.85rem}"
 ".gbar{display:flex;gap:10px;align-items:center;margin-bottom:12px}"
 ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}"
-".gitem{background:#1e3826;border-radius:8px;overflow:hidden}"
+".gitem{background:#1e3826;border-radius:8px;overflow:hidden;position:relative}"
 ".gitem img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#000}"
+".gitem.sel{outline:3px solid #7fc98b;outline-offset:-3px}"
+".glabel{position:absolute;top:6px;left:6px;background:rgba(20,40,28,.82);color:#7fc98b;"
+"font-size:.66rem;padding:2px 6px;border-radius:4px;max-width:82%;white-space:nowrap;"
+"overflow:hidden;text-overflow:ellipsis}"
+".gchk{position:absolute;top:6px;right:6px;width:20px;height:20px;cursor:pointer;z-index:2}"
 ".gmeta{display:flex;justify-content:space-between;align-items:center;"
 "padding:6px 8px;font-size:.72rem;color:#9ab}"
 ".gmeta button{background:none;border:none;color:#e77;cursor:pointer;font-size:.9rem}"
@@ -191,7 +196,11 @@ static const char INDEX_HTML[] =
 "<div id='galleryp' class='pane'>"
 "<div class='gbar'><select id='day' onchange='loadDay()'></select>"
 "<button class='act' style='margin:0' onclick='loadDays()'>&#8635; Refresh</button>"
-"<span class='sts' id='gsts' style='margin:0'></span></div>"
+"<button class='act' style='margin:0' onclick='gSelAll()'>&#9745; Select all</button>"
+"<button class='act' style='margin:0' onclick='gDelSel()'>&#10060; Delete selected</button>"
+"<button class='act' style='margin:0;background:#8a3f3f' onclick='gDelAll()'>&#128465; Delete all</button>"
+"<span class='sts' id='gsts' style='margin:0'></span>"
+"<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
 "</div>"
 "<div id='statsp' class='pane'>"
@@ -374,18 +383,46 @@ static const char INDEX_HTML[] =
 "if(prev&&[...s.options].some(o=>o.value===prev))s.value=prev;"
 "if(a.length)loadDay();else{document.getElementById('grid').innerHTML='';"
 "document.getElementById('gsts').textContent='no captures yet';}});}"
-"function loadDay(){var d=document.getElementById('day').value;if(!d)return;"
+"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;');}"
+"function loadDay(){var d=$g('day').value;if(!d)return;"
 "fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.f.localeCompare(x.f));"
-"document.getElementById('gsts').textContent=a.length+' capture'+(a.length!==1?'s':'');"
-"var g=document.getElementById('grid');g.innerHTML='';"
+"var lab=a.filter(o=>o.sp).length;"
+"$g('gsts').textContent=a.length+' capture'+(a.length!==1?'s':'')"
+"+(lab?(' \\u00b7 '+lab+' labelled'):'');"
+"var g=$g('grid');g.innerHTML='';"
 "a.forEach(o=>{var p='/captures/'+d+'/'+o.f;"
 "var div=document.createElement('div');div.className='gitem';"
-"div.innerHTML='<a href=\"'+p+'\" target=\"_blank\">"
-"<img loading=\"lazy\" src=\"'+p+'\"></a>"
+"var bdg=o.sp?('<div class=\"glabel\" title=\"'+esc(o.sp)+' '+(o.pct||0)+'%\">'"
+"+esc(o.sp)+' '+(o.pct||0)+'%</div>'):'';"
+"div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
+"onchange=\"gSelSync(this)\">"
+"<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></div>';"
-"g.appendChild(div);});});}"
+"g.appendChild(div);});gSelSync();});}"
+"function gChecks(){return [...document.querySelectorAll('#grid .gchk')];}"
+"function gSelSync(cb){if(cb)cb.closest('.gitem').classList.toggle('sel',cb.checked);"
+"var n=gChecks().filter(c=>c.checked).length;"
+"$g('gselc').textContent=n?(n+' selected'):'';}"
+"function gSelAll(){var c=gChecks();var on=c.some(x=>!x.checked);"
+"c.forEach(x=>{x.checked=on;x.closest('.gitem').classList.toggle('sel',on);});gSelSync();}"
+"function gDelSel(){var d=$g('day').value;"
+"var fs=gChecks().filter(c=>c.checked).map(c=>c.dataset.f);"
+"if(!fs.length){alert('No images selected');return;}"
+"if(!confirm('Delete '+fs.length+' selected image'+(fs.length!==1?'s':'')+'? Cannot be undone.'))return;"
+"fetch('/api/captures/delete',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&files='+fs.join(',')})"
+".then(r=>r.json()).then(()=>loadDays()).catch(()=>alert('Delete failed'));}"
+"function gDelAll(){var d=$g('day').value;if(!d)return;"
+"if(!confirm('Delete ALL photos in '+d+'? Every image for that day is removed "
+"and this cannot be undone. Statistics are separate \\u2014 use the Stats tab\\u2019s "
+"Reset Statistics to clear those.'))return;"
+"fetch('/api/captures/delete',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&all=1'})"
+".then(r=>r.json()).then(()=>loadDays()).catch(()=>alert('Delete failed'));}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
 "function loadStats(){"
@@ -851,7 +888,71 @@ static esp_err_t h_days(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/events?date=YYYY-MM-DD — files of one capture day (Gallery tab) */
+/* Gallery event labels (§3.4): the visit log records each event's first frame
+ * + species, so join that to the day's image files to badge event thumbnails
+ * with their identification. Only first frames match (one log row per event);
+ * follow-up frames stay unlabeled. */
+#define GAL_MAX_LABELS 300
+typedef struct { char base[16]; char sp[72]; uint8_t pct; } gal_label_t;
+
+/* One CSV field, in place; advances *p past the comma (or to the line end). */
+static char *gal_next_field(char **p)
+{
+    char *start = *p;
+    char *comma = strchr(start, ',');
+    if (comma) { *comma = '\0'; *p = comma + 1; }
+    else       { char *end = start + strcspn(start, "\r\n"); *end = '\0'; *p = end; }
+    return start;
+}
+
+/* Fills labels[] (up to GAL_MAX_LABELS) with basename -> localized species for
+ * the given capture date, read from that month's visit log; returns the count. */
+static int gal_build_labels(const char *date, gal_label_t *labels)
+{
+    if (!storage_sd_present()) return 0;
+    char logpath[64];
+    if (strcmp(date, "no-date") == 0)
+        strlcpy(logpath, STORAGE_MOUNT_POINT "/log/visits-no-date.csv", sizeof(logpath));
+    else   /* monthly file: visits-YYYY-MM.csv, i.e. the date's first 7 chars */
+        snprintf(logpath, sizeof(logpath), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    FILE *fp = fopen(logpath, "r");
+    if (!fp) return 0;
+
+    char match[48];
+    snprintf(match, sizeof(match), "/captures/%.20s/", date);
+
+    int count = 0;
+    char line[224];
+    bool header = true;
+    while (fgets(line, sizeof(line), fp) && count < GAL_MAX_LABELS) {
+        if (header) { header = false; continue; }
+        if (line[0] == '\0' || line[0] == '\n') continue;
+        char *p = line;
+        gal_next_field(&p);                        /* timestamp */
+        char *species   = gal_next_field(&p);
+        char *conf      = gal_next_field(&p);
+        gal_next_field(&p);                        /* frames */
+        char *first     = gal_next_field(&p);
+        char *corrected = gal_next_field(&p);
+        char *latin     = gal_next_field(&p);
+        if (!species[0] || !first[0]) continue;
+        char *base = strstr(first, match);         /* only this day's frames */
+        if (!base) continue;
+        base += strlen(match);
+        if (!base[0] || strchr(base, '/')) continue;
+        if (corrected[0]) { species = corrected; latin = (char *) ""; }
+        strlcpy(labels[count].base, base, sizeof(labels[count].base));
+        species_localize(species, latin, g_settings.lang,
+                         labels[count].sp, sizeof(labels[count].sp));
+        labels[count].pct = (uint8_t) atoi(conf);
+        count++;
+    }
+    fclose(fp);
+    return count;
+}
+
+/* GET /api/events?date=YYYY-MM-DD — files of one capture day, each annotated
+ * with its species label + confidence when it's a logged event's first frame */
 static esp_err_t h_events(httpd_req_t *req)
 {
     char query[64] = {0}, date[36] = {0};
@@ -872,6 +973,10 @@ static esp_err_t h_events(httpd_req_t *req)
         httpd_resp_sendstr(req, "[]");
         return ESP_OK;
     }
+
+    gal_label_t *labels = calloc(GAL_MAX_LABELS, sizeof(gal_label_t));
+    int nlabels = labels ? gal_build_labels(date, labels) : 0;
+
     httpd_resp_send_chunk(req, "[", 1);
     struct dirent *e;
     bool first = true;
@@ -881,13 +986,26 @@ static esp_err_t h_events(httpd_req_t *req)
         snprintf(fpath, sizeof(fpath), "%s/%.48s", dir, e->d_name);
         struct stat st = {0};
         stat(fpath, &st);
-        char item[128];
-        int len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld}",
+        const char *sp = NULL;
+        int pct = 0;
+        for (int i = 0; i < nlabels; i++)
+            if (strcmp(labels[i].base, e->d_name) == 0) {
+                sp = labels[i].sp; pct = labels[i].pct; break;
+            }
+        char item[256];
+        int len;
+        if (sp)
+            len = snprintf(item, sizeof(item),
+                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d}",
+                           first ? "" : ",", e->d_name, (long) st.st_size, sp, pct);
+        else
+            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld}",
                            first ? "" : ",", e->d_name, (long) st.st_size);
         httpd_resp_send_chunk(req, item, len);
         first = false;
     }
     closedir(d);
+    free(labels);
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
@@ -908,6 +1026,84 @@ static esp_err_t h_captures_delete(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "deleted %s", path);
     httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* Defined further down with the settings handlers; used here for the batch
+ * delete body. */
+static void form_field(const char *body, const char *key, char *out, size_t olen);
+
+/* POST /api/captures/delete — Gallery bulk cleanup (§3.4). Body (urlencoded):
+ * date=YYYY-MM-DD and either all=1 (delete the whole day-folder) or
+ * files=a.jpg,b.jpg,... (delete just those). Deletes photos only; the visit
+ * log / statistics are separate (Stats tab → Reset Statistics). */
+static esp_err_t h_captures_delete_batch(httpd_req_t *req)
+{
+    int cap = MIN(req->content_len, 16384);
+    char *body = calloc(1, cap + 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    int rlen = httpd_req_recv(req, body, cap);
+    if (rlen <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_OK; }
+    body[rlen] = '\0';
+
+    char date[36] = {0}, all[4] = {0};
+    form_field(body, "date=", date, sizeof(date));
+    form_field(body, "all=",  all,  sizeof(all));
+    bool bad = !date[0] || strstr(date, "..");
+    for (const char *c = date; *c && !bad; c++)
+        if (!isalnum((unsigned char) *c) && *c != '-') bad = true;
+    if (bad) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad date"); return ESP_OK; }
+
+    char dir[112];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.36s", date);
+    int deleted = 0;
+
+    storage_write_lock();
+    if (all[0] == '1') {
+        DIR *dd = opendir(dir);
+        if (dd) {
+            struct dirent *e;
+            while ((e = readdir(dd)) != NULL) {
+                if (e->d_type != DT_REG) continue;
+                char p[176];
+                snprintf(p, sizeof(p), "%s/%.48s", dir, e->d_name);
+                if (unlink(p) == 0) deleted++;
+            }
+            closedir(dd);
+            rmdir(dir);                 /* drop the now-empty day-folder */
+        }
+    } else {
+        /* files=a.jpg,b.jpg,... — parsed straight from the body so a long
+         * multi-select list isn't truncated by a fixed field buffer. */
+        char *fl = strstr(body, "files=");
+        char *end = fl ? strchr(fl, '&') : NULL;
+        for (char *tok = fl ? fl + 6 : NULL; tok && *tok && (!end || tok < end); ) {
+            char *comma = strchr(tok, ',');
+            char *stop = comma;
+            if (end && (!stop || stop > end)) stop = end;
+            size_t tl = stop ? (size_t) (stop - tok) : strlen(tok);
+            char fname[52];
+            if (tl > 0 && tl < sizeof(fname)) {
+                memcpy(fname, tok, tl);
+                fname[tl] = '\0';
+                if (!strchr(fname, '/') && !strstr(fname, "..")) {
+                    char p[176];
+                    snprintf(p, sizeof(p), "%s/%.48s", dir, fname);
+                    if (unlink(p) == 0) deleted++;
+                }
+            }
+            if (!comma || (end && comma >= end)) break;
+            tok = comma + 1;
+        }
+    }
+    storage_write_unlock();
+    free(body);
+
+    ESP_LOGI(TAG, "gallery delete: %d file(s) from %s", deleted, date);
+    char resp[48];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"deleted\":%d}", deleted);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
     return ESP_OK;
 }
 
@@ -1500,6 +1696,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
         { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
         { .uri = "/api/sysinfo",       .method = HTTP_GET,  .handler = h_sysinfo    },
+        { .uri = "/api/captures/delete", .method = HTTP_POST, .handler = h_captures_delete_batch },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
