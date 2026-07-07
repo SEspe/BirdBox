@@ -9,9 +9,10 @@
  * The device runs without a card — features degrade to a clear
  * "no SD card" state, never a silent failure.
  *
- * Writes are serialized by an internal mutex; the queue-based writer task
- * (FSD §7) arrives with the motion-capture pipeline, which is the first
- * producer that needs asynchronous writes. */
+ * Writes are serialized by an internal mutex, shared with the retention
+ * pruner (FSD §3.1): every storage_save_jpeg() call rechecks SD usage
+ * against g_settings.sd_cap_pct and deletes the oldest capture day-folder(s)
+ * — never today's — until back under the cap. */
 
 #define STORAGE_MOUNT_POINT "/sd"
 

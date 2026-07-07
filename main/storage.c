@@ -1,10 +1,13 @@
 #include "storage.h"
 #include "board_config.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -82,6 +85,91 @@ void storage_get_card_name(char *out, size_t out_len)
 
 bool storage_last_write_ok(void) { return s_last_write_ok; }
 
+/* ── Retention pruning (FSD §3.1, §7) ────────────────────────────────────
+ * Deletes the oldest capture day-folder whole, one at a time, until SD
+ * usage drops back under the configured cap (default 80%) or nothing
+ * prunable is left. Day-folder names ("YYYY-MM-DD") sort lexicographically
+ * by date, so "oldest" is just the smallest name — except "no-date"
+ * (pre-SNTP-sync captures), which sorts after every real date and is
+ * therefore only ever chosen once no dated folder remains: we can't tell
+ * those files' true age, so they're the last resort rather than the first.
+ * Today's own folder is always excluded, even if it's the only one left —
+ * pruning the day currently being written to would race the capture that's
+ * still filling it. Favorites-exemption (FSD §3.1) arrives with §3.4's
+ * favorite-flagging; no event carries a favorite flag yet, so there is
+ * nothing to exempt. */
+static void remove_day_folder(const char *day)
+{
+    char dir[64];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%s", day);
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    char file[128];
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG) continue;
+        snprintf(file, sizeof(file), "%s/%.40s", dir, e->d_name);
+        unlink(file);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+static void prune_if_over_cap(void)
+{
+    uint64_t total, free_bytes;
+    esp_vfs_fat_info(STORAGE_MOUNT_POINT, &total, &free_bytes);
+    if (total == 0) return;
+
+    /* Before SNTP sync the clock reads ~1970 (FSD §3.4), so "today" would
+     * compute as a bogus pre-2020 date matching no real day-folder on disk —
+     * the "never prune today" guard below would then fail to recognize a
+     * real, currently-being-written folder as today's, making it look like
+     * fair game as the oldest. Skip pruning entirely until synced rather
+     * than risk deleting the folder a just-rebooted device is actively
+     * writing into (caught live: a reboot + motion before sync completed
+     * wiped that day's folder in testing). New captures already fall back
+     * to /captures/no-date/ during this same window (storage_save_jpeg). */
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    if (tm_now.tm_year + 1900 < 2020) return;
+
+    char today[11];
+    strftime(today, sizeof(today), "%Y-%m-%d", &tm_now);
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    for (int guard = 0; guard < 64; guard++) {   /* bounded: never spin forever */
+        unsigned used_pct = (unsigned) (100 - (free_bytes * 100 / total));
+        if (used_pct < g_settings.sd_cap_pct) break;
+
+        DIR *d = opendir(STORAGE_MOUNT_POINT "/captures");
+        if (!d) break;
+        char oldest[16] = "";
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_type != DT_DIR) continue;
+            if (e->d_name[0] == '.') continue;
+            if (strcmp(e->d_name, today) == 0) continue;
+            if (oldest[0] == '\0' || strcmp(e->d_name, oldest) < 0)
+                strlcpy(oldest, e->d_name, sizeof(oldest));
+        }
+        closedir(d);
+
+        if (!oldest[0]) {
+            ESP_LOGW(TAG, "retention: SD at %u%% (cap %u%%) but no prunable day-folder left",
+                     used_pct, g_settings.sd_cap_pct);
+            break;
+        }
+
+        remove_day_folder(oldest);
+        ESP_LOGI(TAG, "retention: pruned /captures/%s (SD was at %u%%)", oldest, used_pct);
+        esp_vfs_fat_info(STORAGE_MOUNT_POINT, &total, &free_bytes);
+        if (total == 0) break;
+    }
+    xSemaphoreGive(s_write_mtx);
+}
+
 esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
                             char *path_out, size_t path_out_len)
 {
@@ -131,6 +219,7 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     ESP_LOGI(TAG, "saved %s (%u bytes)", path, (unsigned) len);
     if (path_out)
         strlcpy(path_out, path + strlen(STORAGE_MOUNT_POINT), path_out_len);
+    prune_if_over_cap();
     return ESP_OK;
 }
 
