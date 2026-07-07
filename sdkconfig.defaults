@@ -17,3 +17,8 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 
 # FAT long filenames for /captures/YYYY-MM-DD/HHMMSS_seq.jpg (FSD §7)
 CONFIG_FATFS_LFN_HEAP=y
+
+# OTA rollback (FSD §8): an image that never confirms itself valid via
+# esp_ota_mark_app_valid_cancel_rollback() (main.c) gets rolled back to the
+# previous slot on the next boot — a bad OTA upload can't brick the device.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

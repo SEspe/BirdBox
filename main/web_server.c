@@ -1,9 +1,5 @@
-/* Embedded web UI + REST API (FSD §5, §6).
- *
- * Implemented so far: the WiFi config portal (setup page, /api/scan,
- * /wifi-save — FSD §4), a placeholder dashboard, /api/status and
- * /api/reboot. Remaining tabs (Live/Gallery/Stats/Settings/Debug/OTA)
- * arrive with their subsystems.
+/* Embedded web UI + REST API (FSD §5, §6). All tabs implemented: Live,
+ * Gallery, Stats, Settings, Debug, WiFi, OTA Update.
  *
  * httpd config carries the RemoteStart lessons: lru_purge_enable (v1.35),
  * handler-count headroom + loud registration failures (v1.27). */
@@ -36,6 +32,8 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_camera.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 
 static const char *TAG = "web";
 
@@ -168,6 +166,7 @@ static const char INDEX_HTML[] =
 "<button class='tab' onclick='show(\"setp\",this)'>Settings</button>"
 "<button class='tab' onclick='show(\"dbgp\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"wifip\",this)'>WiFi</button>"
+"<button class='tab' onclick='show(\"otap\",this)'>OTA Update</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
@@ -282,6 +281,17 @@ static const char INDEX_HTML[] =
 "<button class='act' type='submit'>Save &amp; Apply</button></form>"
 "<h3 class='sh'>Device</h3>"
 "<button class='act' onclick='rebootDev()'>&#128260; Reboot Now</button>"
+"</div>"
+"<div id='otap' class='pane'>"
+"<h3 class='sh' style='margin-top:0'>Firmware Update</h3>"
+"<p class='sts'>Running version: v" FIRMWARE_VERSION "</p>"
+"<p class='sts'>Upload a birdbox-vX.Y.Z.bin release. The device flashes it to the "
+"inactive slot and reboots into it immediately; if that image never boots cleanly, "
+"the previous version resumes automatically on the next boot (dual OTA partitions, "
+"FSD &sect;8) &mdash; a bad upload can't brick the device. Don't power-cycle mid-upload.</p>"
+"<input type='file' id='otaFile' accept='.bin'>"
+"<button class='act' onclick='otaUpload()'>&#11014; Upload &amp; Flash</button>"
+"<div class='sts' id='otaProg'></div>"
 "</div>"
 "<script>"
 "function show(id,btn){"
@@ -449,6 +459,18 @@ static const char INDEX_HTML[] =
 "drow('Status','not available yet (arrives with FSD \\u00a73.2)'):"
 "drow('Last inference',d.lastInferenceMs+' ms');"
 "}).catch(()=>{});}"
+"function otaUpload(){"
+"var f=$g('otaFile').files[0];var p=$g('otaProg');"
+"if(!f){p.textContent='Select a .bin file first';return;}"
+"var xhr=new XMLHttpRequest();"
+"xhr.open('POST','/ota/upload',true);"
+"xhr.setRequestHeader('Content-Type','application/octet-stream');"
+"xhr.upload.onprogress=function(e){"
+"if(e.lengthComputable)p.textContent='Uploading: '+Math.round(e.loaded/e.total*100)+'%';};"
+"xhr.onload=function(){p.textContent=xhr.status===200?"
+"'Success \\u2014 rebooting\\u2026':'Error: '+xhr.responseText;};"
+"xhr.onerror=function(){p.textContent='Upload error';};"
+"xhr.send(f);}"
 "</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
@@ -1139,6 +1161,67 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /ota/upload — raw .bin upload (FSD §8), RemoteStart pattern: writes
+ * to the inactive OTA slot and only switches the boot partition after a
+ * full, verified write, so a partial upload just fails rather than leaving
+ * a half-written slot as the next boot target. Bounded httpd_req_recv()
+ * retries on transient timeouts (v1.5 lesson) so one dropped packet doesn't
+ * abort a multi-hundred-KB upload. The actual brick-proofing is the
+ * bootloader's rollback (sdkconfig's CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE +
+ * main.c's esp_ota_mark_app_valid_cancel_rollback()): if this new image
+ * never reaches that call, the next boot reverts to the current slot. */
+static esp_err_t h_ota_upload(httpd_req_t *req)
+{
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no OTA partition");
+        return ESP_OK;
+    }
+    if (req->content_len <= 0 || (size_t) req->content_len > part->size) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized upload");
+        return ESP_OK;
+    }
+
+    esp_ota_handle_t ota = 0;
+    if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_OK;
+    }
+
+    char buf[1024];
+    int  remaining = req->content_len;
+    bool ok = true;
+    int  timeout_retries = 0;
+    while (remaining > 0) {
+        int got = httpd_req_recv(req, buf, MIN(remaining, (int) sizeof(buf)));
+        if (got <= 0) {
+            if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
+            ok = false;
+            break;
+        }
+        timeout_retries = 0;
+        if (esp_ota_write(ota, buf, got) != ESP_OK) { ok = false; break; }
+        remaining -= got;
+    }
+
+    if (!ok || esp_ota_end(ota) != ESP_OK) {
+        esp_ota_abort(ota);
+        ESP_LOGE(TAG, "OTA upload failed");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA failed");
+        return ESP_OK;
+    }
+    if (esp_ota_set_boot_partition(part) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set boot partition failed");
+        return ESP_OK;
+    }
+
+    httpd_resp_sendstr(req, "OK");
+    ESP_LOGW(TAG, "OTA upload complete — rebooting into new image");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 /* POST /api/reboot */
 static esp_err_t h_reboot(httpd_req_t *req)
 {
@@ -1189,6 +1272,7 @@ esp_err_t web_server_start(void)
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
+        { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(server, &routes[i]);

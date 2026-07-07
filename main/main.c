@@ -20,6 +20,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -75,6 +76,11 @@ void app_main(void)
     ESP_ERROR_CHECK(classify_init());
     ESP_ERROR_CHECK(motion_start());
     xTaskCreate(housekeeping_task, "housekeep", 2048, NULL, 2, NULL);
+
+    /* Confirms this image booted OK, canceling any pending bootloader
+     * rollback (FSD §8) — reaching here means every subsystem above
+     * initialized without an ESP_ERROR_CHECK abort. */
+    esp_ota_mark_app_valid_cancel_rollback();
 
     ESP_LOGI(TAG, "boot complete");
 }
