@@ -10,14 +10,47 @@ on your LAN.
 project's requirements document *and* change record; every functional change
 gets a changelog entry there.
 
-> **Status: scaffold.** Project structure, build system and CI are in place;
-> the firmware modules under `main/` are stubs marked with `TODO(FSD §…)`.
+> **Status: v1 functionally complete.** WiFi provisioning, live streaming,
+> microSD storage + retention pruning, motion-triggered capture, on-device
+> species ID, and the full seven-tab web UI (Live, Gallery, Stats, Settings,
+> Debug, WiFi, OTA Update) are all implemented and verified live on the
+> reference hardware. See the [FSD changelog](FSD_BirdBox.md) for the
+> complete history.
+
+## Features
+
+- **Live MJPEG stream** in the browser (or any player, e.g. VLC/Home Assistant).
+- **Motion-triggered capture** to microSD, with configurable sensitivity,
+  follow-up frame count, and cool-down.
+- **On-device species identification** — a quantized TFLite-Micro model
+  (default: Google's iNaturalist-birds, 965 species, Apache-2.0) runs on the
+  S3 itself, no cloud call. Optional **Northern-Europe species filter**
+  restricts results to ~80 regional garden/feeder birds so the global model
+  can't return an out-of-region false guess.
+- **Gallery** — browse captures by day; each event's first frame is badged
+  with its species + confidence. Delete a single photo, multi-select delete,
+  delete a whole day, or **wipe a day** (photos + that day's stats together).
+- **Stats** — visits per day, species leaderboard, activity-by-hour, with a
+  one-click **Reset Statistics** for clearing history without touching photos.
+- **Settings** — placement mode, motion tuning, confidence threshold, species
+  set (global/regional), species-model region + SD-swappable model files,
+  display language (English/Norwegian), retention cap, stream quality, camera
+  **resolution** (VGA–SXGA) and **contrast**, image **rotation** (0/90/180/270°
+  to correct how the camera is physically mounted), timezone, NTP server, IR
+  LED mode.
+- **Debug tab** — heap/uptime/WiFi health, SD card status, camera sensor info,
+  species-ID model/label counts.
+- **WiFi tab** — network scan + credential save, DHCP or static IP.
+- **OTA Update** — upload a `.bin` from the browser; dual OTA partitions with
+  automatic bootloader rollback if an image fails to boot cleanly.
+- **No cloud, no accounts, no telemetry** — everything above runs entirely on
+  the device and your LAN.
 
 ## Hardware
 
 | Part | Notes |
 |---|---|
-| ESP32-S3 camera board | Primary target — reference unit is a generic "ESP32-S3-CAM" (N16R8, OV2640); XIAO ESP32S3 Sense and Freenove S3 CAM also supported. 8 MB PSRAM required for species ID. |
+| ESP32-S3 camera board | Primary target — reference unit is a generic "ESP32-S3-CAM" (N16R8, OV2640). 8 MB PSRAM required for species ID. |
 | AI-Thinker ESP32-CAM | Works, but without species identification (FSD §3.2) |
 | microSD card, FAT32 | Capture storage + visit log |
 | PIR sensor *(optional)* | First-stage motion trigger |
@@ -39,6 +72,13 @@ Or skip the toolchain entirely: download a prebuilt `.bin` from
 [Releases](../../releases) and flash it (first time via esptool, afterwards
 via the web UI's **OTA Update** tab).
 
+## Species identification setup
+
+No model is baked into the firmware — install one once from microSD (or over
+the network via `POST /model/upload`). See
+[docs/MODEL.md](docs/MODEL.md) for the recommended model, the required int8
+conversion step, and the Northern-Europe region filter.
+
 ## First startup
 
 1. Power the device. It opens a WiFi access point **`BirdBox-Config`**
@@ -52,9 +92,12 @@ To reset WiFi credentials: hold the boot button ≥ 5 s while powering on.
 ## Web UI
 
 **Live** stream (MJPEG, also usable directly at `/stream` in Home
-Assistant/VLC) · **Gallery** of captures with species labels you can correct ·
-**Stats** (visits per day, species leaderboard, activity by hour) ·
-**Settings** · **Debug** · **WiFi** (incl. static IP) · **OTA Update**.
+Assistant/VLC), with a quick rotation toggle · **Gallery** of captures with
+species labels, multi-select delete, and combined photo+stats day wipe ·
+**Stats** (visits per day, species leaderboard, activity by hour, reset
+button) · **Settings** (motion, species ID, camera resolution/contrast/
+rotation, storage, system) · **Debug** · **WiFi** (incl. static IP) ·
+**OTA Update**.
 
 Everything is also available as JSON under `/api/…` — see FSD §6.
 
