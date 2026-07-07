@@ -15,12 +15,23 @@ esp_err_t wifi_start(void);
 bool wifi_is_connected(void);
 bool wifi_in_portal_mode(void);
 
-/* Credential save handshake with web_server.c (portal form and, later, the
- * WiFi tab): the HTTP handler fills g_new_ssid/g_new_pass and sets
+/* Credential save handshake with web_server.c (portal form and WiFi tab):
+ * the HTTP handler fills g_new_ssid/g_new_pass and sets
  * g_wifi_save_requested; wifi.c persists to NVS and reboots. */
 extern volatile bool g_wifi_save_requested;
 extern char          g_new_ssid[64];
 extern char          g_new_pass[64];
+
+/* IP configuration (FSD §4.5, RemoteStart v1.37 design): DHCP by default,
+ * optional static IP. Loaded from NVS at boot, read by GET /api/ipconfig,
+ * overwritten by POST /api/ipconfig/save before g_ipcfg_save_requested
+ * triggers persist + reboot. An invalid saved config falls back to DHCP. */
+extern bool          g_ipcfg_static;
+extern char          g_ipcfg_ip[16];
+extern char          g_ipcfg_mask[16];
+extern char          g_ipcfg_gw[16];
+extern char          g_ipcfg_dns[16];
+extern volatile bool g_ipcfg_save_requested;
 
 /* Diagnostics for the Debug card / /api/sysinfo (FSD §5) */
 extern volatile uint32_t g_wifi_disconnect_count;

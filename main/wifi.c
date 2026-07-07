@@ -54,6 +54,13 @@ char              g_new_pass[64] = {0};
 volatile uint32_t g_wifi_disconnect_count = 0;
 volatile int64_t  g_wifi_last_disc_ts_us  = 0;
 
+bool          g_ipcfg_static = false;
+char          g_ipcfg_ip[16]   = {0};
+char          g_ipcfg_mask[16] = {0};
+char          g_ipcfg_gw[16]   = {0};
+char          g_ipcfg_dns[16]  = {0};
+volatile bool g_ipcfg_save_requested = false;
+
 /* ── NVS helpers ────────────────────────────────────────────────────────── */
 static esp_err_t nvs_load_wifi(char *ssid, char *pass, size_t len)
 {
@@ -85,10 +92,76 @@ static void nvs_erase_wifi(void)
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_key(h, "ssid");
         nvs_erase_key(h, "pass");
+        /* IP config too — the boot-button reset is also the documented
+         * recovery from an unreachable static IP (FSD §4.5) */
+        nvs_erase_key(h, "ipmode");
+        nvs_erase_key(h, "ip");
+        nvs_erase_key(h, "mask");
+        nvs_erase_key(h, "gw");
+        nvs_erase_key(h, "dns");
         nvs_commit(h);
         nvs_close(h);
-        ESP_LOGW(TAG, "WiFi credentials erased");
+        ESP_LOGW(TAG, "WiFi credentials + IP config erased");
     }
+}
+
+/* ── IP configuration (FSD §4.5) ────────────────────────────────────────── */
+static void nvs_load_ipcfg(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t mode = 0;
+    nvs_get_u8(h, "ipmode", &mode);
+    g_ipcfg_static = (mode == 1);
+    size_t l;
+    l = sizeof(g_ipcfg_ip);   if (nvs_get_str(h, "ip",   g_ipcfg_ip,   &l) != ESP_OK) g_ipcfg_ip[0]   = '\0';
+    l = sizeof(g_ipcfg_mask); if (nvs_get_str(h, "mask", g_ipcfg_mask, &l) != ESP_OK) g_ipcfg_mask[0] = '\0';
+    l = sizeof(g_ipcfg_gw);   if (nvs_get_str(h, "gw",   g_ipcfg_gw,   &l) != ESP_OK) g_ipcfg_gw[0]   = '\0';
+    l = sizeof(g_ipcfg_dns);  if (nvs_get_str(h, "dns",  g_ipcfg_dns,  &l) != ESP_OK) g_ipcfg_dns[0]  = '\0';
+    nvs_close(h);
+}
+
+static void nvs_save_ipcfg(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "ipmode", g_ipcfg_static ? 1 : 0);
+        nvs_set_str(h, "ip",   g_ipcfg_ip);
+        nvs_set_str(h, "mask", g_ipcfg_mask);
+        nvs_set_str(h, "gw",   g_ipcfg_gw);
+        nvs_set_str(h, "dns",  g_ipcfg_dns);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "IP config saved (%s)", g_ipcfg_static ? "static" : "DHCP");
+    }
+}
+
+/* Applies a saved static IP to the STA netif before esp_wifi_start(); a
+ * no-op (DHCP keeps running) in DHCP mode or when the saved ip/mask are
+ * missing/invalid — an invalid config must degrade to DHCP, not brick the
+ * device (RemoteStart v1.37). */
+static void apply_static_ip(esp_netif_t *sta_netif)
+{
+    if (!g_ipcfg_static || !g_ipcfg_ip[0] || !g_ipcfg_mask[0]) return;
+
+    esp_netif_ip_info_t ip_info = {0};
+    if (esp_netif_str_to_ip4(g_ipcfg_ip,   &ip_info.ip)      != ESP_OK ||
+        esp_netif_str_to_ip4(g_ipcfg_mask, &ip_info.netmask) != ESP_OK) {
+        ESP_LOGW(TAG, "Saved static IP config invalid — falling back to DHCP");
+        return;
+    }
+    if (g_ipcfg_gw[0]) esp_netif_str_to_ip4(g_ipcfg_gw, &ip_info.gw);
+
+    esp_netif_dhcpc_stop(sta_netif);
+    esp_netif_set_ip_info(sta_netif, &ip_info);
+    if (g_ipcfg_dns[0]) {
+        esp_netif_dns_info_t dns_info = {0};
+        dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+        if (esp_netif_str_to_ip4(g_ipcfg_dns, &dns_info.ip.u_addr.ip4) == ESP_OK)
+            esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info);
+    }
+    ESP_LOGI(TAG, "Static IP applied: %s / %s gw %s", g_ipcfg_ip, g_ipcfg_mask,
+             g_ipcfg_gw[0] ? g_ipcfg_gw : "-");
 }
 
 /* ── Boot-button credential reset (FSD §4.6) ────────────────────────────── */
@@ -165,6 +238,11 @@ static void config_apply_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(500));
             esp_restart();
         }
+        if (g_ipcfg_save_requested) {
+            nvs_save_ipcfg();
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        }
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
@@ -216,7 +294,8 @@ esp_err_t wifi_start(void)
     check_credential_reset();
 
     s_wifi_eg = xEventGroupCreate();
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    nvs_load_ipcfg();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -234,6 +313,7 @@ esp_err_t wifi_start(void)
         strlcpy((char *) sta_cfg.sta.ssid,     ssid, sizeof(sta_cfg.sta.ssid));
         strlcpy((char *) sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+        apply_static_ip(sta_netif);
         ESP_ERROR_CHECK(esp_wifi_start());
 
         /* Modem-sleep power save adds DTIM-interval latency to every HTTP

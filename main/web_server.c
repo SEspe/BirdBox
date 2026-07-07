@@ -14,6 +14,7 @@
 #include "storage.h"
 #include "motion.h"
 #include "capture.h"
+#include "stats.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -128,13 +129,32 @@ static const char INDEX_HTML[] =
 ".gmeta{display:flex;justify-content:space-between;align-items:center;"
 "padding:6px 8px;font-size:.72rem;color:#9ab}"
 ".gmeta button{background:none;border:none;color:#e77;cursor:pointer;font-size:.9rem}"
+"h3.sh{color:#7fc98b;font-size:.9rem;margin:18px 0 6px}"
+".srow{display:flex;align-items:center;gap:8px;font-size:.78rem;margin:3px 0}"
+".srow .lbl{width:84px;color:#9ab;flex-shrink:0}"
+".sbar{background:#3f8a4f;height:14px;border-radius:3px;min-width:2px}"
+".hwrap{display:flex;align-items:flex-end;gap:2px;height:110px}"
+".hcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%}"
+".hfill{background:#3f8a4f;border-radius:2px 2px 0 0}"
+".hlbl{font-size:.6rem;color:#9ab;text-align:center;margin-top:2px;height:12px}"
+"table.st{border-collapse:collapse;font-size:.8rem;width:100%}"
+"table.st th,table.st td{padding:5px 8px;text-align:left;border-bottom:1px solid #2a4d34}"
+"table.st th{color:#7fc98b;font-size:.72rem;text-transform:uppercase}"
+".wl{display:block;margin:10px 0 4px;font-size:.85rem}"
+".wi{width:100%;max-width:280px;padding:8px;background:#1e3826;border:1px solid #444;"
+"border-radius:5px;color:#eee}"
+".wr{font-size:.88rem;margin-right:18px}"
+".wnet{background:#2a4d34;border-radius:5px;padding:8px 12px;margin-bottom:4px;max-width:320px;"
+"cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:.85rem}"
+".wnet:hover{background:#356343}"
 "</style></head><body>"
 "<div class='hdr'><h1>&#128038; " FIRMWARE_NAME "</h1>"
 "<span class='v'>v" FIRMWARE_VERSION "</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"livep\",this)'>Live</button>"
 "<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
-"<button class='tab' onclick='location.href=\"/wifi-setup\"'>WiFi</button>"
+"<button class='tab' onclick='show(\"statsp\",this)'>Stats</button>"
+"<button class='tab' onclick='show(\"wifip\",this)'>WiFi</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
@@ -148,6 +168,40 @@ static const char INDEX_HTML[] =
 "<span class='sts' id='gsts' style='margin:0'></span></div>"
 "<div class='grid' id='grid'></div>"
 "</div>"
+"<div id='statsp' class='pane'>"
+"<h3 class='sh' style='margin-top:0'>Visits per day</h3><div id='sDaily'></div>"
+"<h3 class='sh'>Activity by hour of day</h3><div class='hwrap' id='sHourly'></div>"
+"<h3 class='sh'>Species</h3><table class='st' id='sSpecies'></table>"
+"<div class='sts' id='sTotal'></div>"
+"</div>"
+"<div id='wifip' class='pane'>"
+"<h3 class='sh' style='margin-top:0'>WiFi Network</h3>"
+"<button class='act' style='margin:0 0 6px' onclick='wfScan()'>&#128246; Scan Networks</button>"
+"<div class='sts' id='wfSts'></div><div id='wfNets'></div>"
+"<form action='/wifi-save' method='POST'>"
+"<label class='wl'>SSID</label>"
+"<input class='wi' id='wfSid' name='ssid' placeholder='tap network or type' required>"
+"<label class='wl'>Password</label>"
+"<input class='wi' name='pass' type='password' placeholder='leave blank if open'>"
+"<br><button class='act' type='submit'>Connect &amp; Save</button></form>"
+"<h3 class='sh'>IP Configuration</h3>"
+"<form action='/api/ipconfig/save' method='POST'>"
+"<label class='wr'><input type='radio' name='mode' value='dhcp' id='ipDhcp' checked "
+"onchange='ipModeChange()'> Automatic (DHCP)</label>"
+"<label class='wr'><input type='radio' name='mode' value='static' id='ipStatic' "
+"onchange='ipModeChange()'> Static IP</label>"
+"<div id='ipFields' style='display:none'>"
+"<label class='wl'>IP Address</label><input class='wi' name='ip' id='ipAddr'>"
+"<label class='wl'>Subnet Mask</label><input class='wi' name='mask' id='ipMask'>"
+"<label class='wl'>Gateway</label><input class='wi' name='gw' id='ipGw'>"
+"<label class='wl'>DNS Server</label><input class='wi' name='dns' id='ipDns' placeholder='optional'>"
+"</div>"
+"<p class='sts'>Saving reboots the device to apply. If a static IP is unreachable afterward, "
+"hold the boot button 5 s while powering on to reset WiFi + IP settings.</p>"
+"<button class='act' type='submit'>Save &amp; Apply</button></form>"
+"<h3 class='sh'>Device</h3>"
+"<button class='act' onclick='rebootDev()'>&#128260; Reboot Now</button>"
+"</div>"
 "<script>"
 "function show(id,btn){"
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
@@ -156,7 +210,9 @@ static const char INDEX_HTML[] =
 "var lv=document.getElementById('live');"
 "if(id==='livep'){if(!lv.src.endsWith('/stream'))lv.src='/stream';}"
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
-"if(id==='galleryp')loadDays();}"
+"if(id==='galleryp')loadDays();"
+"if(id==='statsp')loadStats();"
+"if(id==='wifip')ipLoad();}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
 "+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
@@ -188,6 +244,53 @@ static const char INDEX_HTML[] =
 "g.appendChild(div);});});}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
+"function loadStats(){"
+"Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u).then(r=>r.json())))"
+".then(function(res){var d=res[0],sp=res[1],h=res[2];"
+"d.sort((a,b)=>a.d.localeCompare(b.d));d=d.slice(-30);"
+"var m=Math.max(1,...d.map(o=>o.n));"
+"document.getElementById('sDaily').innerHTML=d.length?d.map(o=>"
+"'<div class=srow><span class=lbl>'+o.d+'</span>"
+"<div class=sbar style=\"width:'+Math.round(o.n*80/m)+'%\"></div><span>'+o.n+'</span></div>')"
+".join(''):'<span class=sts>no visits logged yet</span>';"
+"var hm=Math.max(1,...h);"
+"document.getElementById('sHourly').innerHTML=h.map((n,i)=>"
+"'<div class=hcol title=\"'+i+':00 &mdash; '+n+'\">"
+"<div class=hfill style=\"height:'+Math.round(n*100/hm)+'%\"></div>"
+"<div class=hlbl>'+(i%3===0?i:'')+'</div></div>').join('');"
+"sp.sort((a,b)=>b.n-a.n);"
+"document.getElementById('sSpecies').innerHTML="
+"'<tr><th>Species</th><th>Visits</th><th>First seen</th><th>Last seen</th></tr>'+"
+"sp.map(o=>'<tr><td>'+o.s+'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
+"document.getElementById('sTotal').textContent=sp.reduce((a,o)=>a+o.n,0)+' visits total';"
+"});}"
+"var g_liveIp='',g_liveMask='',g_liveGw='';"
+"function ipLoad(){fetch('/api/ipconfig').then(r=>r.json()).then(c=>{"
+"g_liveIp=c.liveIp;g_liveMask=c.liveMask;g_liveGw=c.liveGw;"
+"(c.static?document.getElementById('ipStatic'):document.getElementById('ipDhcp')).checked=true;"
+"if(c.ip)document.getElementById('ipAddr').value=c.ip;"
+"if(c.mask)document.getElementById('ipMask').value=c.mask;"
+"if(c.gw)document.getElementById('ipGw').value=c.gw;"
+"if(c.dns)document.getElementById('ipDns').value=c.dns;"
+"ipModeChange();});}"
+"function ipModeChange(){var st=document.getElementById('ipStatic').checked;"
+"document.getElementById('ipFields').style.display=st?'block':'none';"
+"if(st){"   /* pre-fill empty fields with live values — never clobber typed/saved ones */
+"var a=document.getElementById('ipAddr'),m=document.getElementById('ipMask'),"
+"g=document.getElementById('ipGw');"
+"if(!a.value)a.value=g_liveIp;if(!m.value)m.value=g_liveMask;if(!g.value)g.value=g_liveGw;}}"
+"function wfScan(){var st=document.getElementById('wfSts');"
+"st.textContent='Scanning\\u2026';document.getElementById('wfNets').innerHTML='';"
+"fetch('/api/scan').then(r=>r.json()).then(function(a){"
+"st.textContent=a.length+' network'+(a.length!==1?'s':'')+' found';"
+"var c=document.getElementById('wfNets');"
+"a.forEach(function(n){var d=document.createElement('div');d.className='wnet';"
+"d.innerHTML='<span>'+n.ssid.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span>"
+"<span class=sts style=\"margin:0\">'+n.rssi+'dBm'+(n.auth?' &#128274;':'')+'</span>';"
+"d.onclick=function(){document.getElementById('wfSid').value=n.ssid;};"
+"c.appendChild(d);});}).catch(function(){st.textContent='Scan failed';});}"
+"function rebootDev(){if(confirm('Reboot BirdBox?'))"
+"fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
@@ -558,6 +661,152 @@ static esp_err_t h_captures_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── Stats endpoints (FSD §3.4, §6) — aggregated from the visit logs ────── */
+static esp_err_t h_stats_daily(httpd_req_t *req)
+{
+    stats_t *st = calloc(1, sizeof(stats_t));
+    if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    stats_collect(st);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send_chunk(req, "[", 1);
+    for (int i = 0; i < st->day_count; i++) {
+        char item[64];
+        int len = snprintf(item, sizeof(item), "%s{\"d\":\"%s\",\"n\":%u}",
+                           i ? "," : "", st->day[i], st->day_n[i]);
+        httpd_resp_send_chunk(req, item, len);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    free(st);
+    return ESP_OK;
+}
+
+static esp_err_t h_stats_species(httpd_req_t *req)
+{
+    stats_t *st = calloc(1, sizeof(stats_t));
+    if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    stats_collect(st);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send_chunk(req, "[", 1);
+    for (int i = 0; i < st->sp_count; i++) {
+        char item[144];
+        int len = snprintf(item, sizeof(item),
+                           "%s{\"s\":\"%s\",\"n\":%u,\"first\":\"%s\",\"last\":\"%s\"}",
+                           i ? "," : "", st->sp[i], st->sp_n[i],
+                           st->sp_first[i], st->sp_last[i]);
+        httpd_resp_send_chunk(req, item, len);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    free(st);
+    return ESP_OK;
+}
+
+static esp_err_t h_stats_hourly(httpd_req_t *req)
+{
+    stats_t *st = calloc(1, sizeof(stats_t));
+    if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    stats_collect(st);
+    char buf[192] = "[";
+    for (int h = 0; h < 24; h++) {
+        char n[10];
+        snprintf(n, sizeof(n), "%s%u", h ? "," : "", st->hour[h]);
+        strlcat(buf, n, sizeof(buf));
+    }
+    strlcat(buf, "]", sizeof(buf));
+    free(st);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* ── IP configuration endpoints (FSD §4.5, RemoteStart v1.37/38) ────────── */
+static esp_err_t h_ipcfg_get(httpd_req_t *req)
+{
+    char live_ip[16] = "", live_mask[16] = "", live_gw[16] = "";
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t info;
+    if (netif && esp_netif_get_ip_info(netif, &info) == ESP_OK) {
+        snprintf(live_ip,   sizeof(live_ip),   IPSTR, IP2STR(&info.ip));
+        snprintf(live_mask, sizeof(live_mask), IPSTR, IP2STR(&info.netmask));
+        snprintf(live_gw,   sizeof(live_gw),   IPSTR, IP2STR(&info.gw));
+    }
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+        "{\"static\":%s,\"ip\":\"%s\",\"mask\":\"%s\",\"gw\":\"%s\",\"dns\":\"%s\","
+        "\"liveIp\":\"%s\",\"liveMask\":\"%s\",\"liveGw\":\"%s\"}",
+        g_ipcfg_static ? "true" : "false",
+        g_ipcfg_ip, g_ipcfg_mask, g_ipcfg_gw, g_ipcfg_dns,
+        live_ip, live_mask, live_gw);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* Extracts one form field (key must include the '='), URL-decoded */
+static void form_field(const char *body, const char *key, char *out, size_t olen)
+{
+    out[0] = '\0';
+    const char *p = body;
+    while ((p = strstr(p, key)) != NULL) {
+        if (p == body || p[-1] == '&') break;
+        p++;
+    }
+    if (!p) return;
+    p += strlen(key);
+    const char *end = strchr(p, '&');
+    size_t l = end ? (size_t) (end - p) : strlen(p);
+    if (l >= olen) l = olen - 1;
+    memcpy(out, p, l);
+    out[l] = '\0';
+    url_decode(out);
+}
+
+static esp_err_t h_ipcfg_save(httpd_req_t *req)
+{
+    char body[320] = {0};
+    int  len = MIN(req->content_len, (int) sizeof(body) - 1);
+    httpd_req_recv(req, body, len);
+
+    char mode[12], ip[16], mask[16], gw[16], dns[16];
+    form_field(body, "mode=", mode, sizeof(mode));
+    form_field(body, "ip=",   ip,   sizeof(ip));
+    form_field(body, "mask=", mask, sizeof(mask));
+    form_field(body, "gw=",   gw,   sizeof(gw));
+    form_field(body, "dns=",  dns,  sizeof(dns));
+
+    bool is_static = (strcmp(mode, "static") == 0);
+    if (is_static) {
+        /* Server-side IPv4 validation (RemoteStart v1.37): a syntactically
+         * bad static IP would still associate to the AP but be unreachable
+         * over IP — indistinguishable from a hang. */
+        esp_ip4_addr_t a;
+        if (esp_netif_str_to_ip4(ip, &a) != ESP_OK ||
+            esp_netif_str_to_ip4(mask, &a) != ESP_OK ||
+            (gw[0]  && esp_netif_str_to_ip4(gw,  &a) != ESP_OK) ||
+            (dns[0] && esp_netif_str_to_ip4(dns, &a) != ESP_OK)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid IPv4 address");
+            return ESP_OK;
+        }
+    }
+
+    g_ipcfg_static = is_static;
+    strlcpy(g_ipcfg_ip,   ip,   sizeof(g_ipcfg_ip));
+    strlcpy(g_ipcfg_mask, mask, sizeof(g_ipcfg_mask));
+    strlcpy(g_ipcfg_gw,   gw,   sizeof(g_ipcfg_gw));
+    strlcpy(g_ipcfg_dns,  dns,  sizeof(g_ipcfg_dns));
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+        "<!DOCTYPE html><html><body style='font-family:Arial;background:#16281c;color:#eee;"
+        "display:flex;justify-content:center;align-items:center;min-height:100vh'>"
+        "<div style='text-align:center'><h2 style='color:#7fc98b'>Saved!</h2>"
+        "<p>Applying IP configuration and rebooting…</p></div></body></html>");
+
+    g_ipcfg_save_requested = true;
+    return ESP_OK;
+}
+
 /* GET /api/status — minimal for now, grows with the subsystems (FSD §6) */
 static esp_err_t h_status(httpd_req_t *req)
 {
@@ -612,7 +861,7 @@ esp_err_t web_server_start(void)
     if (server) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 16;     /* headroom above route count — an exact-fit cap
+    cfg.max_uri_handlers = 24;     /* headroom above route count — an exact-fit cap
                                       silently drops later registrations (RemoteStart v1.27) */
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
@@ -634,6 +883,11 @@ esp_err_t web_server_start(void)
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
+        { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
+        { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
+        { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
+        { .uri = "/api/ipconfig",      .method = HTTP_GET,  .handler = h_ipcfg_get  },
+        { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },

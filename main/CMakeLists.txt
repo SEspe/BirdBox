@@ -9,6 +9,7 @@ idf_component_register(
         "classify.c"
         "settings.c"
         "storage.c"
+        "stats.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
