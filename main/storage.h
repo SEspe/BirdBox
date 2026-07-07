@@ -41,3 +41,8 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
 /* Appends one CSV row to the monthly visit log (/sd/log/visits-YYYY-MM.csv),
  * writing the header line first when the file is new (FSD §3.4). */
 esp_err_t storage_append_visit_log(const char *line);
+
+/* The single-writer lock (FSD §7) for callers doing their own SD writes
+ * (model upload) — capture/log writes take it internally. */
+void storage_write_lock(void);
+void storage_write_unlock(void);

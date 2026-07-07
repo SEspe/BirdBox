@@ -85,6 +85,9 @@ void storage_get_card_name(char *out, size_t out_len)
 
 bool storage_last_write_ok(void) { return s_last_write_ok; }
 
+void storage_write_lock(void)   { xSemaphoreTake(s_write_mtx, portMAX_DELAY); }
+void storage_write_unlock(void) { xSemaphoreGive(s_write_mtx); }
+
 /* ── Retention pruning (FSD §3.1, §7) ────────────────────────────────────
  * Deletes the oldest capture day-folder whole, one at a time, until SD
  * usage drops back under the configured cap (default 80%) or nothing

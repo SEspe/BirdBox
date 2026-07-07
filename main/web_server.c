@@ -311,6 +311,7 @@ static const char INDEX_HTML[] =
 "+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
 "+' | motion '+(s.motion?'ACTIVE':'idle')+' | events '+s.events;"
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
+"if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 "function snap(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
@@ -455,9 +456,10 @@ static const char INDEX_HTML[] =
 "$g('dCam').innerHTML=d.camPresent?"
 "drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
 "drow('JPEG quality',d.camQuality):drow('Status','no camera','bad');"
-"$g('dCls').innerHTML=d.lastInferenceMs<0?"
-"drow('Status','not available yet (arrives with FSD \\u00a73.2)'):"
-"drow('Last inference',d.lastInferenceMs+' ms');"
+"$g('dCls').innerHTML=d.clsModel?"
+"drow('Model',d.clsModel)+drow('Labels',d.clsLabels+' species')+"
+"drow('Last inference',d.lastInferenceMs<0?'none yet':d.lastInferenceMs+' ms'):"
+"drow('Status','no model loaded \\u2014 upload a .tflite + .txt to /sd/model','bad');"
 "}).catch(()=>{});}"
 "function otaUpload(){"
 "var f=$g('otaFile').files[0];var p=$g('otaProg');"
@@ -1003,7 +1005,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.timezone, g_settings.region, g_settings.ntp_server);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
-     * users swap regions by dropping a file on the card, no reflash). */
+     * users swap regions by dropping a file on the card or POSTing to
+     * /model/upload, no reflash). Label/CSV files are filtered out. */
     if (storage_sd_present()) {
         DIR *d = opendir(STORAGE_MOUNT_POINT "/model");
         if (d) {
@@ -1011,6 +1014,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
             int i = 0;
             while ((e = readdir(d)) != NULL) {
                 if (e->d_type != DT_REG) continue;
+                const char *dot = strrchr(e->d_name, '.');
+                if (!dot || strcasecmp(dot, ".tflite") != 0) continue;
                 n = snprintf(buf, sizeof(buf), "%s\"%s\"", i++ ? "," : "", e->d_name);
                 httpd_resp_send_chunk(req, buf, n);
             }
@@ -1093,12 +1098,12 @@ static esp_err_t h_status(httpd_req_t *req)
     uint64_t sd_total, sd_free;
     storage_get_info(&sd_total, &sd_free);
 
-    char buf[448];
+    char buf[560];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
         "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
-        "\"motion\":%s,\"events\":%lu,\"lastEvent\":\"%s\"}",
+        "\"motion\":%s,\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -1108,7 +1113,8 @@ static esp_err_t h_status(httpd_req_t *req)
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
         motion_active() ? "true" : "false",
         (unsigned long) capture_event_count(),
-        capture_last_event_path());
+        capture_last_event_path(),
+        classify_last_species());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -1135,14 +1141,14 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[512];
+    char buf[640];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"sdWriteOk\":%s,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
-        "\"lastInferenceMs\":%ld}",
+        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -1155,7 +1161,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         storage_last_write_ok() ? "true" : "false",
         camera_available() ? "true" : "false", camera_get_pid(),
         CAMERA_FRAME_SIZE_STR, g_settings.stream_quality,
-        (long) classify_last_duration_ms());
+        (long) classify_last_duration_ms(),
+        classify_model_name(), classify_label_count());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -1222,6 +1229,133 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/classify — classify a posted JPEG right now (FSD §3.2/§6).
+ * Lets users sanity-check their model without waiting for a bird, and is
+ * how the classifier is verified end-to-end. Blocks this httpd thread for
+ * the full decode + inference (~seconds) — acceptable for a manual op. */
+#define CLASSIFY_MAX_BODY (300 * 1024)
+static esp_err_t h_classify_run(httpd_req_t *req)
+{
+    if (!classify_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no classifier (no model on SD?)\"}");
+        return ESP_OK;
+    }
+    if (req->content_len <= 0 || req->content_len > CLASSIFY_MAX_BODY) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized JPEG");
+        return ESP_OK;
+    }
+    uint8_t *body = heap_caps_malloc(req->content_len,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        return ESP_OK;
+    }
+    int remaining = req->content_len, timeout_retries = 0;
+    bool ok = true;
+    while (remaining > 0) {
+        int got = httpd_req_recv(req, (char *) body + (req->content_len - remaining),
+                                 remaining);
+        if (got <= 0) {
+            if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
+            ok = false;
+            break;
+        }
+        timeout_retries = 0;
+        remaining -= got;
+    }
+
+    classify_result_t r;
+    esp_err_t err = ok ? classify_run_sync(body, req->content_len, &r) : ESP_FAIL;
+    free(body);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
+        return ESP_OK;
+    }
+
+    char buf[448];
+    snprintf(buf, sizeof(buf),
+        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
+        "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
+        "{\"label\":\"%s\",\"pct\":%u}]}",
+        r.species, r.confidence_pct, (long) r.duration_ms,
+        r.top_label[0], r.top_pct[0], r.top_label[1], r.top_pct[1],
+        r.top_label[2], r.top_pct[2]);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /model/upload?name=<file> — write a model/labels file into /sd/model
+ * (FSD §3.2 model swap without pulling the card). Held under the §7 write
+ * lock for the whole stream, so a motion capture during the ~seconds-long
+ * upload waits rather than interleaving. Takes effect on next boot. */
+static esp_err_t h_model_upload(httpd_req_t *req)
+{
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no SD card");
+        return ESP_OK;
+    }
+    char query[80] = {0}, name[48] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "name", name, sizeof(name));
+    url_decode(name);
+    const char *dot = strrchr(name, '.');
+    if (!name[0] || strstr(name, "..") || strchr(name, '/') || strchr(name, '\\') ||
+        !dot || (strcasecmp(dot, ".tflite") && strcasecmp(dot, ".txt") &&
+                 strcasecmp(dot, ".csv"))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "name must be a plain .tflite/.txt/.csv filename");
+        return ESP_OK;
+    }
+    if (req->content_len <= 0 || req->content_len > 6 * 1024 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized upload");
+        return ESP_OK;
+    }
+
+    char path[96];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/model/%.48s", name);
+
+    storage_write_lock();
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        storage_write_unlock();
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed");
+        return ESP_OK;
+    }
+    char buf[2048];
+    int remaining = req->content_len, timeout_retries = 0;
+    bool ok = true;
+    while (remaining > 0) {
+        int got = httpd_req_recv(req, buf, MIN(remaining, (int) sizeof(buf)));
+        if (got <= 0) {
+            if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
+            ok = false;
+            break;
+        }
+        timeout_retries = 0;
+        if (fwrite(buf, 1, got, f) != (size_t) got) { ok = false; break; }
+        remaining -= got;
+    }
+    fclose(f);
+    if (!ok) unlink(path);   /* no half-written model left as next boot's pick */
+    storage_write_unlock();
+
+    if (!ok) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "upload failed");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "model file uploaded: %s (%d bytes)", path, req->content_len);
+    char resp[128];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":true,\"file\":\"%s\",\"bytes\":%d,\"note\":\"reboot to load\"}",
+             name, req->content_len);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
 /* POST /api/reboot */
 static esp_err_t h_reboot(httpd_req_t *req)
 {
@@ -1239,7 +1373,7 @@ esp_err_t web_server_start(void)
     if (server) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 24;     /* headroom above route count — an exact-fit cap
+    cfg.max_uri_handlers = 28;     /* headroom above route count — an exact-fit cap
                                       silently drops later registrations (RemoteStart v1.27) */
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
@@ -1273,6 +1407,8 @@ esp_err_t web_server_start(void)
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
+        { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
+        { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(server, &routes[i]);

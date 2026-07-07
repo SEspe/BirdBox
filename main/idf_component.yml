@@ -1,3 +1,5 @@
 dependencies:
   idf: ">=5.0"
   espressif/esp32-camera: "^2.0.0"
+  # TFLite-Micro with esp-nn S3 acceleration — species classifier (FSD §3.2)
+  espressif/esp-tflite-micro: "*"
