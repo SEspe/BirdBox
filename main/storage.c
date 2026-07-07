@@ -283,3 +283,52 @@ int storage_reset_stats(void)
     ESP_LOGI(TAG, "stats reset: deleted %d visit-log file(s)", deleted);
     return deleted;
 }
+
+int storage_reset_stats_day(const char *date)
+{
+    if (!s_sd_present || !date || !date[0]) return 0;
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    int removed = 0;
+
+    /* Unsynced captures all live in one file — wipe it whole. */
+    if (strcmp(date, "no-date") == 0) {
+        if (unlink(STORAGE_MOUNT_POINT "/log/visits-no-date.csv") == 0) removed = 1;
+        xSemaphoreGive(s_write_mtx);
+        ESP_LOGI(TAG, "stats reset (no-date): removed unsynced log");
+        return removed;
+    }
+
+    /* Real date -> filter that month's CSV, dropping rows whose timestamp
+     * (first field, "YYYY-MM-DDT...") starts with this day. */
+    char path[64], tmp[72];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/wipe.tmp");
+
+    FILE *in = fopen(path, "r");
+    if (!in) { xSemaphoreGive(s_write_mtx); return 0; }
+    FILE *out = fopen(tmp, "w");
+    if (!out) { fclose(in); xSemaphoreGive(s_write_mtx);
+        ESP_LOGE(TAG, "stats day reset: temp open failed"); return 0; }
+
+    char line[224];
+    bool header = true;
+    int kept = 0;
+    while (fgets(line, sizeof(line), in)) {
+        if (header) { fputs(line, out); header = false; continue; }
+        if (line[0] == '\0' || line[0] == '\n') continue;
+        if (strncmp(line, date, 10) == 0) { removed++; continue; }  /* this day */
+        fputs(line, out);
+        kept++;
+    }
+    fclose(in);
+    fclose(out);
+
+    unlink(path);
+    if (kept > 0) rename(tmp, path);   /* else the month is now empty — drop it */
+    else          unlink(tmp);
+    xSemaphoreGive(s_write_mtx);
+
+    ESP_LOGI(TAG, "stats reset (%s): removed %d row(s), kept %d", date, removed, kept);
+    return removed;
+}

@@ -47,6 +47,12 @@ esp_err_t storage_append_visit_log(const char *line);
  * Returns the number of files deleted (0 if none/no SD). */
 int storage_reset_stats(void);
 
+/* Removes just one capture day's visit-log rows (FSD §3.4): for a real
+ * "YYYY-MM-DD" date it rewrites that month's CSV keeping the header + every
+ * row that isn't that day; for "no-date" it deletes the unsynced log. Used by
+ * the Gallery "wipe day" action. Returns rows removed (0 if none/no SD). */
+int storage_reset_stats_day(const char *date);
+
 /* The single-writer lock (FSD §7) for callers doing their own SD writes
  * (model upload) — capture/log writes take it internally. */
 void storage_write_lock(void);

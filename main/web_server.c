@@ -199,6 +199,7 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin:0' onclick='gSelAll()'>&#9745; Select all</button>"
 "<button class='act' style='margin:0' onclick='gDelSel()'>&#10060; Delete selected</button>"
 "<button class='act' style='margin:0;background:#8a3f3f' onclick='gDelAll()'>&#128465; Delete all</button>"
+"<button class='act' style='margin:0;background:#9e3030' onclick='gWipeDay()'>&#9888; Wipe day (photos+stats)</button>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
@@ -423,6 +424,14 @@ static const char INDEX_HTML[] =
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+'&all=1'})"
 ".then(r=>r.json()).then(()=>loadDays()).catch(()=>alert('Delete failed'));}"
+"function gWipeDay(){var d=$g('day').value;if(!d)return;"
+"if(!confirm('Wipe '+d+' completely? This deletes every photo AND removes that "
+"day\\u2019s entries from the statistics/visit log. Cannot be undone.'))return;"
+"fetch('/api/captures/delete',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&all=1&stats=1'})"
+".then(r=>r.json()).then(o=>{alert('Removed '+(o.deleted||0)+' photo(s) and '"
+"+(o.statsRemoved||0)+' log row(s).');loadDays();}).catch(()=>alert('Wipe failed'));}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
 "function loadStats(){"
@@ -1035,8 +1044,9 @@ static void form_field(const char *body, const char *key, char *out, size_t olen
 
 /* POST /api/captures/delete — Gallery bulk cleanup (§3.4). Body (urlencoded):
  * date=YYYY-MM-DD and either all=1 (delete the whole day-folder) or
- * files=a.jpg,b.jpg,... (delete just those). Deletes photos only; the visit
- * log / statistics are separate (Stats tab → Reset Statistics). */
+ * files=a.jpg,b.jpg,... (delete just those). Photos only, unless stats=1 is
+ * also set (the "wipe day" action), which additionally removes that day's
+ * visit-log rows. */
 static esp_err_t h_captures_delete_batch(httpd_req_t *req)
 {
     int cap = MIN(req->content_len, 16384);
@@ -1046,9 +1056,10 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
     if (rlen <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_OK; }
     body[rlen] = '\0';
 
-    char date[36] = {0}, all[4] = {0};
+    char date[36] = {0}, all[4] = {0}, stats[4] = {0};
     form_field(body, "date=", date, sizeof(date));
     form_field(body, "all=",  all,  sizeof(all));
+    form_field(body, "stats=", stats, sizeof(stats));
     bool bad = !date[0] || strstr(date, "..");
     for (const char *c = date; *c && !bad; c++)
         if (!isalnum((unsigned char) *c) && *c != '-') bad = true;
@@ -1097,11 +1108,16 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
         }
     }
     storage_write_unlock();
+
+    int stats_removed = 0;
+    if (stats[0] == '1') stats_removed = storage_reset_stats_day(date);
     free(body);
 
-    ESP_LOGI(TAG, "gallery delete: %d file(s) from %s", deleted, date);
-    char resp[48];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"deleted\":%d}", deleted);
+    ESP_LOGI(TAG, "gallery delete: %d file(s), %d stat row(s) from %s",
+             deleted, stats_removed, date);
+    char resp[72];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"deleted\":%d,\"statsRemoved\":%d}",
+             deleted, stats_removed);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
