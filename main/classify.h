@@ -52,6 +52,8 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len,
 int32_t     classify_last_duration_ms(void);   /* -1 = none yet */
 const char *classify_model_name(void);         /* "" when no model loaded */
 int         classify_label_count(void);
+int         classify_region_matches(void);     /* loaded labels in the N-Euro
+                                                  set; 0 = region filter N/A */
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
 

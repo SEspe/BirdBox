@@ -24,6 +24,9 @@ typedef struct {
     uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
     uint8_t  ir_led_mode;           /* 0 off, 1 auto */
     rotation_t rotation;            /* mount-correction rotation, default ROTATE_0 */
+    uint8_t  region_filter;         /* 0 = global model as-is, 1 = restrict IDs to
+                                       the Northern-European species set (FSD §3.2.1),
+                                       default 0 */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
     char     region[32];            /* species-model region: filename under
                                        /sd/model (FSD §3.2), "" = auto */

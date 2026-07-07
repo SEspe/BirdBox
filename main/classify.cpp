@@ -17,6 +17,7 @@
  * Everything heavyweight (model ~3.5 MB, tensor arena 3 MB, decode buffer)
  * lives in PSRAM; internal RAM is untouched beyond the task stack. */
 #include "classify.h"
+#include "species_i18n.h"   /* has its own extern "C" guard */
 extern "C" {          /* C headers without their own __cplusplus guards */
 #include "settings.h"
 #include "storage.h"
@@ -48,6 +49,8 @@ static const char *TAG = "classify";
 static bool             s_available = false;
 static char             s_model_name[48] = "";
 static int              s_label_count = 0;
+static int              s_region_matches = 0; /* labels whose binomial is in the
+                                                 Northern-European set (§3.2.1) */
 static char           **s_labels = NULL;      /* pointers into s_label_buf */
 static char            *s_label_buf = NULL;
 static volatile int32_t s_last_ms = -1;
@@ -127,6 +130,24 @@ static bool pick_model_file(char *name, size_t name_len)
     return found;
 }
 
+/* Region filter (§3.2.1): a label is allowed when it carries no scientific
+ * binomial (e.g. the "background" guard class — never hidden) or when its
+ * binomial is in the Northern-European set. Callers apply this only when
+ * g_settings.region_filter is on AND the loaded model actually matches the
+ * set (s_region_matches > 0), so an unrelated model is never over-filtered. */
+static bool label_in_region(const char *label)
+{
+    const char *open = strrchr(label, '(');
+    if (!open) return true;               /* no binomial to place → keep */
+    size_t llen = (size_t) (open - label);
+    while (llen > 0 && label[llen - 1] == ' ') llen--;
+    char latin[64];
+    if (llen >= sizeof(latin)) llen = sizeof(latin) - 1;
+    memcpy(latin, label, llen);
+    latin[llen] = '\0';
+    return species_in_region(latin);
+}
+
 /* Labels file: "<model>.txt" beside the model (one label per line, index-
  * aligned with the model's output tensor), else labels.txt. */
 static bool load_labels(const char *model_name)
@@ -159,6 +180,16 @@ static bool load_labels(const char *model_name)
         if (cr) *cr = '\0';
         if (tok[0]) s_labels[s_label_count++] = tok;
     }
+
+    /* Count how many labels carry an in-region binomial, so the region filter
+     * can auto-disable itself for a model that isn't the expected set (§3.2.1)
+     * rather than silently classifying every frame as the guard class. */
+    s_region_matches = 0;
+    for (int i = 0; i < s_label_count; i++)
+        if (strrchr(s_labels[i], '(') && label_in_region(s_labels[i]))
+            s_region_matches++;
+    ESP_LOGI(TAG, "%d/%d labels are in the Northern-European set", s_region_matches, s_label_count);
+
     return s_label_count > 0;
 }
 
@@ -314,8 +345,16 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
     int n = ot->dims->data[1];
     if (n > s_label_count) n = s_label_count;
 
+    /* Region filter (§3.2.1): restrict the ranking to Northern-European species
+     * (plus no-binomial guard labels). Confidence is NOT renormalized — an
+     * out-of-region animal simply loses its winning class and the best in-region
+     * score falls below the threshold, landing as "Unidentified bird". Skipped
+     * when the loaded model doesn't match the set, so it can't blank everything. */
+    bool rf = g_settings.region_filter && s_region_matches > 0;
+
     int best[3] = { -1, -1, -1 };
     for (int i = 0; i < n; i++) {
+        if (rf && !label_in_region(s_labels[i])) continue;
         for (int k = 0; k < 3; k++) {
             if (best[k] < 0 || scores[i] > scores[best[k]]) {
                 for (int m = 2; m > k; m--) best[m] = best[m - 1];
@@ -493,5 +532,6 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len, classify_result_t *
 int32_t     classify_last_duration_ms(void) { return s_last_ms; }
 const char *classify_model_name(void)       { return s_model_name; }
 int         classify_label_count(void)      { return s_label_count; }
+int         classify_region_matches(void)   { return s_region_matches; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }

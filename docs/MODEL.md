@@ -82,6 +82,26 @@ Any TFLite image classifier works if it is:
 Labels of the form `Scientific name (Common Name)` display as the common
 name; anything else is shown as-is.
 
+## Northern-Europe region filter
+
+The stock iNaturalist model is **global** (965 species), so for anything it
+isn't confident about it can surface a geographically absurd guess (a North
+American species at a Norwegian feeder). **Settings → Species set → Northern
+Europe only** fixes this without a different model: at inference the classifier
+ignores every class whose scientific name isn't in the ~80-species
+Northern-European set defined in `main/species_i18n.c` (the same curated list
+used for Norwegian names). The winning class can then only be a regional
+species; an out-of-region animal loses its class and its best in-region score
+falls below the confidence threshold, so it's logged as *Unidentified bird*
+rather than a wrong species.
+
+This is a decision-layer restriction, not a retrained model — inference speed
+and in-region accuracy are unchanged; it only removes out-of-region false
+positives. It applies only to models that actually match the set: the Debug
+tab's Species ID card shows how many loaded labels are in the Northern-European
+set, and the filter auto-disables (no effect) for a model with zero matches, so
+selecting it alongside some other regional model can't blank out every result.
+
 ## Display language
 
 Settings → **Species name language** switches the common name between

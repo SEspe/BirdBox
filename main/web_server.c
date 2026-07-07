@@ -223,6 +223,14 @@ static const char INDEX_HTML[] =
 "<div class='sts' id='stModels'></div>"
 "<label class='wl'>Confidence threshold (%)</label>"
 "<input class='wi' type='number' min='30' max='95' id='stConf'>"
+"<label class='wl'>Species set</label>"
+"<select class='wi' id='stRfilt'>"
+"<option value='0'>Global (full model)</option>"
+"<option value='1'>Northern Europe only</option></select>"
+"<p class='sts' style='margin-top:2px'>Northern Europe restricts IDs to ~80 regional "
+"garden/feeder species, so the global model can't return an out-of-region bird "
+"(e.g. an American species) by mistake. Needs the default iNaturalist model; ignored "
+"for other models.</p>"
 "<label class='wl'>Species name language</label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
@@ -445,6 +453,7 @@ static const char INDEX_HTML[] =
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
+"$g('stRfilt').value=c.rfilt;"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -478,6 +487,7 @@ static const char INDEX_HTML[] =
 "+'&sens='+$g('stSens').value+'&ccnt='+$g('stCcnt').value"
 "+'&civl='+$g('stCivl').value+'&cool='+$g('stCool').value"
 "+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
+"+'&rfilt='+$g('stRfilt').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
 "+'&rot='+$g('stRot').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
@@ -514,6 +524,8 @@ static const char INDEX_HTML[] =
 "drow('JPEG quality',d.camQuality):drow('Status','no camera','bad');"
 "$g('dCls').innerHTML=d.clsModel?"
 "drow('Model',d.clsModel)+drow('Labels',d.clsLabels+' species')+"
+"drow('Northern-Europe species',(d.clsRegion||0)+' of '+d.clsLabels"
+"+((d.clsRegion||0)?'':' \\u2014 region filter N/A for this model'))+"
 "drow('Last inference',d.lastInferenceMs<0?'none yet':d.lastInferenceMs+' ms'):"
 "drow('Status','no model loaded \\u2014 upload a .tflite + .txt to /sd/model','bad');"
 "}).catch(()=>{});}"
@@ -1067,12 +1079,13 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     char buf[448];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
-        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"tz\":\"%s\","
+        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
         g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
+        (unsigned) g_settings.region_filter,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang);
     httpd_resp_send_chunk(req, buf, n);
@@ -1132,6 +1145,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.stream_quality      = field_num(body, "qual=", 5,   40,    g_settings.stream_quality);
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
     g_settings.rotation  = (rotation_t) field_num(body, "rot=", 0,  3,    g_settings.rotation);
+    g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
     /* region becomes a /sd/model/<region> path when §3.2 lands — reject
@@ -1227,7 +1241,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"sdWriteOk\":%s,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
-        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d}",
+        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -1241,7 +1255,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_available() ? "true" : "false", camera_get_pid(),
         CAMERA_FRAME_SIZE_STR, g_settings.stream_quality,
         (long) classify_last_duration_ms(),
-        classify_model_name(), classify_label_count());
+        classify_model_name(), classify_label_count(), classify_region_matches());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;

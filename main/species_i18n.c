@@ -98,6 +98,14 @@ static const no_name_t NO_NAMES[] = {
 };
 #define NO_NAMES_N (sizeof(NO_NAMES) / sizeof(NO_NAMES[0]))
 
+bool species_in_region(const char *latin)
+{
+    if (!latin || !latin[0]) return false;
+    for (size_t i = 0; i < NO_NAMES_N; i++)
+        if (strcmp(NO_NAMES[i].latin, latin) == 0) return true;
+    return false;
+}
+
 static const char *no_sentinel(const char *name_en)
 {
     if (strcmp(name_en, "no bird") == 0)           return "ingen fugl";
