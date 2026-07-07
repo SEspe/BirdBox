@@ -254,6 +254,19 @@ static const char INDEX_HTML[] =
 "<option value='8'>Best</option><option value='10'>High</option>"
 "<option value='12'>Standard</option><option value='18'>Low</option>"
 "<option value='25'>Lowest</option></select>"
+"<label class='wl'>Resolution (higher = more detail, needs reboot)</label>"
+"<select class='wi' id='stRes'>"
+"<option value='0'>VGA 640&times;480</option><option value='1'>SVGA 800&times;600</option>"
+"<option value='2'>XGA 1024&times;768</option><option value='3'>HD 1280&times;720</option>"
+"<option value='4'>SXGA 1280&times;1024</option>"
+"</select>"
+"<label class='wl'>Contrast (the OV2640 has no sharpness control)</label>"
+"<select class='wi' id='stContrast'>"
+"<option value='-2'>-2 (soft)</option><option value='-1'>-1</option>"
+"<option value='0'>0 (default)</option><option value='1'>+1</option>"
+"<option value='2'>+2 (punchy)</option></select>"
+"<p class='sts' style='margin-top:2px'>Resolution takes effect after a reboot; contrast "
+"applies immediately. Higher resolution uses more memory and slows species ID.</p>"
 "<label class='wl'>Image rotation (correct mount vs. subject)</label>"
 "<select class='wi' id='stRot'>"
 "<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
@@ -491,6 +504,7 @@ static const char INDEX_HTML[] =
 "function rebootDev(){if(confirm('Reboot BirdBox?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "function $g(i){return document.getElementById(i)}"
+"var g_savedRes=1;"
 "function stSensShow(){$g('stSensV').textContent=$g('stSens').value;}"
 "function stLoad(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
 "(c.mode===1?$g('stFeed'):$g('stNest')).checked=true;"
@@ -500,6 +514,7 @@ static const char INDEX_HTML[] =
 "$g('stLang').value=c.lang;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
+"$g('stRes').value=c.res;$g('stContrast').value=c.contrast;g_savedRes=c.res;"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -535,7 +550,8 @@ static const char INDEX_HTML[] =
 "+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
 "+'&rfilt='+$g('stRfilt').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
-"+'&rot='+$g('stRot').value"
+"+'&rot='+$g('stRot').value+'&res='+$g('stRes').value"
+"+'&contrast='+$g('stContrast').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&region='+encodeURIComponent($g('stRegion').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
@@ -545,6 +561,9 @@ static const char INDEX_HTML[] =
 ".then(r=>r.json()).then(function(o){"
 "$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
 "$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
+"if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
+"if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
+"fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
 "function drow(k,v,cls){return '<div class=drow><span>'+k+'</span>"
@@ -1291,13 +1310,15 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     char buf[448];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
-        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,\"tz\":\"%s\","
+        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
+        "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
         g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
         (unsigned) g_settings.region_filter,
+        (unsigned) g_settings.resolution, (int) g_settings.contrast,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang);
     httpd_resp_send_chunk(req, buf, n);
@@ -1358,6 +1379,8 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
     g_settings.rotation  = (rotation_t) field_num(body, "rot=", 0,  3,    g_settings.rotation);
     g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
+    g_settings.resolution          = field_num(body, "res=",  0,   4,    g_settings.resolution);
+    g_settings.contrast            = field_num(body, "contrast=", -2, 2, g_settings.contrast);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
     /* region becomes a /sd/model/<region> path when §3.2 lands — reject
@@ -1376,6 +1399,8 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     tzset();
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
     camera_set_rotation(g_settings.rotation);        /* no-op without camera */
+    camera_set_contrast(g_settings.contrast);        /* no-op without camera */
+    /* resolution is applied at camera_init — needs a reboot (FSD §5) */
     wifi_restart_sntp();                             /* no-op before first connect */
 
     httpd_resp_set_type(req, "application/json");
@@ -1465,7 +1490,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
         storage_last_write_ok() ? "true" : "false",
         camera_available() ? "true" : "false", camera_get_pid(),
-        CAMERA_FRAME_SIZE_STR, g_settings.stream_quality,
+        camera_framesize_str(), g_settings.stream_quality,
         (long) classify_last_duration_ms(),
         classify_model_name(), classify_label_count(), classify_region_matches());
     httpd_resp_set_type(req, "application/json");

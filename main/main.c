@@ -69,11 +69,14 @@ void app_main(void)
 
     ESP_ERROR_CHECK(settings_load());
     ESP_ERROR_CHECK(storage_init());     /* device runs without SD (FSD §7) */
+    /* Classifier before camera: the model + arena (~5.5 MB PSRAM) reserve
+     * first so a high camera resolution can't starve species ID — camera_init
+     * then steps its resolution down to whatever PSRAM is left (FSD §5). */
+    ESP_ERROR_CHECK(classify_init());
     if (camera_init() != ESP_OK)         /* degrade, don't brick: UI shows "no camera" */
         ESP_LOGE(TAG, "continuing without camera");
     ESP_ERROR_CHECK(wifi_start());       /* portal on first boot (FSD §4) */
     ESP_ERROR_CHECK(web_server_start());
-    ESP_ERROR_CHECK(classify_init());
     ESP_ERROR_CHECK(motion_start());
     xTaskCreate(housekeeping_task, "housekeep", 2048, NULL, 2, NULL);
 

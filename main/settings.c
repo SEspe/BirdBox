@@ -21,6 +21,8 @@ settings_t g_settings = {
     .ir_led_mode        = 0,
     .rotation           = ROTATE_0,
     .region_filter      = 0,
+    .resolution         = 1,   /* SVGA — matches camera.c RES table index */
+    .contrast           = 0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
     .region             = "",
     .ntp_server         = "pool.ntp.org",
@@ -48,6 +50,9 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_ir",   &u8)  == ESP_OK) g_settings.ir_led_mode = u8;
     if (nvs_get_u8 (h, "s_rot",  &u8)  == ESP_OK) g_settings.rotation = (rotation_t) u8;
     if (nvs_get_u8 (h, "s_rfilt",&u8)  == ESP_OK) g_settings.region_filter = u8;
+    if (nvs_get_u8 (h, "s_res",  &u8)  == ESP_OK) g_settings.resolution = u8;
+    int8_t i8;
+    if (nvs_get_i8 (h, "s_ctr",  &i8)  == ESP_OK) g_settings.contrast = i8;
     l = sizeof(g_settings.timezone);
     nvs_get_str(h, "s_tz", g_settings.timezone, &l);
     l = sizeof(g_settings.region);
@@ -81,6 +86,8 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_ir",   g_settings.ir_led_mode);
     nvs_set_u8 (h, "s_rot",  (uint8_t) g_settings.rotation);
     nvs_set_u8 (h, "s_rfilt", g_settings.region_filter);
+    nvs_set_u8 (h, "s_res",  g_settings.resolution);
+    nvs_set_i8 (h, "s_ctr",  g_settings.contrast);
     nvs_set_str(h, "s_tz",   g_settings.timezone);
     nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);

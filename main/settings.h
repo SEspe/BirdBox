@@ -27,6 +27,11 @@ typedef struct {
     uint8_t  region_filter;         /* 0 = global model as-is, 1 = restrict IDs to
                                        the Northern-European species set (FSD §3.2.1),
                                        default 0 */
+    uint8_t  resolution;            /* camera frame-size index into camera.c's
+                                       RES table; applied at camera_init, so a
+                                       change needs a reboot. default = SVGA */
+    int8_t   contrast;              /* OV2640 contrast -2..+2 (the sensor has no
+                                       sharpness control); applied live. default 0 */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
     char     region[32];            /* species-model region: filename under
                                        /sd/model (FSD §3.2), "" = auto */
