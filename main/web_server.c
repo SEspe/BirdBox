@@ -941,10 +941,12 @@ static esp_err_t h_time_set(httpd_req_t *req)
     if (!already && epoch > 1672531200LL) {   /* sane: after 2023-01-01 */
         struct timeval tv = { .tv_sec = (time_t) epoch, .tv_usec = 0 };
         settimeofday(&tv, NULL);
+        setenv("TZ", g_settings.timezone, 1);   /* re-apply after clock set so
+                                                   DST/offset resolve correctly */
+        tzset();
         set = true;
         s_clock_manual = true;
         ESP_LOGI(TAG, "clock set from browser (epoch %lld) — SNTP had not synced", epoch);
-        storage_rebase_no_date();
     }
 
     char buf[64];

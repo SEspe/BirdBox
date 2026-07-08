@@ -226,61 +226,6 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     return ESP_OK;
 }
 
-/* Move captures saved before the clock was known (/captures/no-date/) into
- * today's date folder — called once the clock is set (SNTP or browser, §3.4).
- * Boot→snap→clock-set all happen within minutes, so "today" is the right day.
- * Filenames are kept as-is; the folder date is what the gallery groups by. */
-void storage_rebase_no_date(void)
-{
-    if (!s_sd_present) return;
-    time_t now = time(NULL);
-    struct tm tm_now;
-    localtime_r(&now, &tm_now);
-    if (tm_now.tm_year + 1900 < 2020) return;          /* still no real clock */
-
-    const char *nd = STORAGE_MOUNT_POINT "/captures/no-date";
-    struct stat st;
-    if (stat(nd, &st) != 0) return;                    /* nothing stranded    */
-
-    char today[16], todaydir[64];
-    strftime(today, sizeof(today), "%Y-%m-%d", &tm_now);
-    snprintf(todaydir, sizeof(todaydir), STORAGE_MOUNT_POINT "/captures/%s", today);
-
-    int moved = 0, uniq = 0;
-    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
-    mkdir(todaydir, 0775);
-    /* Snapshot names per pass and re-open: renaming entries out from under an
-     * open readdir can confuse the FATFS iterator. */
-    for (int pass = 0; pass < 256; pass++) {
-        DIR *d = opendir(nd);
-        if (!d) break;
-        char names[16][64];
-        int cnt = 0;
-        struct dirent *e;
-        while (cnt < 16 && (e = readdir(d)) != NULL) {
-            if (e->d_name[0] == '.') continue;
-            strlcpy(names[cnt++], e->d_name, sizeof(names[0]));
-        }
-        closedir(d);
-        if (cnt == 0) break;
-        for (int i = 0; i < cnt; i++) {
-            char src[160], dst[224];
-            snprintf(src, sizeof(src), "%s/%s", nd, names[i]);
-            snprintf(dst, sizeof(dst), "%s/%s", todaydir, names[i]);
-            bool ok = (rename(src, dst) == 0);
-            if (!ok) {   /* name already exists in today — uniquify, keep the file */
-                snprintf(dst, sizeof(dst), "%s/r%d_%s", todaydir, uniq++, names[i]);
-                ok = (rename(src, dst) == 0);
-            }
-            if (ok) moved++;
-        }
-        if (cnt < 16) break;
-    }
-    rmdir(nd);   /* succeeds only if now empty — harmless otherwise */
-    xSemaphoreGive(s_write_mtx);
-    if (moved) ESP_LOGI(TAG, "re-based %d no-date capture(s) -> %s", moved, today);
-}
-
 esp_err_t storage_append_visit_log(const char *line)
 {
     if (!s_sd_present) return ESP_ERR_INVALID_STATE;

@@ -15,6 +15,9 @@
  * First startup: connect to "BirdBox-Config" WiFi (pw: birdbox1234),
  * pick your network from the scan, save — device reboots onto your LAN.
  */
+#include <stdlib.h>
+#include <time.h>
+
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_event.h"
@@ -68,6 +71,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
 
     ESP_ERROR_CHECK(settings_load());
+    /* Apply the timezone at boot, before anything uses localtime (capture
+     * folders/filenames, stats) — not just on WiFi connect (FSD §3.4). */
+    setenv("TZ", g_settings.timezone, 1);
+    tzset();
     ESP_ERROR_CHECK(storage_init());     /* device runs without SD (FSD §7) */
     /* Classifier before camera: the model + arena (~5.5 MB PSRAM) reserve
      * first so a high camera resolution can't starve species ID — camera_init

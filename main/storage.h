@@ -38,11 +38,6 @@ bool storage_last_write_ok(void);
 esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
                             char *path_out, size_t path_out_len);
 
-/* Move captures stranded in /sd/captures/no-date/ (saved before the clock was
- * known) into today's date folder — call once the clock is set, whether via
- * SNTP or the browser-time fallback (FSD §3.4). No-op if unsynced or empty. */
-void storage_rebase_no_date(void);
-
 /* Appends one CSV row to the monthly visit log (/sd/log/visits-YYYY-MM.csv),
  * writing the header line first when the file is new (FSD §3.4). */
 esp_err_t storage_append_visit_log(const char *line);
