@@ -47,6 +47,7 @@ static int      s_px = 0;
 
 static volatile bool     s_motion_active = false;
 static volatile uint32_t s_trigger_count = 0;
+static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 
 /* Grab one frame, decode small, update s_cur; returns true when the changed
  * area exceeds the sensitivity-derived threshold. Rolls the background only
@@ -132,6 +133,14 @@ static void capture_event(void)
 static void motion_task(void *arg)
 {
     for (;;) {
+        if (!s_detect_enabled) {
+            /* Maintenance pause: drop the baseline so detection re-seeds
+             * against the current scene when it resumes (light/subject may
+             * have changed while paused), and don't touch the camera. */
+            s_have_bg = false;
+            vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
+            continue;
+        }
         if (detect_once()) {
             s_motion_active = true;
             s_trigger_count++;
@@ -167,3 +176,6 @@ esp_err_t motion_start(void)
 
 bool     motion_active(void)        { return s_motion_active; }
 uint32_t motion_trigger_count(void) { return s_trigger_count; }
+
+bool motion_detection_enabled(void)            { return s_detect_enabled; }
+void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }

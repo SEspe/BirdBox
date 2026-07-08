@@ -12,3 +12,10 @@ esp_err_t motion_start(void);
 
 bool     motion_active(void);          /* an event is being captured right now */
 uint32_t motion_trigger_count(void);   /* events since boot */
+
+/* Runtime enable/disable of detection, for maintenance (FSD §5). A disabled
+ * detector keeps its task alive but skips all frame grabbing/differencing, so
+ * the live stream and manual snapshots still work while no visit events fire.
+ * Not persisted: detection always comes up enabled after a reboot. */
+bool motion_detection_enabled(void);
+void motion_set_detection_enabled(bool enabled);

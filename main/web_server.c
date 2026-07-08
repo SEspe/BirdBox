@@ -179,6 +179,12 @@ static const char INDEX_HTML[] =
 "animation:detpulse 1s ease-in-out infinite}"
 ".liveWrap.det{outline:3px solid rgba(220,60,60,.9);outline-offset:-3px}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
+".pausebadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
+"align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
+"font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
+"border-radius:4px}"
+".pausebadge.on{display:inline-flex}"
+"button.act.off{background:#8a6d3f}"
 ".sts{font-size:.78rem;color:#9ab;margin-top:8px}"
 "a{color:#8fd39b}"
 "button.act{padding:8px 16px;border:none;border-radius:5px;background:#3f8a4f;"
@@ -242,11 +248,16 @@ static const char INDEX_HTML[] =
 "</select></div>"
 "<div class='liveWrap' id='liveWrap'>"
 "<div class='detbadge' id='detbadge'><span class='dot'></span>DETECTING</div>"
+"<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror=\"this.alt='no camera / stream unavailable';\">"
 "</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
+"<button class='act' id='detBtn' data-on='1' onclick='detToggle()'>&#9208; Disable detection</button>"
+"<p class='sts' style='margin-top:2px'>Pauses motion detection for maintenance "
+"(no visit events fire). The live view and snapshots keep working. Detection "
+"re-enables automatically on reboot.</p>"
 "</div>"
 "<div id='galleryp' class='pane'>"
 "<div class='gbar'><select id='day' onchange='loadDay()'></select>"
@@ -450,7 +461,18 @@ static const char INDEX_HTML[] =
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
 "if(lw)lw.classList.toggle('det',!!s.motion);"
+"if(typeof s.detect!=='undefined')detApply(!!s.detect);"
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
+"function detApply(en){var b=$g('detBtn');if(b){b.dataset.on=en?'1':'0';"
+"b.innerHTML=en?'\\u23F8 Disable detection':'\\u25B6 Enable detection';"
+"b.classList.toggle('off',!en);}"
+"var pb=$g('pausebadge');if(pb)pb.classList.toggle('on',!en);}"
+"function detToggle(){var b=$g('detBtn');var on=b.dataset.on==='1';b.disabled=true;"
+"fetch('/api/detect',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'enabled='+(on?'0':'1')}).then(r=>r.json()).then(o=>{"
+"b.disabled=false;detApply(!!o.enabled);})"
+".catch(()=>{b.disabled=false;});}"
 "function setTime(cb){fetch('/api/time',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'epoch='+Math.floor(Date.now()/1000)}).then(function(){cb&&cb();},function(){cb&&cb();});}"
@@ -1588,6 +1610,23 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/detect — enable/disable motion detection at runtime for
+ * maintenance (FSD §5). Body: enabled=0|1 (absent ⇒ keep current). Runtime
+ * only — detection always resumes enabled after a reboot. Replies with the
+ * resulting state so the caller can reconcile. */
+static esp_err_t h_detect(httpd_req_t *req)
+{
+    char body[32] = {0};
+    int  len = MIN(req->content_len, (int) sizeof(body) - 1);
+    if (len > 0) httpd_req_recv(req, body, len);
+    bool en = field_num(body, "enabled=", 0, 1, motion_detection_enabled() ? 1 : 0);
+    motion_set_detection_enabled(en);
+    ESP_LOGI(TAG, "motion detection %s via API", en ? "enabled" : "disabled");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, en ? "{\"enabled\":true}" : "{\"enabled\":false}");
+    return ESP_OK;
+}
+
 /* GET /api/status — minimal for now, grows with the subsystems (FSD §6) */
 static esp_err_t h_status(httpd_req_t *req)
 {
@@ -1617,7 +1656,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
         "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
-        "\"motion\":%s,\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
+        "\"motion\":%s,\"detect\":%s,\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -1627,6 +1666,7 @@ static esp_err_t h_status(httpd_req_t *req)
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
         tstr, tsrc,
         motion_active() ? "true" : "false",
+        motion_detection_enabled() ? "true" : "false",
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
         classify_last_species()[0] ? species : "");
@@ -2004,7 +2044,7 @@ esp_err_t web_server_start(void)
     if (server) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 28;     /* headroom above route count — an exact-fit cap
+    cfg.max_uri_handlers = 32;     /* headroom above route count — an exact-fit cap
                                       silently drops later registrations (RemoteStart v1.27) */
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
@@ -2025,6 +2065,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
+        { .uri = "/api/detect",  .method = HTTP_POST, .handler = h_detect     },
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
