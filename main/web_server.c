@@ -673,6 +673,7 @@ static const char INDEX_HTML[] =
 "$g('dCam').innerHTML=d.camPresent?"
 "drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
 "drow('JPEG quality',d.camQuality)+"
+"drow('Motion triggers',(d.motionTriggers||0))+"
 "drow('Watchdog recoveries',(d.camRecoveries||0)+(d.camRecoveryAgo>=0?' (last '+fmtAge(d.camRecoveryAgo)+' ago)':''),(d.camRecoveries?'':'ok'))+"
 "(d.camFault?drow('Camera fault','YES \\u2014 needs a manual power cycle','bad'):'')"
 ":drow('Status','no camera','bad');"
@@ -1655,7 +1656,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"sdWriteOk\":%s,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
-        "\"socTempC\":%.1f,"
+        "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
@@ -1671,7 +1672,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_framesize_str(), g_settings.stream_quality,
         (unsigned long) camera_recovery_count(), camera_last_recovery_ago_s(),
         camera_fault() ? "true" : "false",
-        soc_temp_c(),
+        soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
         classify_model_name(), classify_label_count(), classify_region_matches());
     httpd_resp_set_type(req, "application/json");

@@ -30,8 +30,13 @@
 
 static const char *TAG = "motion";
 
-#define DETECT_MAX_W      128            /* 1/8 of up to UXGA width */
-#define DETECT_MAX_H      96
+/* 1/8-scale detection frame must fit the largest selectable resolution, which
+ * is the SXGA ceiling (1280x1024 -> 160x128); HD (1280x720 -> 160x90) fits too.
+ * These were sized for the old XGA ceiling (128x96); once SXGA/HD were added in
+ * v1.21 an SXGA frame (160x128 = 20480 px) overran DETECT_MAX_PX and every
+ * detect frame was rejected — motion detection silently died at high res. */
+#define DETECT_MAX_W      160            /* 1/8 of SXGA width  (1280) */
+#define DETECT_MAX_H      128            /* 1/8 of SXGA height (1024) */
 #define DETECT_MAX_PX     (DETECT_MAX_W * DETECT_MAX_H)
 #define DETECT_PERIOD_MS  250
 #define PIX_DIFF_THR      25             /* per-pixel gray delta that counts as changed */
