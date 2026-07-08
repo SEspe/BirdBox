@@ -35,6 +35,14 @@ typedef struct {
     int32_t duration_ms;        /* inference (Invoke) time */
 } classify_result_t;
 
+/* Normalized region-of-interest (0..1, origin top-left, source-frame axes)
+ * that motion detection found changed — used to "zoom" species ID onto the
+ * bird (FSD §3.1/§3.2). An empty rect (x1<=x0 || y1<=y0) means "whole frame":
+ * the classifier center-crops as before. */
+typedef struct { float x0, y0, x1, y1; } roi_t;
+static inline bool  roi_is_empty(roi_t r) { return r.x1 <= r.x0 || r.y1 <= r.y0; }
+static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
+
 /* Best-of-N: how many of an event's saved frames the classifier scores,
  * keeping the most confident real-species result (§3.2). The event's first
  * frame is often the worst (bird mid-entry / motion-blurred), so scoring a
@@ -46,9 +54,12 @@ typedef struct {
  * "/captures/DAY/NAME.jpg"), best-first; up to CLASSIFY_BEST_OF_N are scored,
  * the rest ignored. The classifier re-reads each from SD. All args are
  * copied; the caller keeps ownership. Returns false (classifier disabled or
- * queue full) so the caller can write the fallback "unclassified" row. */
+ * queue full) so the caller can write the fallback "unclassified" row.
+ * `roi` zooms species ID onto the motion region (empty rect -> whole frame);
+ * honoured only when g_settings.detect_zoom is on. */
 bool classify_submit_event(const char (*paths)[96], int path_count,
-                           const char *ts, int frames, const char *first_path);
+                           const char *ts, int frames, const char *first_path,
+                           roi_t roi);
 
 /* Synchronous one-shot classification (POST /api/classify). Blocks the
  * caller for the full decode + inference (~seconds); shares a lock with

@@ -44,10 +44,14 @@ static const char *TAG = "motion";
 static uint8_t *s_bg, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
 static int      s_px = 0;
+static int      s_w = 0, s_h = 0;        /* current detect-frame dimensions */
+static roi_t    s_roi;                   /* changed-cell bbox of the last trigger */
 
 static volatile bool     s_motion_active = false;
 static volatile uint32_t s_trigger_count = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
+
+#define GRID_N 8                         /* 8x8 detection grid (FSD §3.1) */
 
 /* Grab one frame, decode small, update s_cur; returns true when the changed
  * area exceeds the sensitivity-derived threshold. Rolls the background only
@@ -76,6 +80,8 @@ static bool detect_once(void)
     int px = out.width * out.height;
     if (px <= 0 || px > DETECT_MAX_PX) return false;
     if (px != s_px) { s_px = px; s_have_bg = false; }
+    s_w = out.width;
+    s_h = out.height;
 
     /* Grayscale ≈ green channel of RGB565 (6 bits, scaled to 8) — a stable
      * transform is all differencing needs, not colorimetric accuracy. */
@@ -89,25 +95,77 @@ static bool detect_once(void)
         return false;
     }
 
-    int changed = 0;
-    for (int i = 0; i < px; i++)
-        if (abs((int) s_cur[i] - (int) s_bg[i]) > PIX_DIFF_THR) changed++;
+    /* Per-cell changed-pixel tallies over the 8x8 grid. The zone mask (§3.1)
+     * decides which cells count toward motion; changed cells inside the zone
+     * form the ROI handed to species ID for zoom (§3.2). */
+    int cell_changed[GRID_N * GRID_N] = {0};
+    int cell_total[GRID_N * GRID_N]   = {0};
+    const int W = s_w, H = s_h;
+    for (int y = 0; y < H; y++) {
+        int cy = y * GRID_N / H;
+        const int rowbase = cy * GRID_N;
+        for (int x = 0; x < W; x++) {
+            int idx  = y * W + x;
+            int cell = rowbase + (x * GRID_N / W);
+            cell_total[cell]++;
+            if (abs((int) s_cur[idx] - (int) s_bg[idx]) > PIX_DIFF_THR)
+                cell_changed[cell]++;
+        }
+    }
 
-    int pct = changed * 100 / px;
-    /* sensitivity 0 → 11 % of frame must change, 50 → 6 %, 100 → 1 % */
+    /* sensitivity 0 → 11 % must change, 50 → 6 %, 100 → 1 %; used both as the
+     * overall in-zone threshold and as the per-cell "this cell moved" test. */
     int area_thr = 1 + (100 - g_settings.motion_sensitivity) / 10;
+    uint64_t zone = g_settings.detect_zone;
+    long zone_px = 0, zone_changed = 0;
+    int minc = GRID_N, minr = GRID_N, maxc = -1, maxr = -1;
+    for (int c = 0; c < GRID_N * GRID_N; c++) {
+        if (!(zone & (1ULL << c))) continue;         /* cell masked out of zone */
+        zone_px      += cell_total[c];
+        zone_changed += cell_changed[c];
+        if (cell_total[c] > 0 &&
+            cell_changed[c] * 100 / cell_total[c] >= area_thr) {
+            int cc = c % GRID_N, cr = c / GRID_N;
+            if (cc < minc) minc = cc;
+            if (cc > maxc) maxc = cc;
+            if (cr < minr) minr = cr;
+            if (cr > maxr) maxr = cr;
+        }
+    }
+    if (zone_px == 0) return false;    /* empty zone → detection off everywhere */
+
+    int  pct    = (int) (zone_changed * 100 / zone_px);
     bool motion = pct >= area_thr;
 
-    if (!motion)
+    if (!motion) {
+        /* roll the background on quiet frames — whole frame, so masked-out
+         * cells (a swaying branch) are still absorbed and never linger. */
         for (int i = 0; i < px; i++)
             s_bg[i] = (uint8_t) (((int) s_bg[i] * 7 + s_cur[i]) / 8);
-    else
-        ESP_LOGI(TAG, "motion: %d%% of frame changed (threshold %d%%)", pct, area_thr);
+        return false;
+    }
 
-    return motion;
+    /* Build the ROI from the changed cells' bounding box, padded one cell each
+     * way for context. No cell crossed the per-cell bar (diffuse change, e.g.
+     * light) → empty ROI, i.e. classify the whole frame. */
+    if (maxc >= minc && maxr >= minr) {
+        if (--minc < 0) minc = 0;
+        if (--minr < 0) minr = 0;
+        if (++maxc > GRID_N - 1) maxc = GRID_N - 1;
+        if (++maxr > GRID_N - 1) maxr = GRID_N - 1;
+        s_roi.x0 = (float) minc / GRID_N;
+        s_roi.y0 = (float) minr / GRID_N;
+        s_roi.x1 = (float) (maxc + 1) / GRID_N;
+        s_roi.y1 = (float) (maxr + 1) / GRID_N;
+    } else {
+        s_roi = roi_none();
+    }
+    ESP_LOGI(TAG, "motion: %d%% of zone changed (threshold %d%%), roi [%.2f,%.2f]-[%.2f,%.2f]",
+             pct, area_thr, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
+    return true;
 }
 
-static void capture_event(void)
+static void capture_event(roi_t roi)
 {
     char first_path[96] = "";
     int  frames = 0;
@@ -127,7 +185,9 @@ static void capture_event(void)
         if (!detect_once()) break;         /* visitor left early */
     }
 
-    capture_event_finish(frames, first_path);
+    /* Classify the trigger-time ROI, not whatever the last follow-up frame
+     * left in s_roi — the caller passed a snapshot taken at trigger. */
+    capture_event_finish(frames, first_path, roi);
 }
 
 static void motion_task(void *arg)
@@ -144,7 +204,7 @@ static void motion_task(void *arg)
         if (detect_once()) {
             s_motion_active = true;
             s_trigger_count++;
-            capture_event();
+            capture_event(s_roi);   /* snapshot the trigger ROI for species ID */
             s_motion_active = false;
             vTaskDelay(pdMS_TO_TICKS((uint32_t) g_settings.cooldown_s * 1000));
             s_have_bg = false;   /* re-baseline: light/scene may have shifted */

@@ -185,6 +185,14 @@ static const char INDEX_HTML[] =
 "border-radius:4px}"
 ".pausebadge.on{display:inline-flex}"
 "button.act.off{background:#8a6d3f}"
+".zone{position:absolute;inset:0;z-index:4;display:none;"
+"grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}"
+".zone.on{display:grid}"
+".zcell{border:1px solid rgba(255,255,255,.28);cursor:pointer}"
+".zcell.off{background:rgba(200,40,40,.5)}"
+".zcell.inz{background:rgba(80,210,110,.10)}"
+".zbar{margin-top:8px;display:none;flex-wrap:wrap;gap:6px;align-items:center}"
+".zbar.on{display:flex}"
 ".sts{font-size:.78rem;color:#9ab;margin-top:8px}"
 "a{color:#8fd39b}"
 "button.act{padding:8px 16px;border:none;border-radius:5px;background:#3f8a4f;"
@@ -251,13 +259,25 @@ static const char INDEX_HTML[] =
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror=\"this.alt='no camera / stream unavailable';\">"
+"<div class='zone' id='zone'></div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
 "<button class='act' id='detBtn' data-on='1' onclick='detToggle()'>&#9208; Disable detection</button>"
+"<button class='act' id='zoneBtn' onclick='zoneEdit(true)'>&#9638; Edit detection zone</button>"
 "<p class='sts' style='margin-top:2px'>Pauses motion detection for maintenance "
 "(no visit events fire). The live view and snapshots keep working. Detection "
 "re-enables automatically on reboot.</p>"
+"<div class='zbar' id='zbar'>"
+"<span class='sts' style='margin:0'>Tap cells to include (green) / exclude (red) "
+"from motion detection. Excluded cells are ignored, so a swaying branch or busy "
+"background won't trigger captures.</span>"
+"<button class='act' style='margin:0' onclick='zoneAll(1)'>All on</button>"
+"<button class='act' style='margin:0' onclick='zoneAll(0)'>All off</button>"
+"<button class='act' style='margin:0;background:#3f8a4f' onclick='zoneSave()'>&#128190; Save zone</button>"
+"<button class='act' style='margin:0;background:#555' onclick='zoneEdit(false)'>Cancel</button>"
+"<span class='sts' id='zsts' style='margin:0;color:#7fc98b'></span>"
+"</div>"
 "</div>"
 "<div id='galleryp' class='pane'>"
 "<div class='gbar'><select id='day' onchange='loadDay()'></select>"
@@ -293,6 +313,10 @@ static const char INDEX_HTML[] =
 "<input class='wi' type='number' min='250' max='10000' step='250' id='stCivl'>"
 "<label class='wl'>Cool-down between events (s)</label>"
 "<input class='wi' type='number' min='1' max='600' id='stCool'>"
+"<label class='wl'><input type='checkbox' id='stZoom'> Zoom species ID to the motion area</label>"
+"<p class='sts' style='margin-top:2px'>Crops the classifier input to the changed 8&times;8 "
+"grid cells so the bird fills more of the model input (better ID). Saved photos are "
+"unaffected. Pick which cells count as the detection zone on the Live tab.</p>"
 "<h3 class='sh'>Species Identification</h3>"
 "<label class='wl'>Region / species model</label>"
 "<select class='wi' id='stRegion'></select>"
@@ -487,9 +511,34 @@ static const char INDEX_HTML[] =
 "if($g('stRot'))$g('stRot').value=v;"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'rot='+v});}"
+"var g_zone=[];"
 "function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
-"$g('lvRot').value=c.rot;applyRot(c.rot);}).catch(()=>{});}"
+"$g('lvRot').value=c.rot;applyRot(c.rot);"
+"if(c.zone&&c.zone.length===64)g_zone=c.zone.split('').map(function(x){return x==='1';});"
+"if(g_zoneEditing)zoneBuild();}).catch(()=>{});}"
 "loadRot();"
+"var g_zoneEditing=false;"
+"function zoneBuild(){var z=$g('zone');z.innerHTML='';"
+"for(var c=0;c<64;c++){var d=document.createElement('div');d.className='zcell';"
+"d.dataset.c=c;d.onclick=zoneTap;z.appendChild(d);}zoneRender();}"
+"function zoneRender(){var cells=$g('zone').children;"
+"for(var c=0;c<64;c++)cells[c].className='zcell '+(g_zone[c]!==false?'inz':'off');}"
+"function zoneTap(e){var c=+e.target.dataset.c;g_zone[c]=(g_zone[c]===false);zoneRender();}"
+"function zoneAll(v){for(var c=0;c<64;c++)g_zone[c]=!!v;zoneRender();}"
+"function zoneEdit(on){g_zoneEditing=on;"
+"$g('zone').classList.toggle('on',on);$g('zbar').classList.toggle('on',on);"
+"$g('zoneBtn').style.display=on?'none':'';"
+"if(on){if(g_zone.length!==64){g_zone=[];for(var c=0;c<64;c++)g_zone[c]=true;}zoneBuild();}"
+"else{loadRot();}}"   /* reload authoritative zone, discarding unsaved edits */
+"function zoneSave(){var s='';for(var c=0;c<64;c++)s+=(g_zone[c]!==false?'1':'0');"
+"$g('zsts').textContent='saving\\u2026';"
+"fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'zone='+s})"
+".then(r=>r.json()).then(function(o){$g('zsts').textContent=o.ok?'Saved \\u2713':'Save failed';"
+"g_zoneEditing=false;setTimeout(function(){$g('zsts').textContent='';"
+"$g('zone').classList.remove('on');$g('zbar').classList.remove('on');"
+"$g('zoneBtn').style.display='';},900);})"
+".catch(function(){$g('zsts').textContent='Save failed';});}"
 "function loadDays(){fetch('/api/days').then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.d.localeCompare(x.d));"
 "var s=document.getElementById('day');var prev=s.value;s.innerHTML='';"
@@ -629,7 +678,7 @@ static const char INDEX_HTML[] =
 "$g('stSens').value=c.sens;stSensShow();"
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
-"$g('stLang').value=c.lang;"
+"$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "$g('stRes').value=c.res;$g('stContrast').value=c.contrast;g_savedRes=c.res;"
@@ -673,7 +722,8 @@ static const char INDEX_HTML[] =
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&region='+encodeURIComponent($g('stRegion').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
-"+'&lang='+$g('stLang').value;"
+"+'&lang='+$g('stLang').value"
+"+'&dzoom='+($g('stZoom').checked?1:0);"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
@@ -1509,12 +1559,19 @@ static esp_err_t h_ipcfg_save(httpd_req_t *req)
 static esp_err_t h_settings_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
-    char buf[448];
+    /* 8x8 detection zone as a 64-char '1'/'0' string (bit c = row c/8, col c%8,
+     * row 0 top) — avoids sending a 64-bit mask through JS Number precision. */
+    char zone[65];
+    for (int c = 0; c < 64; c++)
+        zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
+    zone[64] = '\0';
+    char buf[560];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
-        "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,\"models\":[",
+        "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
+        "\"zone\":\"%s\",\"dzoom\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -1522,7 +1579,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.region_filter,
         (unsigned) g_settings.resolution, (int) g_settings.contrast,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
-        (unsigned) g_settings.lang);
+        (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -1559,7 +1616,7 @@ static long field_num(const char *body, const char *key, long lo, long hi, long 
 
 static esp_err_t h_settings_post(httpd_req_t *req)
 {
-    char body[512] = {0};
+    char body[640] = {0};
     int  len = MIN(req->content_len, (int) sizeof(body) - 1);
     httpd_req_recv(req, body, len);
 
@@ -1593,6 +1650,22 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     if (ntp[0] && !strchr(ntp, '"') && !strchr(ntp, ' '))
         strlcpy(g_settings.ntp_server, ntp, sizeof(g_settings.ntp_server));
     g_settings.lang = (species_lang_t) field_num(body, "lang=", 0, 1, g_settings.lang);
+
+    /* 8x8 detection-zone mask: 64-char '1'/'0' string, bit c = cell (§3.1).
+     * Only applied when present and well-formed, so a partial POST (the Live
+     * tab's zone save, or any other tab's save) leaves it untouched. */
+    char zone[80];
+    form_field(body, "zone=", zone, sizeof(zone));
+    if (strlen(zone) == 64) {
+        uint64_t m = 0;
+        bool ok = true;
+        for (int c = 0; c < 64; c++) {
+            if (zone[c] == '1') m |= (1ULL << c);
+            else if (zone[c] != '0') { ok = false; break; }
+        }
+        if (ok) g_settings.detect_zone = m;
+    }
+    g_settings.detect_zoom = field_num(body, "dzoom=", 0, 1, g_settings.detect_zoom);
 
     settings_save();
 

@@ -74,6 +74,7 @@ typedef struct {
     char     first_path[96];
     char     paths[CLASSIFY_BEST_OF_N][96];  /* saved-frame paths to score */
     int      path_count;
+    roi_t    roi;                            /* motion zoom region (§3.1) */
 } cls_job_t;
 static QueueHandle_t s_jobq = NULL;
 
@@ -199,7 +200,8 @@ static bool load_labels(const char *model_name)
  * no 90/270 hardware path, so those two angles are corrected here instead by
  * permuting the crop/resize indices; the sampling itself (nearest-neighbor,
  * same source pixels) is unchanged, so rotation costs no extra quality. */
-static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst224, rotation_t rot)
+static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst224,
+                                 rotation_t rot, roi_t roi)
 {
     esp_jpeg_image_cfg_t cfg = {};
     cfg.indata      = (uint8_t *) jpeg;
@@ -246,9 +248,26 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
     w = out.width;
     h = out.height;
 
-    /* Center-crop to square, nearest-neighbor resize to 224x224 */
-    int side = w < h ? w : h;
-    int x0 = (w - side) / 2, y0 = (h - side) / 2;
+    /* Crop region: the motion ROI (zoomed species ID, §3.1) when non-empty,
+     * else the whole frame. The ROI is in source-frame axes (same coordinates
+     * motion.c differenced), so it's applied here before the rotation permute
+     * below — orientation-independent. Then square-crop within it and
+     * nearest-neighbor resize to 224x224. */
+    int rx0 = 0, ry0 = 0, rw = w, rh = h;
+    if (!roi_is_empty(roi)) {
+        rx0 = (int) (roi.x0 * w + 0.5f);
+        ry0 = (int) (roi.y0 * h + 0.5f);
+        rw  = (int) ((roi.x1 - roi.x0) * w + 0.5f);
+        rh  = (int) ((roi.y1 - roi.y0) * h + 0.5f);
+        if (rx0 < 0) rx0 = 0;
+        if (ry0 < 0) ry0 = 0;
+        if (rw < 1)  rw = 1;
+        if (rh < 1)  rh = 1;
+        if (rx0 + rw > w) rw = w - rx0;
+        if (ry0 + rh > h) rh = h - ry0;
+    }
+    int side = rw < rh ? rw : rh;
+    int x0 = rx0 + (rw - side) / 2, y0 = ry0 + (rh - side) / 2;
     bool sw_rotate = (rot == ROTATE_90 || rot == ROTATE_270);
     for (int y = 0; y < CLS_INPUT_SIDE; y++) {
         int py = y * side / CLS_INPUT_SIDE;
@@ -320,12 +339,15 @@ static void make_decision(classify_result_t *r)
 }
 
 /* ── Inference core (shared by the event task and /api/classify) ────────── */
-static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out)
+static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out, roi_t roi)
 {
     memset(out, 0, sizeof(*out));
     TfLiteTensor *in = s_interp->input(0);
 
-    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8, g_settings.rotation);
+    /* Zoom is opt-out (§3.2): an empty roi already means whole-frame, and the
+     * setting lets the user disable ROI cropping entirely. */
+    if (!g_settings.detect_zoom) roi = roi_none();
+    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8, g_settings.rotation, roi);
     if (err != ESP_OK) return err;
     /* Decoder writes uint8 pixels; the int8 model expects pixel - 128
      * (same scale, zero point shifted). XOR 0x80 is that, in place. */
@@ -375,10 +397,10 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
 
 /* One inference, taking the run mutex for just this frame (best-of-N loops
  * lock per frame so a manual /api/classify isn't blocked for the whole run). */
-static esp_err_t run_one(const uint8_t *jpeg, size_t len, classify_result_t *out)
+static esp_err_t run_one(const uint8_t *jpeg, size_t len, classify_result_t *out, roi_t roi)
 {
     xSemaphoreTake(s_run_mtx, portMAX_DELAY);
-    esp_err_t err = run_locked(jpeg, len, out);
+    esp_err_t err = run_locked(jpeg, len, out, roi);
     xSemaphoreGive(s_run_mtx);
     return err;
 }
@@ -411,7 +433,7 @@ static void classify_task(void *arg)
             uint8_t *buf = load_file_psram(full, &len);
             if (!buf) { ESP_LOGW(TAG, "best-of: read %s failed", full); continue; }
             classify_result_t r;
-            esp_err_t err = run_one(buf, len, &r);
+            esp_err_t err = run_one(buf, len, &r, job.roi);
             free(buf);
             if (err != ESP_OK) continue;
             scored++;
@@ -526,7 +548,8 @@ esp_err_t classify_init(void)
 bool classify_available(void) { return s_available; }
 
 bool classify_submit_event(const char (*paths)[96], int path_count,
-                           const char *ts, int frames, const char *first_path)
+                           const char *ts, int frames, const char *first_path,
+                           roi_t roi)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
     if (!s_available || path_count <= 0) return false;
@@ -538,13 +561,14 @@ bool classify_submit_event(const char (*paths)[96], int path_count,
     for (int i = 0; i < n; i++)
         strlcpy(job.paths[i], paths[i], sizeof(job.paths[0]));
     job.path_count = n;
+    job.roi = roi;
     if (xQueueSend(s_jobq, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "classify queue full — event logged unclassified");
         return false;
     }
     return true;
 #else
-    (void) paths; (void) path_count; (void) ts; (void) frames; (void) first_path;
+    (void) paths; (void) path_count; (void) ts; (void) frames; (void) first_path; (void) roi;
     return false;
 #endif
 }
@@ -554,7 +578,7 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len, classify_result_t *
 #if CONFIG_IDF_TARGET_ESP32S3
     if (!s_available) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_run_mtx, portMAX_DELAY);
-    esp_err_t err = run_locked(jpeg, len, out);
+    esp_err_t err = run_locked(jpeg, len, out, roi_none());  /* manual: whole frame */
     xSemaphoreGive(s_run_mtx);
     return err;
 #else

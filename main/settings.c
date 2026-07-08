@@ -27,6 +27,8 @@ settings_t g_settings = {
     .region             = "",
     .ntp_server         = "pool.ntp.org",
     .lang               = LANG_EN,
+    .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
+    .detect_zoom        = 1,
 };
 
 esp_err_t settings_load(void)
@@ -60,6 +62,9 @@ esp_err_t settings_load(void)
     l = sizeof(g_settings.ntp_server);
     nvs_get_str(h, "s_ntp", g_settings.ntp_server, &l);
     if (nvs_get_u8 (h, "s_lang", &u8)  == ESP_OK) g_settings.lang = u8 ? LANG_NO : LANG_EN;
+    uint64_t u64;
+    if (nvs_get_u64(h, "s_zone", &u64) == ESP_OK) g_settings.detect_zone = u64;
+    if (nvs_get_u8 (h, "s_zoom", &u8)  == ESP_OK) g_settings.detect_zoom = u8;
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -92,6 +97,8 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);
     nvs_set_u8 (h, "s_lang", g_settings.lang == LANG_NO ? 1 : 0);
+    nvs_set_u64(h, "s_zone", g_settings.detect_zone);
+    nvs_set_u8 (h, "s_zoom", g_settings.detect_zoom);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
