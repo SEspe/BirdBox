@@ -11,7 +11,10 @@
 static const char *TAG = "stats";
 
 /* Row format (storage_append_visit_log, FSD §3.4):
- * timestamp,species,confidence,frames,first_frame,corrected,latin
+ * timestamp,species,confidence,frames,first_frame,corrected,latin,roi,top3
+ * The trailing roi/top3 columns (v1.33, field-tuning data) are ignored here —
+ * fields are read positionally and parsing stops at latin, so rows written
+ * before those columns existed parse identically.
  * A non-empty "corrected" column wins over "species" (user relabels, §3.2).
  * "latin" is empty on rows written before that column existed, same as
  * "unknown". A corrected label has no matching latin name, so it's
@@ -121,7 +124,9 @@ esp_err_t stats_collect(stats_t *out)
         snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", names[f]);
         FILE *fp = fopen(path, "r");
         if (!fp) continue;
-        char line[224];
+        /* Sized past the longest possible row (~330 with roi/top3, v1.33): an
+         * fgets split would surface the row's tail as a bogus extra row. */
+        char line[400];
         bool header = true;
         while (fgets(line, sizeof(line), fp)) {
             if (header) { header = false; continue; }

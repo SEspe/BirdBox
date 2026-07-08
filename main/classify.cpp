@@ -73,8 +73,8 @@ typedef struct {
     int      frames;
     char     first_path[96];
     char     paths[CLASSIFY_BEST_OF_N][96];  /* saved-frame paths to score */
+    roi_t    rois[CLASSIFY_BEST_OF_N];       /* per-frame motion zoom (§3.1) */
     int      path_count;
-    roi_t    roi;                            /* motion zoom region (§3.1) */
 } cls_job_t;
 static QueueHandle_t s_jobq = NULL;
 
@@ -215,11 +215,18 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
         return ESP_FAIL;
     }
 
-    /* Halve while both dims stay >= the input side and the buffer stays
-     * within budget — SVGA 800x600 -> 1/2 (400x300), a 960px photo -> 1/2. */
+    /* Halve while the *crop region* (the ROI when zooming, else the frame)
+     * stays >= the input side, then further while the buffer is over budget.
+     * ROI-aware: a small ROI keeps the decode at higher resolution so the
+     * cropped bird lands at (near-)native pixels instead of being decoded
+     * small and upscaled — SVGA with a half-frame ROI now decodes 800x600
+     * (1.44 MB, within budget) instead of 400x300. */
+    float rfw = 1.0f, rfh = 1.0f;
+    if (!roi_is_empty(roi)) { rfw = roi.x1 - roi.x0; rfh = roi.y1 - roi.y0; }
     int scale = 0, w = info.width, h = info.height;
     while (scale < 3 &&
-           ((w >> 1) >= CLS_INPUT_SIDE && (h >> 1) >= CLS_INPUT_SIDE)) {
+           (float) (w >> 1) * rfw >= CLS_INPUT_SIDE &&
+           (float) (h >> 1) * rfh >= CLS_INPUT_SIDE) {
         w >>= 1; h >>= 1; scale++;
     }
     while (scale < 3 && (size_t) w * h * 3 > CLS_DECODE_MAX) {
@@ -266,8 +273,18 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
         if (rx0 + rw > w) rw = w - rx0;
         if (ry0 + rh > h) rh = h - ry0;
     }
-    int side = rw < rh ? rw : rh;
-    int x0 = rx0 + (rw - side) / 2, y0 = ry0 + (rh - side) / 2;
+    /* Square-EXPAND the crop: grow the short side to match the long one
+     * (clamped to the frame) so an elongated ROI is fully kept with extra
+     * context, instead of truncating its ends. For the whole-frame case this
+     * clamps back to min(w,h) — the classic center-crop, unchanged. */
+    int side = rw > rh ? rw : rh;
+    int frame_min = w < h ? w : h;
+    if (side > frame_min) side = frame_min;
+    int x0 = rx0 + rw / 2 - side / 2, y0 = ry0 + rh / 2 - side / 2;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 + side > w) x0 = w - side;
+    if (y0 + side > h) y0 = h - side;
     bool sw_rotate = (rot == ROTATE_90 || rot == ROTATE_270);
     for (int y = 0; y < CLS_INPUT_SIDE; y++) {
         int py = y * side / CLS_INPUT_SIDE;
@@ -416,6 +433,28 @@ static bool result_better(const classify_result_t *n, const classify_result_t *c
     return n->confidence_pct > c->confidence_pct;
 }
 
+/* top-3 as a compact CSV-safe field for the visit log (§3.4 tuning data):
+ * "Latin=pct;Latin=pct;Latin=pct" — Latin binomial only (labels' common-name
+ * halves would bloat the row), commas sanitized to ';'. */
+static void top3_field(const classify_result_t *r, char *out, size_t n)
+{
+    size_t off = 0;
+    out[0] = '\0';
+    for (int k = 0; k < 3 && off + 8 < n; k++) {
+        if (!r->top_label[k][0] || r->top_pct[k] == 0) break;
+        char latin[64];
+        const char *open = strrchr(r->top_label[k], '(');
+        size_t l = open ? (size_t) (open - r->top_label[k]) : strlen(r->top_label[k]);
+        while (l > 0 && r->top_label[k][l - 1] == ' ') l--;
+        if (l >= sizeof(latin)) l = sizeof(latin) - 1;
+        memcpy(latin, r->top_label[k], l);
+        latin[l] = '\0';
+        for (char *c = latin; *c; c++)
+            if (*c == ',') *c = ';';
+        off += snprintf(out + off, n - off, "%s%s=%u", k ? ";" : "", latin, r->top_pct[k]);
+    }
+}
+
 /* ── Event task: best-of-N classify, then write the visit-log row (async) ── */
 static void classify_task(void *arg)
 {
@@ -424,8 +463,9 @@ static void classify_task(void *arg)
         if (xQueueReceive(s_jobq, &job, portMAX_DELAY) != pdTRUE) continue;
 
         classify_result_t best;
-        bool have_best = false;
-        int  scored = 0;
+        bool  have_best = false;
+        int   scored = 0, best_idx = 0;
+        bool  zoomed_any = false;
         for (int i = 0; i < job.path_count; i++) {
             char full[128];
             snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[i]);
@@ -433,25 +473,58 @@ static void classify_task(void *arg)
             uint8_t *buf = load_file_psram(full, &len);
             if (!buf) { ESP_LOGW(TAG, "best-of: read %s failed", full); continue; }
             classify_result_t r;
-            esp_err_t err = run_one(buf, len, &r, job.roi);
+            esp_err_t err = run_one(buf, len, &r, job.rois[i]);
             free(buf);
             if (err != ESP_OK) continue;
             scored++;
-            if (!have_best || result_better(&r, &best)) { best = r; have_best = true; }
+            if (g_settings.detect_zoom && !roi_is_empty(job.rois[i])) zoomed_any = true;
+            if (!have_best || result_better(&r, &best)) { best = r; best_idx = i; have_best = true; }
         }
 
-        char line[288];
+        /* Zoom safety net (§3.2): the ROI crop is a bet that the changed cells
+         * contain the bird. If every zoomed frame came back without a real
+         * species, spend ONE extra whole-frame inference on the frame that
+         * scored best — a miss-cropped bird is often still identifiable in the
+         * full view. Skipped when nothing was zoomed (nothing to recover). */
+        if (have_best && best.latin[0] == '\0' && zoomed_any) {
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[best_idx]);
+            size_t len = 0;
+            uint8_t *buf = load_file_psram(full, &len);
+            if (buf) {
+                classify_result_t r;
+                if (run_one(buf, len, &r, roi_none()) == ESP_OK &&
+                    result_better(&r, &best)) {
+                    ESP_LOGI(TAG, "whole-frame fallback rescued: %s (%u%%)",
+                             r.species, r.confidence_pct);
+                    best = r;
+                    job.rois[best_idx] = roi_none();   /* log the roi actually used */
+                }
+                free(buf);
+            }
+        }
+
+        char line[400];
         if (have_best) {
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
             strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', best of %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);
-            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s",
-                     job.ts, best.species, best.confidence_pct, job.frames, job.first_path,
-                     best.latin);
+            /* winning frame's ROI ("x0-y0-x1-y1", empty = whole frame) + top-3
+             * as trailing columns — field-tuning data (§3.4) */
+            char roi_s[24] = "";
+            roi_t ur = job.rois[best_idx];
+            if (g_settings.detect_zoom && !roi_is_empty(ur))
+                snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
+                         ur.x0, ur.y0, ur.x1, ur.y1);
+            char top3[112];
+            top3_field(&best, top3, sizeof(top3));
+            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s",
+                     job.ts, best.species, best.confidence_pct, job.frames,
+                     job.first_path, best.latin, roi_s, top3);
         } else {
-            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,",
+            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,,",
                      job.ts, job.frames, job.first_path);
         }
         if (storage_append_visit_log(line) != ESP_OK)
@@ -547,9 +620,9 @@ esp_err_t classify_init(void)
 
 bool classify_available(void) { return s_available; }
 
-bool classify_submit_event(const char (*paths)[96], int path_count,
-                           const char *ts, int frames, const char *first_path,
-                           roi_t roi)
+bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
+                           int path_count, const char *ts, int frames,
+                           const char *first_path)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
     if (!s_available || path_count <= 0) return false;
@@ -558,17 +631,18 @@ bool classify_submit_event(const char (*paths)[96], int path_count,
     strlcpy(job.ts, ts, sizeof(job.ts));
     strlcpy(job.first_path, first_path, sizeof(job.first_path));
     int n = path_count < CLASSIFY_BEST_OF_N ? path_count : CLASSIFY_BEST_OF_N;
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         strlcpy(job.paths[i], paths[i], sizeof(job.paths[0]));
+        job.rois[i] = rois ? rois[i] : roi_none();
+    }
     job.path_count = n;
-    job.roi = roi;
     if (xQueueSend(s_jobq, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "classify queue full — event logged unclassified");
         return false;
     }
     return true;
 #else
-    (void) paths; (void) path_count; (void) ts; (void) frames; (void) first_path; (void) roi;
+    (void) paths; (void) rois; (void) path_count; (void) ts; (void) frames; (void) first_path;
     return false;
 #endif
 }

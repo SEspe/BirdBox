@@ -118,19 +118,15 @@ static bool detect_once(void)
     int area_thr = 1 + (100 - g_settings.motion_sensitivity) / 10;
     uint64_t zone = g_settings.detect_zone;
     long zone_px = 0, zone_changed = 0;
-    int minc = GRID_N, minr = GRID_N, maxc = -1, maxr = -1;
+    bool moved[GRID_N * GRID_N];
     for (int c = 0; c < GRID_N * GRID_N; c++) {
+        moved[c] = false;
         if (!(zone & (1ULL << c))) continue;         /* cell masked out of zone */
         zone_px      += cell_total[c];
         zone_changed += cell_changed[c];
         if (cell_total[c] > 0 &&
-            cell_changed[c] * 100 / cell_total[c] >= area_thr) {
-            int cc = c % GRID_N, cr = c / GRID_N;
-            if (cc < minc) minc = cc;
-            if (cc > maxc) maxc = cc;
-            if (cr < minr) minr = cr;
-            if (cr > maxr) maxr = cr;
-        }
+            cell_changed[c] * 100 / cell_total[c] >= area_thr)
+            moved[c] = true;
     }
     if (zone_px == 0) return false;    /* empty zone → detection off everywhere */
 
@@ -145,10 +141,46 @@ static bool detect_once(void)
         return false;
     }
 
-    /* Build the ROI from the changed cells' bounding box, padded one cell each
-     * way for context. No cell crossed the per-cell bar (diffuse change, e.g.
-     * light) → empty ROI, i.e. classify the whole frame. */
-    if (maxc >= minc && maxr >= minr) {
+    /* ROI = bounding box of the LARGEST 4-connected cluster of moved cells
+     * (weighted by changed pixels), padded one cell each way for context. Two
+     * separate movers (bird + in-zone shadow/feeder swing) no longer merge
+     * into one diluted bbox — the zoom tracks the dominant object. No cell
+     * crossed the per-cell bar (diffuse change, e.g. light) → empty ROI,
+     * i.e. classify the whole frame. */
+    bool seen[GRID_N * GRID_N] = {false};
+    long best_wt = -1;
+    int  minc = 0, minr = 0, maxc = -1, maxr = -1;
+    for (int c0 = 0; c0 < GRID_N * GRID_N; c0++) {
+        if (!moved[c0] || seen[c0]) continue;
+        int  stack[GRID_N * GRID_N], sp = 0;
+        long wt = 0;
+        int  lminc = GRID_N, lminr = GRID_N, lmaxc = -1, lmaxr = -1;
+        stack[sp++] = c0;
+        seen[c0] = true;
+        while (sp > 0) {
+            int c  = stack[--sp];
+            int cc = c % GRID_N, cr = c / GRID_N;
+            wt += cell_changed[c];
+            if (cc < lminc) lminc = cc;
+            if (cc > lmaxc) lmaxc = cc;
+            if (cr < lminr) lminr = cr;
+            if (cr > lmaxr) lmaxr = cr;
+            const int nb[4] = { cc > 0          ? c - 1      : -1,
+                                cc < GRID_N - 1 ? c + 1      : -1,
+                                cr > 0          ? c - GRID_N : -1,
+                                cr < GRID_N - 1 ? c + GRID_N : -1 };
+            for (int k = 0; k < 4; k++)
+                if (nb[k] >= 0 && moved[nb[k]] && !seen[nb[k]]) {
+                    seen[nb[k]] = true;
+                    stack[sp++] = nb[k];
+                }
+        }
+        if (wt > best_wt) {
+            best_wt = wt;
+            minc = lminc; minr = lminr; maxc = lmaxc; maxr = lmaxr;
+        }
+    }
+    if (maxc >= minc && maxr >= minr && best_wt >= 0) {
         if (--minc < 0) minc = 0;
         if (--minr < 0) minr = 0;
         if (++maxc > GRID_N - 1) maxc = GRID_N - 1;
@@ -167,13 +199,14 @@ static bool detect_once(void)
 
 static void capture_event(roi_t roi)
 {
-    char first_path[96] = "";
-    int  frames = 0;
+    char  first_path[96] = "";
+    int   frames = 0;
+    roi_t cur = roi;   /* trigger-time ROI for frame 0 */
 
     for (int i = 0; i < g_settings.capture_count; i++) {
         camera_fb_t *fb = camera_grab();
         if (fb) {
-            esp_err_t err = capture_event_frame(fb->buf, fb->len,
+            esp_err_t err = capture_event_frame(fb->buf, fb->len, cur,
                                                 frames == 0 ? first_path : NULL,
                                                 sizeof(first_path));
             camera_return(fb);
@@ -183,11 +216,10 @@ static void capture_event(roi_t roi)
         if (i + 1 >= g_settings.capture_count) break;
         vTaskDelay(pdMS_TO_TICKS(g_settings.capture_interval_ms));
         if (!detect_once()) break;         /* visitor left early */
+        cur = s_roi;   /* fresh ROI: the zoom follows the bird between frames */
     }
 
-    /* Classify the trigger-time ROI, not whatever the last follow-up frame
-     * left in s_roi — the caller passed a snapshot taken at trigger. */
-    capture_event_finish(frames, first_path, roi);
+    capture_event_finish(frames, first_path);
 }
 
 static void motion_task(void *arg)

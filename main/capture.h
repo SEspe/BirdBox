@@ -9,14 +9,15 @@
  * orchestration itself (when to grab which frame) lives in motion.c's task. */
 
 /* Save one event frame to SD; on the first frame pass path_out to get the
- * web path back for the log row. */
-esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len,
+ * web path back for the log row. `roi` is the motion region seen at (or just
+ * before) this frame's grab — kept per frame so species-ID zoom follows a
+ * moving bird across the event (§3.1/§3.2); roi_none() = whole frame. */
+esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
                               char *path_out, size_t path_out_len);
 
-/* Close the event: hands the saved frames to the classifier (best-of-N) and
- * updates last-event state. `roi` is the motion zoom region (§3.1) forwarded
- * to species ID; pass roi_none() for whole-frame. No-op when frames == 0. */
-void capture_event_finish(int frames, const char *first_path, roi_t roi);
+/* Close the event: hands the saved frames (with their per-frame ROIs) to the
+ * classifier (best-of-N) and updates last-event state. No-op when frames == 0. */
+void capture_event_finish(int frames, const char *first_path);
 
 const char *capture_last_event_path(void);   /* "" until the first event */
 uint32_t    capture_event_count(void);

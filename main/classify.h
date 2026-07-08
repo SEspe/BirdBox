@@ -52,14 +52,15 @@ static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
 /* Queues a visit event for async best-of-N classification + visit-log write.
  * `paths` are the event's saved-frame paths (web-relative, e.g.
  * "/captures/DAY/NAME.jpg"), best-first; up to CLASSIFY_BEST_OF_N are scored,
- * the rest ignored. The classifier re-reads each from SD. All args are
- * copied; the caller keeps ownership. Returns false (classifier disabled or
- * queue full) so the caller can write the fallback "unclassified" row.
- * `roi` zooms species ID onto the motion region (empty rect -> whole frame);
- * honoured only when g_settings.detect_zoom is on. */
-bool classify_submit_event(const char (*paths)[96], int path_count,
-                           const char *ts, int frames, const char *first_path,
-                           roi_t roi);
+ * the rest ignored. The classifier re-reads each from SD. `rois` is the
+ * parallel array of per-frame motion regions — species ID zooms each frame
+ * onto its own ROI (empty rect -> whole frame; honoured only when
+ * g_settings.detect_zoom is on). All args are copied; the caller keeps
+ * ownership. Returns false (classifier disabled or queue full) so the caller
+ * can write the fallback "unclassified" row. */
+bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
+                           int path_count, const char *ts, int frames,
+                           const char *first_path);
 
 /* Synchronous one-shot classification (POST /api/classify). Blocks the
  * caller for the full decode + inference (~seconds); shares a lock with

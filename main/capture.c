@@ -16,10 +16,11 @@ static uint32_t s_event_count = 0;
 /* Web-relative paths ("/captures/DAY/NAME.jpg") of this event's first
  * CLASSIFY_BEST_OF_N saved frames, handed to the classifier for best-of-N
  * species ID (FSD §3.2). Only the motion task touches these. */
-static char s_frame_paths[CLASSIFY_BEST_OF_N][96];
-static int  s_frame_n = 0;
+static char  s_frame_paths[CLASSIFY_BEST_OF_N][96];
+static roi_t s_frame_rois[CLASSIFY_BEST_OF_N];   /* per-frame zoom regions */
+static int   s_frame_n = 0;
 
-esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len,
+esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
                               char *path_out, size_t path_out_len)
 {
     char path[96] = "";
@@ -29,15 +30,19 @@ esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len,
         s_frame_n = 0;
         if (err == ESP_OK) strlcpy(path_out, path, path_out_len);
     }
-    /* Remember the first few frames' paths so the classifier can score them
-     * and keep the best; extra frames are still saved, just not classified. */
-    if (err == ESP_OK && s_frame_n < CLASSIFY_BEST_OF_N)
+    /* Remember the first few frames' paths (and each frame's motion ROI, so
+     * the zoom tracks a bird that moves between frames) so the classifier can
+     * score them and keep the best; extra frames are still saved, just not
+     * classified. */
+    if (err == ESP_OK && s_frame_n < CLASSIFY_BEST_OF_N) {
+        s_frame_rois[s_frame_n] = roi;
         strlcpy(s_frame_paths[s_frame_n++], path, sizeof(s_frame_paths[0]));
+    }
 
     return err;
 }
 
-void capture_event_finish(int frames, const char *first_path, roi_t roi)
+void capture_event_finish(int frames, const char *first_path)
 {
     if (frames <= 0) {
         s_frame_n = 0;
@@ -63,11 +68,11 @@ void capture_event_finish(int frames, const char *first_path, roi_t roi)
      * row so no event is ever unlogged. */
     bool queued = false;
     if (s_frame_n > 0)
-        queued = classify_submit_event(s_frame_paths, s_frame_n, ts,
-                                       frames, first_path, roi);
+        queued = classify_submit_event(s_frame_paths, s_frame_rois, s_frame_n,
+                                       ts, frames, first_path);
     if (!queued) {
         char line[200];
-        snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,", ts, frames, first_path);
+        snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,,", ts, frames, first_path);
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
     }

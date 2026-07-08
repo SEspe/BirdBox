@@ -1202,7 +1202,8 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
     snprintf(match, sizeof(match), "/captures/%.20s/", date);
 
     int count = 0;
-    char line[224];
+    char line[400];   /* past the longest row incl. roi/top3 — a split row's
+                         tail would otherwise parse as a bogus extra row */
     bool header = true;
     while (fgets(line, sizeof(line), fp) && count < GAL_MAX_LABELS) {
         if (header) { header = false; continue; }
