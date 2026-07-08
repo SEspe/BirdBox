@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <time.h>
+#include <sys/time.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -38,6 +39,20 @@
 #include "driver/temperature_sensor.h"
 
 static const char *TAG = "web";
+
+/* Clock source for the time shown in the UI (FSD §3.4): "ntp" once SNTP has
+ * synced, "manual" when only the browser-time fallback (POST /api/time) set it,
+ * "none" before either. */
+static bool s_clock_manual = false;
+static void device_time(char *out, size_t n, const char **src)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    if (tm.tm_year + 1900 < 2020) { if (n) out[0] = '\0'; *src = "none"; return; }
+    strftime(out, n, "%Y-%m-%d %H:%M:%S", &tm);
+    *src = s_clock_manual ? "manual" : "ntp";
+}
 
 /* On-die temperature sensor for the Debug tab / overheat diagnosis (FSD §5).
  * Installed lazily on first /api/sysinfo read. This is the SoC die, not the
@@ -345,14 +360,30 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='wifip' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>WiFi Network</h3>"
-"<button class='act' style='margin:0 0 6px' onclick='wfScan()'>&#128246; Scan Networks</button>"
+"<div class='sts' id='wfConn'>&hellip;</div>"
+"<button class='act' style='margin:6px 0 6px' onclick=\"wfScan('wfSid','wfNets','wfSts')\">&#128246; Scan Networks</button>"
 "<div class='sts' id='wfSts'></div><div id='wfNets'></div>"
 "<form action='/wifi-save' method='POST'>"
-"<label class='wl'>SSID</label>"
+"<input type='hidden' name='slot' value='0'>"
+"<label class='wl'>Primary SSID</label>"
 "<input class='wi' id='wfSid' name='ssid' placeholder='tap network or type' required>"
 "<label class='wl'>Password</label>"
 "<input class='wi' name='pass' type='password' placeholder='leave blank if open'>"
 "<br><button class='act' type='submit'>Connect &amp; Save</button></form>"
+"<h3 class='sh'>Alternative Network (alt1)</h3>"
+"<p class='sts'>A fallback AP, tried when the primary is unreachable and used for "
+"failover in service. Shares the IP setting below &mdash; a single static address "
+"only works if both APs are on the same subnet, otherwise use DHCP. Save with a "
+"blank SSID to remove it.</p>"
+"<button class='act' style='margin:0 0 6px' onclick=\"wfScan('wfSid2','wfNets2','wfSts2')\">&#128246; Scan Networks</button>"
+"<div class='sts' id='wfSts2'></div><div id='wfNets2'></div>"
+"<form action='/wifi-save' method='POST'>"
+"<input type='hidden' name='slot' value='1'>"
+"<label class='wl'>Alternative SSID</label>"
+"<input class='wi' id='wfSid2' name='ssid' placeholder='tap network or type'>"
+"<label class='wl'>Password</label>"
+"<input class='wi' name='pass' type='password' placeholder='leave blank if open'>"
+"<br><button class='act' type='submit'>Save Alternative</button></form>"
 "<h3 class='sh'>IP Configuration</h3>"
 "<form action='/api/ipconfig/save' method='POST'>"
 "<label class='wr'><input type='radio' name='mode' value='dhcp' id='ipDhcp' checked "
@@ -394,17 +425,22 @@ static const char INDEX_HTML[] =
 "if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
 "if(id==='dbgp')loadDebug();"
-"if(id==='wifip')ipLoad();}"
+"if(id==='wifip'){ipLoad();wfCfg();}}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
-"var t=s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
+"var t=(s.time?('\\uD83D\\uDD52 '+s.time+' ('+s.clockSrc+')'):'\\uD83D\\uDD52 clock not set')+' | '"
+"+s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
 "+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
 "+' | motion '+(s.motion?'ACTIVE':'idle')+' | events '+s.events;"
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
-"function snap(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
-".then(o=>{alert(o.path?('Saved '+o.path):JSON.stringify(o));}).catch(()=>alert('failed'));}"
+"function setTime(cb){fetch('/api/time',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'epoch='+Math.floor(Date.now()/1000)}).then(function(){cb&&cb();},function(){cb&&cb();});}"
+"setTime();"
+"function snap(){setTime(function(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
+".then(o=>{alert(o.path?('Saved '+o.path):JSON.stringify(o));}).catch(()=>alert('failed'));});}"
 "function applyRot(v){v=String(v);var w=$g('liveWrap'),l=$g('live');"
 "w.classList.remove('r1','r3');l.classList.remove('r1','r3');"
 "if(v==='1'){w.classList.add('r1');l.classList.add('r1');}"
@@ -518,16 +554,20 @@ static const char INDEX_HTML[] =
 "var a=document.getElementById('ipAddr'),m=document.getElementById('ipMask'),"
 "g=document.getElementById('ipGw');"
 "if(!a.value)a.value=g_liveIp;if(!m.value)m.value=g_liveMask;if(!g.value)g.value=g_liveGw;}}"
-"function wfScan(){var st=document.getElementById('wfSts');"
-"st.textContent='Scanning\\u2026';document.getElementById('wfNets').innerHTML='';"
+"function wfScan(sidId,netsId,stsId){var st=$g(stsId);"
+"st.textContent='Scanning\\u2026';$g(netsId).innerHTML='';"
 "fetch('/api/scan').then(r=>r.json()).then(function(a){"
 "st.textContent=a.length+' network'+(a.length!==1?'s':'')+' found';"
-"var c=document.getElementById('wfNets');"
+"var c=$g(netsId);"
 "a.forEach(function(n){var d=document.createElement('div');d.className='wnet';"
 "d.innerHTML='<span>'+n.ssid.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span>"
 "<span class=sts style=\"margin:0\">'+n.rssi+'dBm'+(n.auth?' &#128274;':'')+'</span>';"
-"d.onclick=function(){document.getElementById('wfSid').value=n.ssid;};"
+"d.onclick=function(){$g(sidId).value=n.ssid;};"
 "c.appendChild(d);});}).catch(function(){st.textContent='Scan failed';});}"
+"function wfCfg(){fetch('/api/wificfg').then(r=>r.json()).then(function(c){"
+"$g('wfConn').textContent='Connected to: '+(c.connected||'\\u2014')"
+"+'  \\u2022  Primary: '+(c.primary||'not set')"
+"+'  \\u2022  Alt1: '+(c.alt||'not set');}).catch(function(){});}"
 "function rebootDev(){if(confirm('Reboot BirdBox?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "function $g(i){return document.getElementById(i)}"
@@ -603,10 +643,12 @@ static const char INDEX_HTML[] =
 "drow('Free heap',Math.round(d.heap/1024)+' KB')+"
 "drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
 "drow('Uptime',fmtAge(d.uptime))+"
+"drow('Device time',(d.time?d.time+' ('+d.clockSrc+')':'not set'),(d.time?(d.clockSrc==='ntp'?'ok':''):'bad'))+"
 "drow('SoC temperature',(d.socTempC>-100?d.socTempC.toFixed(1)+'\\u00b0C':'n/a'),(d.socTempC>75?'bad':(d.socTempC>-100?'ok':'')))+"
 "drow('WiFi reconnects',d.wifiDisc)+"
 "drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'));"
 "$g('dWifi').innerHTML="
+"drow('Network',d.apSsid||'\\u2014')+"
 "drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
 "$g('dSd').innerHTML=d.sdPresent?"
 "drow('Card',d.sdCard)+drow('Size',d.sdTotalMB+' MB total, '+d.sdFreeMB+' MB free')+"
@@ -776,14 +818,52 @@ static esp_err_t h_wifi_save(httpd_req_t *req)
     url_decode(g_new_ssid);
     url_decode(g_new_pass);
 
+    /* slot=1 saves the alternative network (alt1); default 0 = primary. The
+     * portal form omits it, so absent ⇒ primary. */
+    char *slp = strstr(body, "slot=");
+    g_new_slot = (slp && slp[5] == '1') ? WIFI_SLOT_ALT : WIFI_SLOT_PRIMARY;
+
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req,
         "<!DOCTYPE html><html><body style='font-family:Arial;background:#16281c;color:#eee;"
         "display:flex;justify-content:center;align-items:center;min-height:100vh'>"
         "<div style='text-align:center'><h2 style='color:#7fc98b'>Saved!</h2>"
-        "<p>Connecting to WiFi and rebooting…</p></div></body></html>");
+        "<p>Applying and rebooting…</p></div></body></html>");
 
     g_wifi_save_requested = true;
+    return ESP_OK;
+}
+
+/* GET /api/wificfg — configured network names (primary + alt1) and the AP the
+ * device is currently associated with, for the WiFi tab (FSD §4.7). Passwords
+ * are never returned. */
+static void json_escape(char *dst, size_t dsz, const char *src)
+{
+    size_t j = 0;
+    for (size_t k = 0; src[k] && j + 2 < dsz; k++) {
+        unsigned char c = src[k];
+        if (c == '"' || c == '\\') dst[j++] = '\\';
+        if (c >= 0x20) dst[j++] = c;
+    }
+    dst[j] = '\0';
+}
+
+static esp_err_t h_wificfg(httpd_req_t *req)
+{
+    char conn[33] = {0};
+    wifi_ap_record_t ap = {0};
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) strlcpy(conn, (char *) ap.ssid, sizeof(conn));
+
+    char p[70], a[70], c[70];
+    json_escape(p, sizeof(p), wifi_configured_ssid(WIFI_SLOT_PRIMARY));
+    json_escape(a, sizeof(a), wifi_configured_ssid(WIFI_SLOT_ALT));
+    json_escape(c, sizeof(c), conn);
+
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"primary\":\"%s\",\"alt\":\"%s\",\"connected\":\"%s\"}", p, a, c);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
     return ESP_OK;
 }
 
@@ -835,6 +915,43 @@ static esp_err_t h_scan(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     free(buf);
+    return ESP_OK;
+}
+
+/* POST /api/time — set the clock from the connecting browser when SNTP hasn't
+ * synced (offline / NTP-blocked network, FSD §3.4). Body: epoch=<UTC seconds>.
+ * Only sets the clock while it's unsynced (year < 2020), so a browser with a
+ * wrong clock can't override an authoritative SNTP time; on success it re-bases
+ * any captures stranded in /captures/no-date/ into today's folder. The web UI
+ * calls this on load and before every snapshot. */
+static esp_err_t h_time_set(httpd_req_t *req)
+{
+    char body[48] = {0};
+    int len = MIN(req->content_len, (int) sizeof(body) - 1);
+    if (len > 0) httpd_req_recv(req, body, len);
+    char *ep = strstr(body, "epoch=");
+    long long epoch = ep ? atoll(ep + 6) : 0;
+
+    time_t now = time(NULL);
+    struct tm tmn;
+    localtime_r(&now, &tmn);
+    bool already = (tmn.tm_year + 1900 >= 2020);
+    bool set = false;
+
+    if (!already && epoch > 1672531200LL) {   /* sane: after 2023-01-01 */
+        struct timeval tv = { .tv_sec = (time_t) epoch, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+        set = true;
+        s_clock_manual = true;
+        ESP_LOGI(TAG, "clock set from browser (epoch %lld) — SNTP had not synced", epoch);
+        storage_rebase_no_date();
+    }
+
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"set\":%s,\"synced\":%s}",
+                     set ? "true" : "false", (already || set) ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
     return ESP_OK;
 }
 
@@ -1459,11 +1576,15 @@ static esp_err_t h_status(httpd_req_t *req)
     species_localize(classify_last_species(), classify_last_latin(),
                       g_settings.lang, species, sizeof(species));
 
-    char buf[560];
+    char tstr[24]; const char *tsrc;
+    device_time(tstr, sizeof(tstr), &tsrc);
+
+    char buf[640];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
         "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
+        "\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"motion\":%s,\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
@@ -1472,6 +1593,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned long) g_wifi_disconnect_count,
         storage_sd_present() ? "true" : "false",
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
+        tstr, tsrc,
         motion_active() ? "true" : "false",
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
@@ -1494,6 +1616,10 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
     wifi_ap_record_t ap = {0};
     int rssi = 0, ch = 0;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) { rssi = ap.rssi; ch = ap.primary; }
+    char apssid[70];
+    json_escape(apssid, sizeof(apssid), (char *) ap.ssid);
+    char tstr[24]; const char *tsrc;
+    device_time(tstr, sizeof(tstr), &tsrc);
 
     uint64_t sd_total, sd_free;
     storage_get_info(&sd_total, &sd_free);
@@ -1502,10 +1628,11 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[768];
+    char buf[912];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
+        "\"apSsid\":\"%s\",\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"sdWriteOk\":%s,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
@@ -1518,7 +1645,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         now_us / 1000000,
         (unsigned long) g_wifi_disconnect_count,
         g_wifi_last_disc_ts_us ? (long long) ((now_us - g_wifi_last_disc_ts_us) / 1000000) : -1,
-        mac_str, rssi, ch,
+        mac_str, rssi, ch, apssid, tstr, tsrc,
         storage_sd_present() ? "true" : "false", card,
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
         storage_last_write_ok() ? "true" : "false",
@@ -1760,8 +1887,10 @@ esp_err_t web_server_start(void)
         { .uri = "/wifi-setup",  .method = HTTP_GET,  .handler = h_wifi_setup },
         { .uri = "/wifi-save",   .method = HTTP_POST, .handler = h_wifi_save  },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
+        { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
+        { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },

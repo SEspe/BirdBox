@@ -49,7 +49,17 @@ static bool               s_portal_mode = false;
 static bool               s_have_stored_creds = false;
 static bool               s_sntp_started = false;
 
+/* Up to two stored networks (FSD §4.7). s_nets[0] = primary, s_nets[1] =
+ * alternative ("alt1"); ssid is "" when a slot is unconfigured. s_net_count is
+ * the number of usable (non-empty, contiguous from 0) networks; s_cur_net is
+ * the one currently configured on the STA interface. */
+#define WIFI_MAX_NETS 2
+static struct { char ssid[64]; char pass[64]; } s_nets[WIFI_MAX_NETS];
+static int  s_net_count = 0;
+static int  s_cur_net   = 0;
+
 volatile bool     g_wifi_save_requested = false;
+volatile int      g_new_slot = 0;
 char              g_new_ssid[64] = {0};
 char              g_new_pass[64] = {0};
 volatile uint32_t g_wifi_disconnect_count = 0;
@@ -62,29 +72,40 @@ char          g_ipcfg_gw[16]   = {0};
 char          g_ipcfg_dns[16]  = {0};
 volatile bool g_ipcfg_save_requested = false;
 
-/* ── NVS helpers ────────────────────────────────────────────────────────── */
-static esp_err_t nvs_load_wifi(char *ssid, char *pass, size_t len)
+/* ── NVS helpers ──────────────────────────────────────────────────────────
+ * Slot 0 (primary) uses keys "ssid"/"pass" — unchanged from before, so an
+ * existing single-network config still loads. Slot 1 (alt1) uses "ssid2"/
+ * "pass2". */
+static const char *ssid_key(int slot) { return slot ? "ssid2" : "ssid"; }
+static const char *pass_key(int slot) { return slot ? "pass2" : "pass"; }
+
+static esp_err_t nvs_load_wifi(int slot, char *ssid, char *pass, size_t len)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK) return err;
     size_t sl = len, pl = len;
-    err  = nvs_get_str(h, "ssid", ssid, &sl);
-    err |= nvs_get_str(h, "pass", pass, &pl);
+    err  = nvs_get_str(h, ssid_key(slot), ssid, &sl);
+    err |= nvs_get_str(h, pass_key(slot), pass, &pl);
     nvs_close(h);
     return err;
 }
 
-static void nvs_save_wifi(const char *ssid, const char *pass)
+static void nvs_save_wifi(int slot, const char *ssid, const char *pass)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "ssid", ssid);
-        nvs_set_str(h, "pass", pass);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "WiFi credentials saved");
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    if (slot == WIFI_SLOT_ALT && (!ssid || ssid[0] == '\0')) {
+        nvs_erase_key(h, ssid_key(slot));    /* blank alt SSID removes it */
+        nvs_erase_key(h, pass_key(slot));
+        ESP_LOGI(TAG, "alternative WiFi network removed");
+    } else {
+        nvs_set_str(h, ssid_key(slot), ssid);
+        nvs_set_str(h, pass_key(slot), pass);
+        ESP_LOGI(TAG, "WiFi credentials saved (slot %d)", slot);
     }
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 static void nvs_erase_wifi(void)
@@ -93,6 +114,8 @@ static void nvs_erase_wifi(void)
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_key(h, "ssid");
         nvs_erase_key(h, "pass");
+        nvs_erase_key(h, "ssid2");    /* alt1 too */
+        nvs_erase_key(h, "pass2");
         /* IP config too — the boot-button reset is also the documented
          * recovery from an unreachable static IP (FSD §4.5) */
         nvs_erase_key(h, "ipmode");
@@ -104,6 +127,37 @@ static void nvs_erase_wifi(void)
         nvs_close(h);
         ESP_LOGW(TAG, "WiFi credentials + IP config erased");
     }
+}
+
+/* Load both slots into s_nets. s_nets[0]/[1].ssid are always valid strings
+ * ("" if unset) so the WiFi tab can show them; s_net_count counts usable
+ * networks (the alt is only usable when a primary exists). */
+static void load_stored_nets(void)
+{
+    memset(s_nets, 0, sizeof(s_nets));
+    s_net_count = 0;
+    for (int i = 0; i < WIFI_MAX_NETS; i++) {
+        char ssid[64] = {0}, pass[64] = {0};
+        if (nvs_load_wifi(i, ssid, pass, sizeof(ssid)) == ESP_OK && ssid[0]) {
+            strlcpy(s_nets[i].ssid, ssid, sizeof(s_nets[i].ssid));
+            strlcpy(s_nets[i].pass, pass, sizeof(s_nets[i].pass));
+        }
+    }
+    /* Usable count is contiguous from slot 0: no primary ⇒ nothing usable. */
+    if (s_nets[0].ssid[0]) s_net_count = s_nets[1].ssid[0] ? 2 : 1;
+}
+
+static void set_sta_config(int idx)
+{
+    wifi_config_t sta = {0};
+    strlcpy((char *) sta.sta.ssid,     s_nets[idx].ssid, sizeof(sta.sta.ssid));
+    strlcpy((char *) sta.sta.password, s_nets[idx].pass, sizeof(sta.sta.password));
+    esp_wifi_set_config(WIFI_IF_STA, &sta);
+}
+
+const char *wifi_configured_ssid(int slot)
+{
+    return (slot >= 0 && slot < WIFI_MAX_NETS) ? s_nets[slot].ssid : "";
 }
 
 /* ── IP configuration (FSD §4.5) ────────────────────────────────────────── */
@@ -220,8 +274,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             /* Once we've connected at least once, retry forever — MAX_RETRY only
              * governs the initial boot decision to fall back to the portal. */
             if (s_wifi_ever_connected || s_retry_count < MAX_RETRY) {
-                esp_wifi_connect();
                 s_retry_count++;
+                /* In-service failover (FSD §4.7): after MAX_RETRY consecutive
+                 * failures on the current AP, switch to the other stored network
+                 * so a box that roams between two coverage areas finds whichever
+                 * is present. (Boot-time network switching is driven by the loop
+                 * in wifi_start, not here.) */
+                if (s_wifi_ever_connected && s_net_count > 1 &&
+                    s_retry_count % MAX_RETRY == 0) {
+                    s_cur_net = (s_cur_net + 1) % s_net_count;
+                    set_sta_config(s_cur_net);
+                    ESP_LOGI(TAG, "failover: switching to network %d (%s)",
+                             s_cur_net, s_nets[s_cur_net].ssid);
+                }
+                esp_wifi_connect();
                 ESP_LOGI(TAG, "WiFi retry %d/%d", s_retry_count, MAX_RETRY);
             } else {
                 xEventGroupSetBits(s_wifi_eg, WIFI_FAIL_BIT);
@@ -253,7 +319,7 @@ static void config_apply_task(void *arg)
 {
     for (;;) {
         if (g_wifi_save_requested) {
-            nvs_save_wifi(g_new_ssid, g_new_pass);
+            nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
             vTaskDelay(pdMS_TO_TICKS(500));
             esp_restart();
         }
@@ -296,12 +362,18 @@ static void start_config_portal(void)
         if (s_have_stored_creds &&
             esp_timer_get_time() - last_retry_us > (int64_t) PORTAL_RETRY_MS * 1000) {
             last_retry_us = esp_timer_get_time();
-            ESP_LOGI(TAG, "Portal open — retrying stored network in background");
+            /* Alternate stored networks each cycle so the portal keeps trying
+             * both the primary and alt1 (FSD §4.7). */
+            if (s_net_count > 1) {
+                s_cur_net = (s_cur_net + 1) % s_net_count;
+                set_sta_config(s_cur_net);
+            }
+            ESP_LOGI(TAG, "Portal open — retrying %s in background", s_nets[s_cur_net].ssid);
             esp_wifi_connect();   /* GOT_IP handler reboots on success */
         }
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-    nvs_save_wifi(g_new_ssid, g_new_pass);
+    nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
     ESP_LOGI(TAG, "Credentials saved, restarting…");
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
@@ -325,15 +397,13 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                &wifi_event_handler, NULL));
 
-    char ssid[64] = {0}, pass[64] = {0};
-    if (nvs_load_wifi(ssid, pass, sizeof(ssid)) == ESP_OK && ssid[0] != '\0') {
+    load_stored_nets();
+    if (s_net_count > 0) {
         s_have_stored_creds = true;
-        wifi_config_t sta_cfg = {0};
-        strlcpy((char *) sta_cfg.sta.ssid,     ssid, sizeof(sta_cfg.sta.ssid));
-        strlcpy((char *) sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password));
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
-        apply_static_ip(sta_netif);
-        ESP_ERROR_CHECK(esp_wifi_start());
+        s_cur_net = WIFI_SLOT_PRIMARY;
+        set_sta_config(WIFI_SLOT_PRIMARY);
+        apply_static_ip(sta_netif);         /* shared IP setting for both nets */
+        ESP_ERROR_CHECK(esp_wifi_start());  /* STA_START connects to slot 0    */
 
         /* Modem-sleep power save adds DTIM-interval latency to every HTTP
          * exchange — deadly for an MJPEG stream. Device is mains-powered. */
@@ -343,12 +413,28 @@ esp_err_t wifi_start(void)
         esp_err_t txp = esp_wifi_set_max_tx_power(84);
         if (txp != ESP_OK) ESP_LOGW(TAG, "set_max_tx_power: %s", esp_err_to_name(txp));
 
-        EventBits_t bits = xEventGroupWaitBits(s_wifi_eg,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
-            pdMS_TO_TICKS(15000));
+        /* Try each stored network in turn — primary, then alt1 (FSD §4.7).
+         * The shared static-IP/DHCP setting applies to whichever connects; a
+         * single static address is only valid if both APs share a subnet,
+         * otherwise use DHCP. */
+        bool connected = false;
+        for (int i = 0; i < s_net_count; i++) {
+            if (i > 0) {                    /* slot 0 already connecting above  */
+                s_cur_net = i;
+                set_sta_config(i);
+                s_retry_count = 0;
+                xEventGroupClearBits(s_wifi_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+                ESP_LOGI(TAG, "primary unreachable — trying alternative %s", s_nets[i].ssid);
+                esp_wifi_connect();
+            }
+            EventBits_t bits = xEventGroupWaitBits(s_wifi_eg,
+                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
+                pdMS_TO_TICKS(15000));
+            if (bits & WIFI_CONNECTED_BIT) { connected = true; break; }
+        }
 
-        if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "WiFi connected to %s", ssid);
+        if (connected) {
+            ESP_LOGI(TAG, "WiFi connected to %s", s_nets[s_cur_net].ssid);
             /* Clock: SNTP + timezone (FSD §3.4). Best-effort — events before
              * first sync get placeholder timestamps. */
             start_sntp();
@@ -357,7 +443,7 @@ esp_err_t wifi_start(void)
             xTaskCreate(config_apply_task, "cfg_apply", 4096, NULL, 3, NULL);
             return ESP_OK;
         }
-        ESP_LOGW(TAG, "WiFi connect failed, opening portal (will keep retrying stored network)");
+        ESP_LOGW(TAG, "all networks failed, opening portal (will keep retrying)");
         esp_wifi_stop();
     }
 

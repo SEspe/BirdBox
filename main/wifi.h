@@ -21,11 +21,22 @@ bool wifi_in_portal_mode(void);
 void wifi_restart_sntp(void);
 
 /* Credential save handshake with web_server.c (portal form and WiFi tab):
- * the HTTP handler fills g_new_ssid/g_new_pass and sets
- * g_wifi_save_requested; wifi.c persists to NVS and reboots. */
+ * the HTTP handler fills g_new_ssid/g_new_pass, sets g_new_slot (0 = primary,
+ * 1 = alternative "alt1"), and sets g_wifi_save_requested; wifi.c persists to
+ * NVS and reboots. Saving slot 1 with an empty SSID removes the alternative. */
 extern volatile bool g_wifi_save_requested;
+extern volatile int  g_new_slot;
 extern char          g_new_ssid[64];
 extern char          g_new_pass[64];
+
+/* Two stored networks (FSD §4.7): the device tries the primary first, then the
+ * alternative, at boot, and fails over between them in service. */
+#define WIFI_SLOT_PRIMARY  0
+#define WIFI_SLOT_ALT      1
+
+/* Configured SSID for a slot (0/1), "" if none — for the WiFi tab, which shows
+ * the configured network names. Passwords are never exposed. */
+const char *wifi_configured_ssid(int slot);
 
 /* IP configuration (FSD §4.5, RemoteStart v1.37 design): DHCP by default,
  * optional static IP. Loaded from NVS at boot, read by GET /api/ipconfig,
