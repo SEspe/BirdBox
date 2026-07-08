@@ -1741,21 +1741,50 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Localize one raw model label ("Scientific name (Common Name)") to the
+ * current display language. The classifier only splits the *winning* label
+ * into species/latin; the top-3 arrive as raw English strings, so parse the
+ * "Latin (Common)" shape here and run it through the same localizer, else the
+ * top-3 breakdown ignores the language setting. */
+static void classify_localize_label(const char *raw, char *out, size_t outsz)
+{
+    const char *op = strstr(raw, " (");
+    const char *cp = op ? strrchr(raw, ')') : NULL;
+    if (op && cp && cp > op + 2) {
+        char latin[64], common[64];
+        size_t ll = (size_t) (op - raw);
+        if (ll >= sizeof(latin)) ll = sizeof(latin) - 1;
+        memcpy(latin, raw, ll);
+        latin[ll] = '\0';
+        size_t cl = (size_t) (cp - (op + 2));
+        if (cl >= sizeof(common)) cl = sizeof(common) - 1;
+        memcpy(common, op + 2, cl);
+        common[cl] = '\0';
+        species_localize(common, latin, g_settings.lang, out, outsz);
+    } else {
+        snprintf(out, outsz, "%s", raw);   /* no parseable binomial */
+    }
+}
+
 /* Shared JSON reply for the classify endpoints: localized species name plus
- * the raw top-3 labels/percentages and timing. */
+ * the top-3 labels (localized to the display language) / percentages / timing. */
 static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r)
 {
     char species[80];
     species_localize(r->species, r->latin, g_settings.lang, species, sizeof(species));
 
-    char buf[512];
+    char l0[96], l1[96], l2[96];
+    classify_localize_label(r->top_label[0], l0, sizeof(l0));
+    classify_localize_label(r->top_label[1], l1, sizeof(l1));
+    classify_localize_label(r->top_label[2], l2, sizeof(l2));
+
+    char buf[768];
     snprintf(buf, sizeof(buf),
         "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
         "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
         "{\"label\":\"%s\",\"pct\":%u}]}",
         species, r->confidence_pct, (long) r->duration_ms,
-        r->top_label[0], r->top_pct[0], r->top_label[1], r->top_pct[1],
-        r->top_label[2], r->top_pct[2]);
+        l0, r->top_pct[0], l1, r->top_pct[1], l2, r->top_pct[2]);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
