@@ -69,11 +69,11 @@ static tflite::MicroInterpreter *s_interp = NULL;
 static SemaphoreHandle_t         s_run_mtx = NULL;
 
 typedef struct {
-    uint8_t *jpeg;
-    size_t   len;
     char     ts[24];
     int      frames;
     char     first_path[96];
+    char     paths[CLASSIFY_BEST_OF_N][96];  /* saved-frame paths to score */
+    int      path_count;
 } cls_job_t;
 static QueueHandle_t s_jobq = NULL;
 
@@ -373,29 +373,61 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
     return ESP_OK;
 }
 
-/* ── Event task: classify, then write the visit-log row (§3.2 async) ────── */
+/* One inference, taking the run mutex for just this frame (best-of-N loops
+ * lock per frame so a manual /api/classify isn't blocked for the whole run). */
+static esp_err_t run_one(const uint8_t *jpeg, size_t len, classify_result_t *out)
+{
+    xSemaphoreTake(s_run_mtx, portMAX_DELAY);
+    esp_err_t err = run_locked(jpeg, len, out);
+    xSemaphoreGive(s_run_mtx);
+    return err;
+}
+
+/* best-of-N ranking: a decided real species (non-empty latin — the "no bird"/
+ * "Unidentified bird"/"unclassified" sentinels leave it empty) always beats a
+ * sentinel, so a confident background frame can't outrank a real ID from
+ * another frame; among equals, higher confidence wins. */
+static bool result_better(const classify_result_t *n, const classify_result_t *c)
+{
+    bool nr = n->latin[0] != '\0', cr = c->latin[0] != '\0';
+    if (nr != cr) return nr;
+    return n->confidence_pct > c->confidence_pct;
+}
+
+/* ── Event task: best-of-N classify, then write the visit-log row (async) ── */
 static void classify_task(void *arg)
 {
     cls_job_t job;
     for (;;) {
         if (xQueueReceive(s_jobq, &job, portMAX_DELAY) != pdTRUE) continue;
 
-        classify_result_t r;
-        xSemaphoreTake(s_run_mtx, portMAX_DELAY);
-        esp_err_t err = run_locked(job.jpeg, job.len, &r);
-        xSemaphoreGive(s_run_mtx);
-        free(job.jpeg);
+        classify_result_t best;
+        bool have_best = false;
+        int  scored = 0;
+        for (int i = 0; i < job.path_count; i++) {
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[i]);
+            size_t len = 0;
+            uint8_t *buf = load_file_psram(full, &len);
+            if (!buf) { ESP_LOGW(TAG, "best-of: read %s failed", full); continue; }
+            classify_result_t r;
+            esp_err_t err = run_one(buf, len, &r);
+            free(buf);
+            if (err != ESP_OK) continue;
+            scored++;
+            if (!have_best || result_better(&r, &best)) { best = r; have_best = true; }
+        }
 
         char line[288];
-        if (err == ESP_OK) {
-            strlcpy(s_last_species, r.species, sizeof(s_last_species));
-            strlcpy(s_last_latin, r.latin, sizeof(s_last_latin));
-            ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %ld ms)",
-                     job.ts, r.species, r.confidence_pct, r.top_label[0],
-                     (long) r.duration_ms);
+        if (have_best) {
+            strlcpy(s_last_species, best.species, sizeof(s_last_species));
+            strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
+            ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', best of %d/%d frame(s), %ld ms)",
+                     job.ts, best.species, best.confidence_pct, best.top_label[0],
+                     scored, job.path_count, (long) best.duration_ms);
             snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s",
-                     job.ts, r.species, r.confidence_pct, job.frames, job.first_path,
-                     r.latin);
+                     job.ts, best.species, best.confidence_pct, job.frames, job.first_path,
+                     best.latin);
         } else {
             snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,",
                      job.ts, job.frames, job.first_path);
@@ -493,24 +525,26 @@ esp_err_t classify_init(void)
 
 bool classify_available(void) { return s_available; }
 
-bool classify_submit_event(uint8_t *jpeg, size_t len, const char *ts,
-                           int frames, const char *first_path)
+bool classify_submit_event(const char (*paths)[96], int path_count,
+                           const char *ts, int frames, const char *first_path)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
-    if (!s_available) return false;
+    if (!s_available || path_count <= 0) return false;
     cls_job_t job = {};
-    job.jpeg   = jpeg;
-    job.len    = len;
     job.frames = frames;
     strlcpy(job.ts, ts, sizeof(job.ts));
     strlcpy(job.first_path, first_path, sizeof(job.first_path));
+    int n = path_count < CLASSIFY_BEST_OF_N ? path_count : CLASSIFY_BEST_OF_N;
+    for (int i = 0; i < n; i++)
+        strlcpy(job.paths[i], paths[i], sizeof(job.paths[0]));
+    job.path_count = n;
     if (xQueueSend(s_jobq, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "classify queue full — event logged unclassified");
         return false;
     }
     return true;
 #else
-    (void) jpeg; (void) len; (void) ts; (void) frames; (void) first_path;
+    (void) paths; (void) path_count; (void) ts; (void) frames; (void) first_path;
     return false;
 #endif
 }

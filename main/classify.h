@@ -35,12 +35,20 @@ typedef struct {
     int32_t duration_ms;        /* inference (Invoke) time */
 } classify_result_t;
 
-/* Queues one visit event's best frame for async classification + visit-log
- * write. On true, ownership of jpeg (heap buffer) transfers to the
- * classifier; on false the caller still owns it and must write the
- * fallback log row itself. ts/first_path are copied. */
-bool classify_submit_event(uint8_t *jpeg, size_t len, const char *ts,
-                           int frames, const char *first_path);
+/* Best-of-N: how many of an event's saved frames the classifier scores,
+ * keeping the most confident real-species result (§3.2). The event's first
+ * frame is often the worst (bird mid-entry / motion-blurred), so scoring a
+ * few and picking the best improves the label. */
+#define CLASSIFY_BEST_OF_N 3
+
+/* Queues a visit event for async best-of-N classification + visit-log write.
+ * `paths` are the event's saved-frame paths (web-relative, e.g.
+ * "/captures/DAY/NAME.jpg"), best-first; up to CLASSIFY_BEST_OF_N are scored,
+ * the rest ignored. The classifier re-reads each from SD. All args are
+ * copied; the caller keeps ownership. Returns false (classifier disabled or
+ * queue full) so the caller can write the fallback "unclassified" row. */
+bool classify_submit_event(const char (*paths)[96], int path_count,
+                           const char *ts, int frames, const char *first_path);
 
 /* Synchronous one-shot classification (POST /api/classify). Blocks the
  * caller for the full decode + inference (~seconds); shares a lock with

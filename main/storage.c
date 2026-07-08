@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -181,7 +182,9 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     /* Build /sd/captures/<day>/<name>.jpg. Before the first SNTP sync the
      * clock reads ~1970 (FSD §3.4) — use an uptime-based name under no-date/
      * instead of a bogus timestamp. */
-    time_t now = time(NULL);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    time_t now = tv.tv_sec;
     struct tm tm_now;
     localtime_r(&now, &tm_now);
 
@@ -190,8 +193,14 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
         strlcpy(day, "no-date", sizeof(day));
         snprintf(name, sizeof(name), "up%llu", (unsigned long long) (esp_timer_get_time() / 1000));
     } else {
+        /* date-time-ms: an event's frames are ~500 ms apart, so second-only
+         * names collided (only the b..z fallback below saved them) — the
+         * millisecond field makes each frame's name naturally unique, which
+         * best-of-N species ID (§3.2) relies on to re-read distinct frames. */
         strftime(day,  sizeof(day),  "%Y-%m-%d",          &tm_now);
-        strftime(name, sizeof(name), "%Y-%m-%d_%H-%M-%S", &tm_now);  /* date-time based */
+        strftime(name, sizeof(name), "%Y-%m-%d_%H-%M-%S", &tm_now);
+        size_t nl = strlen(name);
+        snprintf(name + nl, sizeof(name) - nl, "-%03d", (int) (tv.tv_usec / 1000));
     }
 
     char dir[64], path[128];
