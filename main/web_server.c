@@ -188,6 +188,9 @@ static const char INDEX_HTML[] =
 ".gmeta{display:flex;justify-content:space-between;align-items:center;"
 "padding:6px 8px;font-size:.72rem;color:#9ab}"
 ".gmeta button{background:none;border:none;color:#e77;cursor:pointer;font-size:.9rem}"
+".gmeta .gidbtn{color:#7fc98b}"
+".gid{padding:0 8px 7px;font-size:.72rem;color:#cde;line-height:1.35}"
+".gid .gidt{display:block;color:#9ab;font-size:.66rem}"
 "h3.sh{color:#7fc98b;font-size:.9rem;margin:18px 0 6px}"
 ".srow{display:flex;align-items:center;gap:8px;font-size:.78rem;margin:3px 0}"
 ".srow .lbl{width:84px;color:#9ab;flex-shrink:0}"
@@ -476,8 +479,21 @@ static const char INDEX_HTML[] =
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
-"<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></div>';"
+"<span><button class=\"gidbtn\" title=\"identify bird\" "
+"onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
+"<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
 "g.appendChild(div);});gSelSync();});}"
+"function idBird(btn,d,f){var it=btn.closest('.gitem');"
+"var out=it.querySelector('.gid');"
+"if(!out){out=document.createElement('div');out.className='gid';it.appendChild(out);}"
+"out.textContent='\\u2026 identifying';btn.disabled=true;"
+"fetch('/api/classify-file?date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f))"
+".then(r=>r.json()).then(o=>{btn.disabled=false;"
+"if(o.error){out.textContent=o.error;return;}"
+"var t=(o.top3||[]).filter(x=>x.pct>0).map(x=>esc(x.label)+' '+x.pct+'%').join(', ');"
+"out.innerHTML='<b>'+esc(o.species||'?')+'</b> '+(o.confidence||0)+'%'"
+"+(t?'<span class=gidt>'+t+'</span>':'');})"
+".catch(()=>{btn.disabled=false;out.textContent='identify failed';});}"
 "function gChecks(){return [...document.querySelectorAll('#grid .gchk')];}"
 "function gSelSync(cb){if(cb)cb.closest('.gitem').classList.toggle('sel',cb.checked);"
 "var n=gChecks().filter(c=>c.checked).length;"
@@ -1724,6 +1740,26 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Shared JSON reply for the classify endpoints: localized species name plus
+ * the raw top-3 labels/percentages and timing. */
+static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r)
+{
+    char species[80];
+    species_localize(r->species, r->latin, g_settings.lang, species, sizeof(species));
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
+        "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
+        "{\"label\":\"%s\",\"pct\":%u}]}",
+        species, r->confidence_pct, (long) r->duration_ms,
+        r->top_label[0], r->top_pct[0], r->top_label[1], r->top_pct[1],
+        r->top_label[2], r->top_pct[2]);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* POST /api/classify — classify a posted JPEG right now (FSD §3.2/§6).
  * Lets users sanity-check their model without waiting for a bird, and is
  * how the classifier is verified end-to-end. Blocks this httpd thread for
@@ -1768,21 +1804,75 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
         return ESP_OK;
     }
+    return classify_send_json(req, &r);
+}
 
-    char species[80];
-    species_localize(r.species, r.latin, g_settings.lang, species, sizeof(species));
+/* GET /api/classify-file?date=<day>&f=<file> — classify a JPEG already on the
+ * SD card (FSD §3.2/§6). Lets the Gallery re-run species ID on a saved photo
+ * without re-uploading it over WiFi: the device reads the file itself. Blocks
+ * this httpd thread for the full decode + inference (~seconds) like /api/classify. */
+static esp_err_t h_classify_file(httpd_req_t *req)
+{
+    if (!classify_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no classifier (no model on SD?)\"}");
+        return ESP_OK;
+    }
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
+        return ESP_OK;
+    }
+    char query[128] = {0}, date[24] = {0}, file[80] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "date", date, sizeof(date));
+    httpd_query_key_value(query, "f", file, sizeof(file));
+    url_decode(date);
+    url_decode(file);
+    if (!date[0] || !file[0] ||
+        strstr(date, "..") || strchr(date, '/') || strchr(date, '\\') ||
+        strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
 
-    char buf[512];
-    snprintf(buf, sizeof(buf),
-        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
-        "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
-        "{\"label\":\"%s\",\"pct\":%u}]}",
-        species, r.confidence_pct, (long) r.duration_ms,
-        r.top_label[0], r.top_pct[0], r.top_label[1], r.top_pct[1],
-        r.top_label[2], r.top_pct[2]);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, buf);
-    return ESP_OK;
+    char path[160];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s", date, file);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+        return ESP_OK;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > CLASSIFY_MAX_BODY) {
+        fclose(f);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized JPEG");
+        return ESP_OK;
+    }
+    uint8_t *body = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        fclose(f);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        return ESP_OK;
+    }
+    size_t rd = fread(body, 1, sz, f);
+    fclose(f);
+    if (rd != (size_t) sz) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+        return ESP_OK;
+    }
+
+    classify_result_t r;
+    esp_err_t err = classify_run_sync(body, sz, &r);
+    free(body);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
+        return ESP_OK;
+    }
+    return classify_send_json(req, &r);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
@@ -1910,6 +2000,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
+        { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
