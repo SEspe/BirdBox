@@ -48,7 +48,7 @@ static volatile uint32_t s_trigger_count = 0;
  * on no-motion frames. */
 static bool detect_once(void)
 {
-    camera_fb_t *fb = esp_camera_fb_get();
+    camera_fb_t *fb = camera_grab();
     if (!fb) return false;
 
     esp_jpeg_image_cfg_t jcfg = {
@@ -61,7 +61,7 @@ static bool detect_once(void)
     };
     esp_jpeg_image_output_t out = {0};
     esp_err_t err = esp_jpeg_decode(&jcfg, &out);
-    esp_camera_fb_return(fb);
+    camera_return(fb);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "detect decode failed: %s", esp_err_to_name(err));
         return false;
@@ -107,12 +107,12 @@ static void capture_event(void)
     int  frames = 0;
 
     for (int i = 0; i < g_settings.capture_count; i++) {
-        camera_fb_t *fb = esp_camera_fb_get();
+        camera_fb_t *fb = camera_grab();
         if (fb) {
             esp_err_t err = capture_event_frame(fb->buf, fb->len,
                                                 frames == 0 ? first_path : NULL,
                                                 sizeof(first_path));
-            esp_camera_fb_return(fb);
+            camera_return(fb);
             if (err == ESP_OK) frames++;
             else if (frames == 0) break;   /* no SD — don't spin on a dead write path */
         }

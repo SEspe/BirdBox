@@ -75,15 +75,26 @@ void app_main(void)
     ESP_ERROR_CHECK(classify_init());
     if (camera_init() != ESP_OK)         /* degrade, don't brick: UI shows "no camera" */
         ESP_LOGE(TAG, "continuing without camera");
+    /* Watchdog right after the camera and BEFORE motion (FSD §3.5). If the
+     * camera streams corrupt frames, esp_camera_fb_get() spins CPU-bound; the
+     * motion task (prio 4) doing that would starve this prio-1 app_main the
+     * instant it's created — so everything that must run at boot (watchdog,
+     * web, rollback-validate) is started here first, and motion_start() goes
+     * last. The watchdog runs above motion's priority, so it stays schedulable
+     * to recover even while a grab spins. */
+    ESP_ERROR_CHECK(camera_watchdog_start());
     ESP_ERROR_CHECK(wifi_start());       /* portal on first boot (FSD §4) */
     ESP_ERROR_CHECK(web_server_start());
-    ESP_ERROR_CHECK(motion_start());
     xTaskCreate(housekeeping_task, "housekeep", 2048, NULL, 2, NULL);
 
     /* Confirms this image booted OK, canceling any pending bootloader
-     * rollback (FSD §8) — reaching here means every subsystem above
-     * initialized without an ESP_ERROR_CHECK abort. */
+     * rollback (FSD §8). Done before motion_start so a camera that streams
+     * garbage (which starves app_main here) can't cause a false rollback of an
+     * otherwise-good image. */
     esp_ota_mark_app_valid_cancel_rollback();
 
     ESP_LOGI(TAG, "boot complete");
+
+    ESP_ERROR_CHECK(motion_start());     /* last: its frame-grab loop is what
+                                            spins on a broken camera (FSD §3.5)*/
 }

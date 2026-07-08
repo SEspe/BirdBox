@@ -35,8 +35,35 @@
 #include "esp_camera.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "driver/temperature_sensor.h"
 
 static const char *TAG = "web";
+
+/* On-die temperature sensor for the Debug tab / overheat diagnosis (FSD §5).
+ * Installed lazily on first /api/sysinfo read. This is the SoC die, not the
+ * camera, but it's a solid proxy for whether the box is running hot. Returns
+ * -1000 if unavailable. */
+static temperature_sensor_handle_t s_tsens;
+static float soc_temp_c(void)
+{
+    if (!s_tsens) {
+        /* 20–100 °C: must be a single predefined S3 range (a wider span makes
+         * install fail). A running box sits well above 20 °C, so this covers
+         * the overheat zone we care about. */
+        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);
+        esp_err_t err = temperature_sensor_install(&cfg, &s_tsens);
+        if (err != ESP_OK) {
+            s_tsens = NULL;
+            ESP_LOGW(TAG, "temp sensor install failed: %s", esp_err_to_name(err));
+            return -1000.0f;
+        }
+        temperature_sensor_enable(s_tsens);
+    }
+    float c = -1000.0f;
+    esp_err_t err = temperature_sensor_get_celsius(s_tsens, &c);
+    if (err != ESP_OK) { ESP_LOGW(TAG, "temp read failed: %s", esp_err_to_name(err)); return -1000.0f; }
+    return c;
+}
 
 /* Heap low-water mark, tracked by main.c's housekeeping task (FSD §5) */
 extern uint32_t g_heap_min;
@@ -576,6 +603,7 @@ static const char INDEX_HTML[] =
 "drow('Free heap',Math.round(d.heap/1024)+' KB')+"
 "drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
 "drow('Uptime',fmtAge(d.uptime))+"
+"drow('SoC temperature',(d.socTempC>-100?d.socTempC.toFixed(1)+'\\u00b0C':'n/a'),(d.socTempC>75?'bad':(d.socTempC>-100?'ok':'')))+"
 "drow('WiFi reconnects',d.wifiDisc)+"
 "drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'));"
 "$g('dWifi').innerHTML="
@@ -586,7 +614,10 @@ static const char INDEX_HTML[] =
 "drow('Status','no SD card','bad');"
 "$g('dCam').innerHTML=d.camPresent?"
 "drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
-"drow('JPEG quality',d.camQuality):drow('Status','no camera','bad');"
+"drow('JPEG quality',d.camQuality)+"
+"drow('Watchdog recoveries',(d.camRecoveries||0)+(d.camRecoveryAgo>=0?' (last '+fmtAge(d.camRecoveryAgo)+' ago)':''),(d.camRecoveries?'':'ok'))+"
+"(d.camFault?drow('Camera fault','YES \\u2014 needs a manual power cycle','bad'):'')"
+":drow('Status','no camera','bad');"
 "$g('dCls').innerHTML=d.clsModel?"
 "drow('Model',d.clsModel)+drow('Labels',d.clsLabels+' species')+"
 "drow('Northern-Europe species',(d.clsRegion||0)+' of '+d.clsLabels"
@@ -627,7 +658,7 @@ static void stream_task(void *arg)
 
     char hdr[64];
     for (;;) {
-        camera_fb_t *fb = esp_camera_fb_get();
+        camera_fb_t *fb = camera_grab();
         if (!fb) {
             ESP_LOGW(TAG, "stream: no frame from camera");
             break;
@@ -637,7 +668,7 @@ static void stream_task(void *arg)
             httpd_resp_send_chunk(req, STREAM_BOUNDARY, sizeof(STREAM_BOUNDARY) - 1) != ESP_OK ||
             httpd_resp_send_chunk(req, hdr, hlen) != ESP_OK ||
             httpd_resp_send_chunk(req, (const char *) fb->buf, fb->len) != ESP_OK;
-        esp_camera_fb_return(fb);
+        camera_return(fb);
         if (fail) break;               /* client went away */
         vTaskDelay(pdMS_TO_TICKS(30)); /* pace ≈ sensor rate, yield to httpd */
     }
@@ -821,7 +852,7 @@ static esp_err_t h_capture(httpd_req_t *req)
         return ESP_OK;
     }
 
-    camera_fb_t *fb = esp_camera_fb_get();
+    camera_fb_t *fb = camera_grab();
     if (!fb) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no frame");
         return ESP_OK;
@@ -829,7 +860,7 @@ static esp_err_t h_capture(httpd_req_t *req)
     char path[96] = {0};
     esp_err_t err = storage_save_jpeg(fb->buf, fb->len, path, sizeof(path));
     unsigned bytes = fb->len;
-    esp_camera_fb_return(fb);
+    camera_return(fb);
 
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD write failed");
@@ -1471,13 +1502,15 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[640];
+    char buf[768];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"sdWriteOk\":%s,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
+        "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
+        "\"socTempC\":%.1f,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
@@ -1491,6 +1524,9 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         storage_last_write_ok() ? "true" : "false",
         camera_available() ? "true" : "false", camera_get_pid(),
         camera_framesize_str(), g_settings.stream_quality,
+        (unsigned long) camera_recovery_count(), camera_last_recovery_ago_s(),
+        camera_fault() ? "true" : "false",
+        soc_temp_c(),
         (long) classify_last_duration_ms(),
         classify_model_name(), classify_label_count(), classify_region_matches());
     httpd_resp_set_type(req, "application/json");

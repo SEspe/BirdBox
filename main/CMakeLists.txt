@@ -18,6 +18,7 @@ idf_component_register(
         esp_netif
         nvs_flash
         esp_driver_gpio
+        esp_driver_tsens
         esp_http_server
         esp_timer
         app_update
