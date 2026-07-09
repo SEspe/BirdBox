@@ -47,6 +47,15 @@ static const char *TAG = "web";
  * synced, "manual" when only the browser-time fallback (POST /api/time) set it,
  * "none" before either. */
 static bool s_clock_manual = false;
+
+void web_server_note_ntp_sync(void)
+{
+    if (s_clock_manual) {
+        s_clock_manual = false;
+        ESP_LOGI(TAG, "SNTP sync landed — clockSrc back to ntp");
+    }
+}
+
 static void device_time(char *out, size_t n, const char **src)
 {
     time_t now = time(NULL);
@@ -1055,9 +1064,12 @@ static esp_err_t h_scan(httpd_req_t *req)
 /* POST /api/time — set the clock from the connecting browser when SNTP hasn't
  * synced (offline / NTP-blocked network, FSD §3.4). Body: epoch=<UTC seconds>.
  * Only sets the clock while it's unsynced (year < 2020), so a browser with a
- * wrong clock can't override an authoritative SNTP time; on success it re-bases
- * any captures stranded in /captures/no-date/ into today's folder. The web UI
- * calls this on load and before every snapshot. */
+ * wrong clock can't override an authoritative SNTP time. Does NOT re-base
+ * captures already stranded in /captures/no-date/ — that migration was removed
+ * in 2cdc828 after it caused FATFS rename data loss; they stay there. The web
+ * UI calls this on load and before every snapshot. If SNTP later syncs for
+ * real, wifi.c's sync_cb calls web_server_note_ntp_sync() to clear the
+ * "manual" clockSrc this function sets below. */
 static esp_err_t h_time_set(httpd_req_t *req)
 {
     char body[48] = {0};

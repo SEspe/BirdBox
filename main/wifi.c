@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -222,9 +223,22 @@ static void apply_static_ip(esp_netif_t *sta_netif)
 /* ── SNTP (FSD §3.4/§5) ──────────────────────────────────────────────────
  * Started once on first successful connect; the Settings tab can switch
  * servers afterward via wifi_restart_sntp() without a reboot. */
+
+/* Fires on every completed sync, not just the first — harmless (the
+ * web_server flag it clears is idempotent) and keeps clockSrc honest if the
+ * browser-time fallback (POST /api/time) ever re-latches "manual" after an
+ * earlier successful sync, e.g. a page load that raced a transient SNTP
+ * lookup failure. */
+static void on_sntp_sync(struct timeval *tv)
+{
+    (void) tv;
+    web_server_note_ntp_sync();
+}
+
 static void start_sntp(void)
 {
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(g_settings.ntp_server);
+    sntp_cfg.sync_cb = on_sntp_sync;
     esp_netif_sntp_init(&sntp_cfg);
     s_sntp_started = true;
     ESP_LOGI(TAG, "SNTP started (%s)", g_settings.ntp_server);
