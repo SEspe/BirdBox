@@ -17,6 +17,7 @@
 #include "camera.h"
 #include "capture.h"
 #include "settings.h"
+#include "illum.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -41,8 +42,31 @@ static const char *TAG = "motion";
 #define DETECT_PERIOD_MS  250
 #define PIX_DIFF_THR      25             /* per-pixel gray delta that counts as changed */
 
+/* Ambient-dark detection (FSD v1.36/v1.38): reuses the grayscale detect
+ * frame already decoded every DETECT_PERIOD_MS, no extra sampling, to drive
+ * two independent auto behaviours — the illuminator (ir_led_mode==1) and
+ * fast-shutter blur reduction (fast_shutter==1). Wide hysteresis gap between
+ * the two thresholds (0-255 avg luma) means ordinary daylight can't
+ * false-trigger a flicker loop.
+ *
+ * Both consumers bias this same reading, in opposite directions: the
+ * illuminator brightens its own frame (self-raising — harmless, daylight
+ * still swamps it, see below), while fast-shutter's pinned-short exposure
+ * reads *darker* than full auto would for the same light (self-lowering).
+ * A live bug (FSD v1.37) showed why fast-shutter can't just be a static
+ * on/off setting: forced short exposure only looks right at the light level
+ * it was tuned against — as ambient light rose through the day with AEC
+ * disabled, the image overexposed and couldn't correct itself. Gating it on
+ * this same dark/bright signal means it only ever engages when the scene is
+ * genuinely too dim for the fixed short exposure to overexpose. */
+#define AMBIENT_DARK_ON_THR   35   /* avg luma below this -> too dark, turn on */
+#define AMBIENT_DARK_OFF_THR  90   /* avg luma above this -> bright enough, turn off */
+
 static uint8_t *s_bg, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
+static bool     s_dark     = false;   /* hysteresis-debounced ambient state */
+static bool     s_illum_on = false;
+static bool     s_fshut_on = false;
 static int      s_px = 0;
 static int      s_w = 0, s_h = 0;        /* current detect-frame dimensions */
 static roi_t    s_roi;                   /* changed-cell bbox of the last trigger */
@@ -86,8 +110,24 @@ static bool detect_once(void)
     /* Grayscale ≈ green channel of RGB565 (6 bits, scaled to 8) — a stable
      * transform is all differencing needs, not colorimetric accuracy. */
     const uint16_t *rgb = (const uint16_t *) s_rgb;
-    for (int i = 0; i < px; i++)
+    long luma_sum = 0;
+    for (int i = 0; i < px; i++) {
         s_cur[i] = (uint8_t) (((rgb[i] >> 5) & 0x3F) << 2);
+        luma_sum += s_cur[i];
+    }
+
+    /* Runs on every decoded frame regardless of motion/background state, so
+     * both auto behaviours track ambient light continuously rather than only
+     * during a visit — "on during dark hours", not a per-shot flash/trigger. */
+    int avg = (int) (luma_sum / px);
+    if (!s_dark && avg < AMBIENT_DARK_ON_THR)       s_dark = true;
+    else if (s_dark && avg > AMBIENT_DARK_OFF_THR)  s_dark = false;
+
+    bool want_illum = (g_settings.ir_led_mode == 1) && s_dark;
+    if (want_illum != s_illum_on) { illum_set(want_illum); s_illum_on = want_illum; }
+
+    bool want_fshut = (g_settings.fast_shutter == 1) && s_dark;
+    if (want_fshut != s_fshut_on) { camera_set_fast_shutter(want_fshut); s_fshut_on = want_fshut; }
 
     if (!s_have_bg) {
         memcpy(s_bg, s_cur, px);

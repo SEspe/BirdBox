@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "classify.h"
 #include "species_i18n.h"
+#include "board_config.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -37,6 +38,8 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "driver/temperature_sensor.h"
+#include "driver/gpio.h"
+#include "illum.h"
 
 static const char *TAG = "web";
 
@@ -317,6 +320,12 @@ static const char INDEX_HTML[] =
 "<p class='sts' style='margin-top:2px'>Crops the classifier input to the changed 8&times;8 "
 "grid cells so the bird fills more of the model input (better ID). Saved photos are "
 "unaffected. Pick which cells count as the detection zone on the Live tab.</p>"
+"<label class='wl'><input type='checkbox' id='stFshut'> Reduce motion blur (fast shutter)</label>"
+"<p class='sts' style='margin-top:2px'>When the scene reads dark, fixes the camera's exposure "
+"short instead of letting it lengthen &mdash; the main cause of a blurry close/fast-moving bird "
+"at dusk or indoors. Only engages in low light (same brightness check as the illuminator), so "
+"normal daylight shots are unaffected; low-light shots come out darker/noisier in exchange for "
+"less blur.</p>"
 "<h3 class='sh'>Species Identification</h3>"
 "<label class='wl'>Region / species model</label>"
 "<select class='wi' id='stRegion'></select>"
@@ -391,9 +400,13 @@ static const char INDEX_HTML[] =
 "</select>"
 "<input class='wi' id='stNtpCustom' placeholder='ntp.example.com'"
 " style='display:none;margin-top:6px'>"
-"<label class='wl'>IR LED</label>"
+"<label class='wl'>Illuminator LED</label>"
 "<select class='wi' id='stIr'>"
-"<option value='0'>Off</option><option value='1'>Auto (needs IR hardware)</option></select>"
+"<option value='0'>Off (default)</option><option value='1'>Auto (on during dark hours)</option></select>"
+"<p class='sts'>Onboard white/reddish illuminator LED. Auto mode turns it on when the "
+"camera's own frames read dark and off again once it's bright, so it doubles as basic "
+"night lighting for the feed &mdash; no separate light sensor. Optional; leave off if "
+"you don't want it lighting the scene.</p>"
 "<p class='sts'>Settings apply immediately &mdash; no reboot needed.</p>"
 "<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
 "<span class='sts' id='stSts'></span>"
@@ -405,6 +418,15 @@ static const char INDEX_HTML[] =
 "<h3 class='sh'>Camera</h3><div id='dCam'></div>"
 "<h3 class='sh'>Species ID</h3><div id='dCls'></div>"
 "<button class='act' style='margin-left:0' onclick='loadDebug()'>&#8635; Refresh</button>"
+"<h3 class='sh'>GPIO Test</h3>"
+"<p class='sts'>Drives a raw GPIO pin high/low &mdash; use it to find which pin an "
+"unlabeled onboard LED is wired to by trying numbers and watching the board. Camera, "
+"SD and flash/PSRAM pins are refused; the pin reverts to input on reboot.</p>"
+"<label class='wl'>GPIO number</label>"
+"<input class='wi' id='dbgGpioNum' type='number' min='0' max='48' value='2' style='max-width:120px'>"
+"<button class='act' onclick='dbgGpio(1)'>&#128161; On</button>"
+"<button class='act' onclick='dbgGpio(0)'>Off</button>"
+"<span class='sts' id='dbgGpioSts'></span>"
 "</div>"
 "<div id='wifip' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>WiFi Network</h3>"
@@ -679,6 +701,7 @@ static const char INDEX_HTML[] =
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
+"$g('stFshut').checked=c.fshut==1;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "$g('stRes').value=c.res;$g('stContrast').value=c.contrast;g_savedRes=c.res;"
@@ -723,7 +746,8 @@ static const char INDEX_HTML[] =
 "+'&region='+encodeURIComponent($g('stRegion').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
 "+'&lang='+$g('stLang').value"
-"+'&dzoom='+($g('stZoom').checked?1:0);"
+"+'&dzoom='+($g('stZoom').checked?1:0)"
+"+'&fshut='+($g('stFshut').checked?1:0);"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
@@ -769,6 +793,14 @@ static const char INDEX_HTML[] =
 "drow('Last inference',d.lastInferenceMs<0?'none yet':d.lastInferenceMs+' ms'):"
 "drow('Status','no model loaded \\u2014 upload a .tflite + .txt to /sd/model','bad');"
 "}).catch(()=>{});}"
+"function dbgGpio(lvl){var n=$g('dbgGpioNum').value;"
+"fetch('/api/debug/gpio',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'num='+n+'&level='+lvl}).then(function(r){"
+"return r.text().then(function(t){return {ok:r.ok,t:t};});"
+"}).then(function(o){"
+"$g('dbgGpioSts').textContent=o.ok?('GPIO'+n+' = '+lvl):o.t;"
+"}).catch(function(){$g('dbgGpioSts').textContent='request failed';});}"
 "function otaUpload(){"
 "var f=$g('otaFile').files[0];var p=$g('otaProg');"
 "if(!f){p.textContent='Select a .bin file first';return;}"
@@ -1572,7 +1604,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
-        "\"zone\":\"%s\",\"dzoom\":%u,\"models\":[",
+        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -1580,7 +1612,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.region_filter,
         (unsigned) g_settings.resolution, (int) g_settings.contrast,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
-        (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom);
+        (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
+        (unsigned) g_settings.fast_shutter);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -1667,6 +1700,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         if (ok) g_settings.detect_zone = m;
     }
     g_settings.detect_zoom = field_num(body, "dzoom=", 0, 1, g_settings.detect_zoom);
+    g_settings.fast_shutter = field_num(body, "fshut=", 0, 1, g_settings.fast_shutter);
 
     settings_save();
 
@@ -1676,6 +1710,10 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
     camera_set_rotation(g_settings.rotation);        /* no-op without camera */
     camera_set_contrast(g_settings.contrast);        /* no-op without camera */
+    /* fast_shutter is applied by motion.c's ambient-dark check (FSD v1.38),
+     * not here — it only engages when the scene actually reads dark, and
+     * forcing it unconditionally on every save is what caused v1.37's
+     * daytime overexposure bug */
     /* resolution is applied at camera_init — needs a reboot (FSD §5) */
     wifi_restart_sntp();                             /* no-op before first connect */
 
@@ -2101,6 +2139,78 @@ static esp_err_t h_model_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Pins already spoken for by the camera/SD/flash-PSRAM bus or fixed to a
+ * boot-strapping/USB/UART role — off limits for the raw GPIO debug toggle
+ * below, since driving one of these can wedge the camera, SD card or the
+ * board itself rather than just (not) lighting an LED. */
+static bool gpio_debug_reserved(int n)
+{
+    static const int reserved[] = {
+        CAM_PIN_PWDN, CAM_PIN_RESET, CAM_PIN_XCLK, CAM_PIN_SIOD, CAM_PIN_SIOC,
+        CAM_PIN_Y9, CAM_PIN_Y8, CAM_PIN_Y7, CAM_PIN_Y6, CAM_PIN_Y5, CAM_PIN_Y4,
+        CAM_PIN_Y3, CAM_PIN_Y2, CAM_PIN_VSYNC, CAM_PIN_HREF, CAM_PIN_PCLK,
+#ifdef SD_PIN_CLK
+        SD_PIN_CLK, SD_PIN_CMD, SD_PIN_D0,
+#endif
+        SD_PIN_CS,
+        0, 3, 19, 20, 43, 44, 45, 46,      /* strapping / USB-JTAG / UART0 console */
+        26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,   /* octal flash+PSRAM bus */
+    };
+    for (unsigned i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++)
+        if (reserved[i] == n) return true;
+    return false;
+}
+
+/* POST /api/debug/gpio — body "num=<n>&level=<0|1>". Drives a raw GPIO pin
+ * high/low so an unlabeled onboard LED can be traced to its pin number by
+ * eye. PIN_IR_LED (GPIO48 on the reference unit) is a WS2812, not a plain
+ * LED — a raw level can clock garbage into its shift register and a
+ * follow-up low just latches that garbage rather than clearing it (observed
+ * live: it stayed lit after level=0) — so that pin is routed through the
+ * shared illum.c driver instead, which sends a real bit-timed frame. Other
+ * pins revert to input on the next reboot; the illuminator keeps whatever
+ * state it was last set to (matches its normal auto-mode behaviour). */
+static esp_err_t h_debug_gpio(httpd_req_t *req)
+{
+    char body[64] = {0};
+    int  len = MIN(req->content_len, (int) sizeof(body) - 1);
+    if (len > 0) httpd_req_recv(req, body, len);
+
+    long num   = field_num(body, "num=",   0, 48, -1);
+    long level = field_num(body, "level=", 0, 1,  -1);
+    if (num < 0 || level < 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "num and level are required");
+        return ESP_OK;
+    }
+
+#if PIN_IR_LED >= 0
+    if (num == PIN_IR_LED) {
+        if (!illum_available()) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_sendstr(req, "illuminator driver init failed");
+            return ESP_OK;
+        }
+        illum_set((bool) level);
+        httpd_resp_sendstr(req, "OK");
+        return ESP_OK;
+    }
+#endif
+
+    if (gpio_debug_reserved((int) num)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "pin is reserved by camera/SD/flash — refused");
+        return ESP_OK;
+    }
+
+    gpio_reset_pin((gpio_num_t) num);
+    gpio_set_direction((gpio_num_t) num, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t) num, (int) level);
+
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 /* POST /api/reboot */
 static esp_err_t h_reboot(httpd_req_t *req)
 {
@@ -2156,6 +2266,7 @@ esp_err_t web_server_start(void)
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
+        { .uri = "/api/debug/gpio", .method = HTTP_POST, .handler = h_debug_gpio },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },

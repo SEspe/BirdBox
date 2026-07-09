@@ -30,9 +30,11 @@
 #define CAM_PIN_HREF    7
 #define CAM_PIN_PCLK    13
 
-#define PIN_STATUS_LED  2      /* TODO: verify against the physical unit */
+#define PIN_STATUS_LED  2      /* TODO: verify against the physical unit — GPIO2 lit nothing when probed */
 #define PIN_PIR         -1     /* optional PIR (FSD §3.1); -1 = not fitted */
-#define PIN_IR_LED      -1     /* optional IR illuminator (FSD §2.1) */
+#define PIN_IR_LED      48     /* onboard WS2812 illuminator (white/reddish) — confirmed
+                                 * live via the Debug-tab GPIO probe (FSD v1.34/v1.35);
+                                 * needs the WS2812 protocol (illum.c), not a plain level */
 /* microSD: SDMMC 1-bit CLK=39 CMD=38 D0=40 (Freenove layout) — verified
  * live against the reference unit 2026-07-06 (64 GB card mounts, files
  * write and read back correctly). */

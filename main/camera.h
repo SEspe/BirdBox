@@ -44,6 +44,13 @@ esp_err_t camera_set_quality(uint8_t quality);
  * no sharpness control, so contrast is the closest supported "crispness" knob. */
 esp_err_t camera_set_contrast(int level);
 
+/* Fixed-short-exposure ("fast shutter") mode, applied live (FSD §2.1): fixes
+ * the sensor's integration time short instead of letting AEC lengthen it in
+ * dim light (the main source of motion blur on a close/fast bird), while
+ * leaving AGC on to auto-compensate brightness — trades noise for less
+ * blur. false restores normal auto exposure. */
+esp_err_t camera_set_fast_shutter(bool enable);
+
 /* Human-readable current frame size, e.g. "SVGA 800x600" (Debug card, §5).
  * Reflects g_settings.resolution, which is applied at camera_init (reboot). */
 const char *camera_framesize_str(void);

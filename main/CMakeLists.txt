@@ -6,6 +6,7 @@ idf_component_register(
         "camera.c"
         "motion.c"
         "capture.c"
+        "illum.c"
         "classify.cpp"
         "settings.c"
         "storage.c"

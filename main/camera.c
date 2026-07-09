@@ -136,6 +136,10 @@ static esp_err_t camera_hw_init(void)
     s_available = true;
     camera_set_rotation(g_settings.rotation);   /* settings_load ran first */
     camera_set_contrast(g_settings.contrast);
+    camera_set_fast_shutter(false);   /* always boot/recover into normal auto
+                                         exposure — motion.c's ambient-dark
+                                         check (FSD v1.38) decides from here
+                                         whether fast_shutter should engage */
     s_last_good_us = esp_timer_get_time();       /* seed heartbeat: no false
                                                     stall before the 1st grab */
     return ESP_OK;
@@ -344,6 +348,34 @@ esp_err_t camera_set_contrast(int level)
     sensor_t *s = esp_camera_sensor_get();
     if (!s || s->set_contrast(s, level) != 0) return ESP_FAIL;
     ESP_LOGI(TAG, "contrast set to %d", level);
+    return ESP_OK;
+}
+
+/* Out of the OV2640's 0-1200 AEC range; picked as a "usually well under what
+ * auto-exposure picks in daylight" starting point (its exact meaning in
+ * exposure-time depends on clock config, not documented in µs) — the
+ * noise/darkness trade-off is inherent to fixing exposure short, and this
+ * may want field tuning against real captures once blur is visibly worse or
+ * better at this value. */
+#define FAST_SHUTTER_AEC_VALUE  300
+
+esp_err_t camera_set_fast_shutter(bool enable)
+{
+    if (!s_available) return ESP_ERR_INVALID_STATE;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) return ESP_FAIL;
+    if (enable) {
+        /* AGC stays auto so the image doesn't just go dark; only exposure
+         * time is pinned short, which is the actual blur-causing knob. */
+        if (s->set_gain_ctrl(s, 1) != 0 ||
+            s->set_exposure_ctrl(s, 0) != 0 ||
+            s->set_aec_value(s, FAST_SHUTTER_AEC_VALUE) != 0)
+            return ESP_FAIL;
+    } else {
+        if (s->set_exposure_ctrl(s, 1) != 0)   /* back to normal auto exposure */
+            return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "fast shutter %s", enable ? "on" : "off");
     return ESP_OK;
 }
 

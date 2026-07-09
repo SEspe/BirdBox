@@ -50,6 +50,11 @@ typedef struct {
                                        cells' bounding box so the bird fills the
                                        model input (FSD §3.2), 0 = center-crop the
                                        whole frame as before. default 1 */
+    uint8_t  fast_shutter;          /* 1 = fixed short exposure + auto gain, to
+                                       cut motion blur on a close/fast-moving
+                                       bird at the cost of a noisier/darker
+                                       image (FSD §2.1); 0 = normal auto
+                                       exposure. default 0 */
 } settings_t;
 
 extern settings_t g_settings;

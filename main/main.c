@@ -35,6 +35,7 @@
 #include "web_server.h"
 #include "motion.h"
 #include "classify.h"
+#include "illum.h"
 
 static const char *TAG = "main";
 
@@ -90,6 +91,7 @@ void app_main(void)
      * last. The watchdog runs above motion's priority, so it stays schedulable
      * to recover even while a grab spins. */
     ESP_ERROR_CHECK(camera_watchdog_start());
+    illum_init();                        /* onboard illuminator, optional hardware */
     ESP_ERROR_CHECK(wifi_start());       /* portal on first boot (FSD §4) */
     ESP_ERROR_CHECK(web_server_start());
     xTaskCreate(housekeeping_task, "housekeep", 2048, NULL, 2, NULL);
