@@ -5,10 +5,16 @@
  * esp_jpeg component and reducing RGB565 to grayscale. ~7.5 kpx per compare
  * at ~4 Hz is cheap, and needs no sensor reconfiguration.
  *
- * Rolling background: exponential moving average (7/8 old + 1/8 new),
- * updated only while no motion is seen — so a bird sitting still doesn't
- * get absorbed into the background mid-visit. The baseline is re-seeded
- * after each event's cool-down (light may have changed during the visit).
+ * Rolling background: two exponential moving averages in parallel, both
+ * updated only while no motion is seen (so a bird sitting still doesn't get
+ * absorbed into either one mid-visit) and re-seeded together after each
+ * event's cool-down (light may have changed during the visit). The fast one
+ * (7/8 old + 1/8 new, ~1 s half-life) tracks normal lighting drift; the slow
+ * one (63/64 old + 1/64 new, ~11 s half-life) deliberately lags, so a small
+ * or low-contrast bird that hops in gradually — and would otherwise get
+ * partly absorbed by the fast EMA before ever crossing the trigger threshold
+ * — still stands out against the slow one for longer. A pixel counts as
+ * changed if it diverges from either background.
  *
  * Event pipeline (one task, which also serializes all its SD writes):
  * trigger → save first frame immediately → up to capture_count-1 follow-ups
@@ -62,7 +68,7 @@ static const char *TAG = "motion";
 #define AMBIENT_DARK_ON_THR   35   /* avg luma below this -> too dark, turn on */
 #define AMBIENT_DARK_OFF_THR  90   /* avg luma above this -> bright enough, turn off */
 
-static uint8_t *s_bg, *s_cur, *s_rgb;
+static uint8_t *s_bg, *s_bg_slow, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
 static bool     s_dark     = false;   /* hysteresis-debounced ambient state */
 static bool     s_illum_on = false;
@@ -131,6 +137,7 @@ static bool detect_once(void)
 
     if (!s_have_bg) {
         memcpy(s_bg, s_cur, px);
+        memcpy(s_bg_slow, s_cur, px);
         s_have_bg = true;
         return false;
     }
@@ -148,7 +155,12 @@ static bool detect_once(void)
             int idx  = y * W + x;
             int cell = rowbase + (x * GRID_N / W);
             cell_total[cell]++;
-            if (abs((int) s_cur[idx] - (int) s_bg[idx]) > PIX_DIFF_THR)
+            /* Changed if it diverges from EITHER background — the fast one
+             * (adapts in ~1 s) catches a normal arrival, the slow one (~11 s
+             * half-life) still shows a bird that hopped in gradually and got
+             * partly absorbed by the fast EMA before ever crossing threshold. */
+            if (abs((int) s_cur[idx] - (int) s_bg[idx])      > PIX_DIFF_THR ||
+                abs((int) s_cur[idx] - (int) s_bg_slow[idx]) > PIX_DIFF_THR)
                 cell_changed[cell]++;
         }
     }
@@ -174,10 +186,15 @@ static bool detect_once(void)
     bool motion = pct >= area_thr;
 
     if (!motion) {
-        /* roll the background on quiet frames — whole frame, so masked-out
-         * cells (a swaying branch) are still absorbed and never linger. */
-        for (int i = 0; i < px; i++)
-            s_bg[i] = (uint8_t) (((int) s_bg[i] * 7 + s_cur[i]) / 8);
+        /* roll both backgrounds on quiet frames — whole frame, so masked-out
+         * cells (a swaying branch) are still absorbed and never linger. Fast
+         * EMA (7/8) tracks normal lighting drift; slow EMA (63/64, ~11 s
+         * half-life) deliberately lags behind so a gradual arrival still
+         * shows up against it even after the fast one has absorbed it. */
+        for (int i = 0; i < px; i++) {
+            s_bg[i]      = (uint8_t) (((int) s_bg[i]      * 7  + s_cur[i]) / 8);
+            s_bg_slow[i] = (uint8_t) (((int) s_bg_slow[i] * 63 + s_cur[i]) / 64);
+        }
         return false;
     }
 
@@ -292,10 +309,11 @@ esp_err_t motion_start(void)
         ESP_LOGW(TAG, "no camera — motion detection disabled");
         return ESP_OK;
     }
-    s_bg  = heap_caps_malloc(DETECT_MAX_PX,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_cur = heap_caps_malloc(DETECT_MAX_PX,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_rgb = heap_caps_malloc(DETECT_MAX_PX * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_bg || !s_cur || !s_rgb) {
+    s_bg      = heap_caps_malloc(DETECT_MAX_PX,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_bg_slow = heap_caps_malloc(DETECT_MAX_PX,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_cur     = heap_caps_malloc(DETECT_MAX_PX,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_rgb     = heap_caps_malloc(DETECT_MAX_PX * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_bg || !s_bg_slow || !s_cur || !s_rgb) {
         ESP_LOGE(TAG, "no memory for detection buffers");
         return ESP_ERR_NO_MEM;
     }
