@@ -95,6 +95,43 @@ static const no_name_t NO_NAMES[] = {
     { "Larus marinus",          "Havmåke" },
     { "Larus fuscus",           "Sildemåke" },
     { "Sterna hirundo",         "Makrellterne" },
+
+    /* Boreal/taiga specialists (added 2026-07-09, FSD v1.40 scoping) — the
+     * mostly lowland garden/feeder set above misses species plausible in
+     * forested/mountain terrain. Of these, Acanthis flammea, Loxia
+     * curvirostra, Pinicola enucleator, Coccothraustes coccothraustes,
+     * Surnia ulula and Aquila chrysaetos are already classes in the v1
+     * 965-species model, so region-filtered IDs for them start working
+     * immediately. The rest — including Perisoreus infaustus, the species
+     * that prompted this audit — are NOT in the v1 model's class list
+     * (confirmed against the actual label file) and stay inert here (never
+     * matched at inference, since the model can't emit a class it was never
+     * trained on) until a retrained model that includes them is installed;
+     * see docs/MODEL.md and FSD §3.2.1. */
+    { "Perisoreus infaustus",       "Lavskrike" },
+    { "Poecile montanus",           "Granmeis" },
+    { "Poecile cinctus",            "Lappmeis" },
+    { "Lophophanes cristatus",      "Toppmeis" },
+    { "Certhia familiaris",         "Trekryper" },
+    { "Acanthis flammea",           "Gråsisik" },
+    { "Turdus iliacus",             "Rødvingetrost" },
+    { "Loxia curvirostra",          "Grankorsnebb" },
+    { "Loxia pytyopsittacus",       "Furukorsnebb" },
+    { "Pinicola enucleator",        "Konglebit" },
+    { "Coccothraustes coccothraustes","Kjernebiter" },
+    { "Dryocopus martius",          "Svartspett" },
+    { "Picoides tridactylus",       "Tretåspett" },
+    { "Dendrocopos minor",          "Dvergspett" },
+    { "Nucifraga caryocatactes",    "Nøttekråke" },
+    { "Bonasa bonasia",             "Jerpe" },
+    { "Tetrao urogallus",           "Storfugl" },
+    { "Lyrurus tetrix",             "Orrfugl" },
+    { "Aegolius funereus",          "Perleugle" },
+    { "Strix uralensis",            "Slagugle" },
+    { "Glaucidium passerinum",      "Spurveugle" },
+    { "Surnia ulula",               "Haukugle" },
+    { "Aquila chrysaetos",          "Kongeørn" },
+    { "Haliaeetus albicilla",       "Havørn" },
 };
 #define NO_NAMES_N (sizeof(NO_NAMES) / sizeof(NO_NAMES[0]))
 
