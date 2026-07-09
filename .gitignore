@@ -23,3 +23,10 @@ desktop.ini
 # Python
 __pycache__/
 *.pyc
+
+# Local training-data archive for the Nordic species retrain (FSD §3.2.1) -
+# the actual photos and per-machine pull state, not source, kept out of the
+# firmware repo; the pull script and README are real tooling and stay tracked
+training-data/lavskrike/
+training-data/not-lavskrike/
+training-data/manifest.txt
