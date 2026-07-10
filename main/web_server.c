@@ -1466,6 +1466,66 @@ static esp_err_t h_labels(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/labels/confirmed — every human-verified row across all monthly
+ * visit logs, as ground-truth training labels for the §3.2.1 Nordic retrain
+ * (v1.57). A row counts as confirmed when its "corrected" column is non-empty
+ * (written only by the v1.51 relabel path). Emits the raw stored common name
+ * and Latin binomial (language-independent, unlike /api/events' localized
+ * label) plus the capture path so the export tool can pull the image:
+ *   [{"f":"/captures/DATE/NAME.jpg","c":"Dompap","l":"Pyrrhula pyrrhula",
+ *     "ts":"2026-07-10T21:30:08"}, ...]
+ * Streamed chunked — the set grows unbounded as the user keeps relabeling. */
+static esp_err_t h_labels_confirmed(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send_chunk(req, "[", 1);
+    bool first = true;
+    DIR *d = storage_sd_present() ? opendir(STORAGE_MOUNT_POINT "/log") : NULL;
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_type != DT_REG) continue;
+            if (strncmp(e->d_name, "visits-", 7) != 0 || !strstr(e->d_name, ".csv"))
+                continue;
+            char path[64];
+            snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", e->d_name);
+            FILE *fp = fopen(path, "r");
+            if (!fp) continue;
+            char line[400];
+            bool header = true;
+            while (fgets(line, sizeof(line), fp)) {
+                if (header) { header = false; continue; }
+                if (line[0] == '\0' || line[0] == '\n') continue;
+                char *p = line;
+                char *ts        = gal_next_field(&p);
+                gal_next_field(&p);                    /* species (model guess) */
+                gal_next_field(&p);                    /* confidence */
+                gal_next_field(&p);                    /* frames */
+                char *first_fr  = gal_next_field(&p);
+                char *corrected = gal_next_field(&p);
+                char *latin     = gal_next_field(&p);
+                if (!corrected[0] || !first_fr[0]) continue;   /* confirmed rows only */
+                char f_e[112], c_e[80], l_e[80], t_e[40];
+                json_escape(f_e, sizeof(f_e), first_fr);
+                json_escape(c_e, sizeof(c_e), corrected);
+                json_escape(l_e, sizeof(l_e), latin);
+                json_escape(t_e, sizeof(t_e), ts);
+                char item[360];
+                int len = snprintf(item, sizeof(item),
+                    "%s{\"f\":\"%s\",\"c\":\"%s\",\"l\":\"%s\",\"ts\":\"%s\"}",
+                    first ? "" : ",", f_e, c_e, l_e, t_e);
+                httpd_resp_send_chunk(req, item, len);
+                first = false;
+            }
+            fclose(fp);
+        }
+        closedir(d);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 /* POST /api/relabel (date, f, c[, l]) — set the user-confirmed species on an
  * image's visit row (§3.4/v1.51). `c` is the common name (stored in the
  * "corrected" column), `l` its binomial (stored in "latin"); free-text `c`
@@ -2586,6 +2646,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
         { .uri = "/api/labels",  .method = HTTP_GET,  .handler = h_labels     },
+        { .uri = "/api/labels/confirmed", .method = HTTP_GET, .handler = h_labels_confirmed },
         { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },

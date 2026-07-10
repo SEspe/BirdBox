@@ -30,3 +30,4 @@ __pycache__/
 training-data/lavskrike/
 training-data/not-lavskrike/
 training-data/manifest.txt
+training-data/dataset/
