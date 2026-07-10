@@ -241,6 +241,9 @@ static const char INDEX_HTML[] =
 "table.st{border-collapse:collapse;font-size:.8rem;width:100%}"
 "table.st th,table.st td{padding:5px 8px;text-align:left;border-bottom:1px solid #2a4d34}"
 "table.st th{color:#7fc98b;font-size:.72rem;text-transform:uppercase}"
+"table.st tr:hover td{background:#1e3826}"
+".fpb{font-size:.62rem;background:#5a3030;color:#e0a0a0;padding:1px 5px;border-radius:3px;"
+"text-transform:uppercase;vertical-align:middle}"
 ".wl{display:block;margin:10px 0 4px;font-size:.85rem}"
 ".wi{width:100%;max-width:280px;padding:8px;background:#1e3826;border:1px solid #444;"
 "border-radius:5px;color:#eee}"
@@ -309,6 +312,7 @@ static const char INDEX_HTML[] =
 "<h3 class='sh'>Activity by hour of day</h3><div class='hwrap' id='sHourly'></div>"
 "<h3 class='sh'>Species</h3><table class='st' id='sSpecies'></table>"
 "<div class='sts' id='sTotal'></div>"
+"<div id='sImgs'></div>"
 "<button class='act' style='margin-left:0;background:#8a3f3f' onclick='statsReset()'>"
 "&#128465; Reset Statistics</button>"
 "<span class='sts' id='sResetSts'></span>"
@@ -686,10 +690,23 @@ static const char INDEX_HTML[] =
 "sp.sort((a,b)=>b.n-a.n);"
 "document.getElementById('sSpecies').innerHTML="
 "'<tr><th>Species</th><th>Visits</th><th>First seen</th><th>Last seen</th></tr>'+"
-"sp.map(o=>'<tr><td>'+o.s+'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
-"document.getElementById('sTotal').textContent=sp.reduce((a,o)=>a+o.n,0)+' visits total'"
-"+(spo.falsePos?' \\u00b7 '+spo.falsePos+' confirmed false positive(s) (no bird)':'');"
+"sp.map(o=>'<tr style=cursor:pointer onclick=\"spImgs(\\''+encodeURIComponent(o.key)+"
+"'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
+"'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
+"var birds=sp.filter(o=>!o.fp).reduce((a,o)=>a+o.n,0);"
+"document.getElementById('sTotal').textContent=birds+' bird visit(s) total'"
+"+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
+"$g('sImgs').innerHTML='';"
 "});}"
+"function spImgs(key,name){var nm=decodeURIComponent(name);var el=$g('sImgs');"
+"el.innerHTML='<span class=sts>\\u2026 loading images for '+esc(nm)+'</span>';"
+"fetch('/api/stats/images?limit=10&sp='+key).then(r=>r.json()).then(function(a){"
+"if(!a.length){el.innerHTML='<span class=sts>No images for '+esc(nm)+'</span>';return;}"
+"el.innerHTML='<h3 class=sh>Last '+a.length+' image(s): '+esc(nm)+'</h3>'+"
+"'<div class=grid>'+a.map(o=>'<div class=gitem>"
+"<a href=\"'+o.f+'\" target=_blank><img loading=lazy src=\"'+o.f+'\"></a>"
+"<div class=gmeta><span>'+esc((o.t||'').replace('T',' '))+'</span></div></div>').join('')+'</div>';"
+"}).catch(()=>{el.innerHTML='<span class=sts>Failed to load images</span>';});}"
 "function statsReset(){"
 "if(!confirm('Reset all statistics? This permanently deletes the visit-log "
 "history (daily/species/hourly charts). Saved photos on SD are not affected. "
@@ -1505,16 +1522,69 @@ static esp_err_t h_stats_species(httpd_req_t *req)
         char species[80];
         species_localize(st->sp[i], st->sp_latin[i], g_settings.lang,
                           species, sizeof(species));
-        char item[192];
+        /* "s" is the localized display name; "key" is the raw log species
+         * value (the CSV join key) the images endpoint matches on. */
+        char s_esc[96], k_esc[80];
+        json_escape(s_esc, sizeof(s_esc), species);
+        json_escape(k_esc, sizeof(k_esc), st->sp[i]);
+        char item[256];
         int len = snprintf(item, sizeof(item),
-                           "%s{\"s\":\"%s\",\"n\":%u,\"first\":\"%s\",\"last\":\"%s\"}",
-                           i ? "," : "", species, st->sp_n[i],
+                           "%s{\"s\":\"%s\",\"key\":\"%s\",\"n\":%u,\"first\":\"%s\",\"last\":\"%s\"}",
+                           i ? "," : "", s_esc, k_esc, st->sp_n[i],
                            st->sp_first[i], st->sp_last[i]);
+        httpd_resp_send_chunk(req, item, len);
+    }
+    /* Confirmed false positives as their own row (§3.4/v1.50): count +
+     * first/last, keyed on the raw "no bird" species so its images list too. */
+    if (st->false_pos > 0) {
+        char fp[80];
+        species_localize("no bird", "", g_settings.lang, fp, sizeof(fp));
+        char fp_esc[96];
+        json_escape(fp_esc, sizeof(fp_esc), fp);
+        char item[224];
+        int len = snprintf(item, sizeof(item),
+            "%s{\"s\":\"%s\",\"key\":\"no bird\",\"fp\":true,\"n\":%lu,\"first\":\"%s\",\"last\":\"%s\"}",
+            st->sp_count ? "," : "", fp_esc, (unsigned long) st->false_pos,
+            st->fp_first, st->fp_last);
         httpd_resp_send_chunk(req, item, len);
     }
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
     free(st);
+    return ESP_OK;
+}
+
+/* GET /api/stats/images?sp=<raw species>&limit=N (N<=10) — the last N
+ * first_frame images for a species/false-positive row (FSD §3.4/v1.50). */
+static esp_err_t h_stats_images(httpd_req_t *req)
+{
+    char query[160] = {0}, sp[80] = {0}, lim[8] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "sp", sp, sizeof(sp));
+    httpd_query_key_value(query, "limit", lim, sizeof(lim));
+    url_decode(sp);
+    if (!sp[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing sp"); return ESP_OK; }
+    int max = lim[0] ? atoi(lim) : 10;
+    if (max < 1) max = 1;
+    if (max > 10) max = 10;
+
+    stats_img_t *imgs = calloc(max, sizeof(stats_img_t));
+    if (!imgs) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    int n = stats_list_images(sp, imgs, max);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send_chunk(req, "[", 1);
+    for (int i = 0; i < n; i++) {
+        char f_esc[96];
+        json_escape(f_esc, sizeof(f_esc), imgs[i].path);
+        char item[160];
+        int len = snprintf(item, sizeof(item), "%s{\"f\":\"%s\",\"t\":\"%s\"}",
+                           i ? "," : "", f_esc, imgs[i].ts);
+        httpd_resp_send_chunk(req, item, len);
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    free(imgs);
     return ESP_OK;
 }
 
@@ -2395,6 +2465,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
+        { .uri = "/api/stats/images",  .method = HTTP_GET, .handler = h_stats_images  },
         { .uri = "/api/stats/reset",   .method = HTTP_POST, .handler = h_stats_reset  },
         { .uri = "/api/recheck",       .method = HTTP_POST, .handler = h_recheck_post },
         { .uri = "/api/recheck",       .method = HTTP_GET,  .handler = h_recheck_get  },

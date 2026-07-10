@@ -55,10 +55,17 @@ static void ingest_line(stats_t *st, char *line)
     if (corrected[0]) { species = corrected; latin = ""; }
 
     /* Confirmed false positive (classifier said "no bird" at/above the
-     * threshold, §3.2): a motion trigger, not a bird visit. Count it apart
-     * and keep it out of every visit bucket, so wind events don't pollute
-     * the species table or the daily/hourly charts. */
-    if (strcmp(species, "no bird") == 0) { st->false_pos++; return; }
+     * threshold, §3.2): a motion trigger, not a bird visit. Kept out of the
+     * bird buckets (species/daily/hourly/total) so wind events don't pollute
+     * them, but tracked with its own count + first/last so the species table
+     * can show it as an equal row (§3.4/v1.50). first/last mirror the species
+     * rows' convention: first-encountered is kept, last-encountered updates. */
+    if (strcmp(species, "no bird") == 0) {
+        st->false_pos++;
+        if (!st->fp_first[0]) strlcpy(st->fp_first, ts, sizeof(st->fp_first));
+        strlcpy(st->fp_last, ts, sizeof(st->fp_last));
+        return;
+    }
     st->total++;
 
     /* Daily + hourly buckets need a synced timestamp ("YYYY-MM-DDTHH:...");
@@ -145,4 +152,77 @@ esp_err_t stats_collect(stats_t *out)
     ESP_LOGD(TAG, "stats: %lu visits, %d days, %d species",
              (unsigned long) out->total, out->day_count, out->sp_count);
     return ESP_OK;
+}
+
+int stats_list_images(const char *want, stats_img_t *out, int max)
+{
+    if (max <= 0 || !want || !want[0] || !storage_sd_present()) return 0;
+
+    /* Log filenames, ascending (oldest first) so a single pass with a ring
+     * buffer of size `max` naturally ends holding the newest `max` matches. */
+    char names[STATS_MAX_LOGFILES][40];
+    int  n_files = 0;
+    DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG) continue;
+        if (strncmp(e->d_name, "visits-", 7) != 0) continue;
+        if (!strstr(e->d_name, ".csv")) continue;
+        if (n_files < STATS_MAX_LOGFILES)
+            strlcpy(names[n_files++], e->d_name, sizeof(names[0]));
+    }
+    closedir(d);
+    for (int i = 1; i < n_files; i++) {          /* insertion sort ascending */
+        char tmp[40];
+        strlcpy(tmp, names[i], sizeof(tmp));
+        int j = i - 1;
+        while (j >= 0 && strcmp(names[j], tmp) > 0) {
+            strlcpy(names[j + 1], names[j], sizeof(names[0]));
+            j--;
+        }
+        strlcpy(names[j + 1], tmp, sizeof(names[0]));
+    }
+
+    stats_img_t *ring = calloc(max, sizeof(stats_img_t));
+    if (!ring) return 0;
+    int total = 0;
+
+    for (int f = 0; f < n_files; f++) {
+        char path[64];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", names[f]);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+        char line[400];
+        bool header = true;
+        while (fgets(line, sizeof(line), fp)) {
+            if (header) { header = false; continue; }
+            if (line[0] == '\0' || line[0] == '\n') continue;
+            char *p = line;
+            char *ts        = next_field(&p);
+            char *species   = next_field(&p);
+            next_field(&p);                    /* confidence */
+            next_field(&p);                    /* frames */
+            char *first     = next_field(&p);
+            char *corrected = next_field(&p);
+            next_field(&p);                    /* latin */
+            if (!ts[0] || !species[0] || !first[0]) continue;
+            if (corrected[0]) species = corrected;
+            if (strcmp(species, want) != 0) continue;
+            stats_img_t *slot = &ring[total % max];
+            strlcpy(slot->path, first, sizeof(slot->path));
+            strlcpy(slot->ts,   ts,    sizeof(slot->ts));
+            total++;
+        }
+        fclose(fp);
+    }
+
+    int cnt = total < max ? total : max;
+    for (int k = 0; k < cnt; k++) {          /* newest first */
+        int idx = (total - 1 - k) % max;
+        if (idx < 0) idx += max;
+        out[k] = ring[idx];
+    }
+    free(ring);
+    return cnt;
 }
