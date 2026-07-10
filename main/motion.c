@@ -16,6 +16,12 @@
  * — still stands out against the slow one for longer. A pixel counts as
  * changed if it diverges from either background.
  *
+ * Trigger metric: the largest 4-connected cluster of changed cells (§ROI
+ * below) must itself cross the sensitivity threshold, not the zone-wide
+ * total. A bird is one compact blob; wind-blown grass/foliage is scattered
+ * or loosely-connected change spread across many cells — summing the whole
+ * zone conflates the two, the dominant-cluster share doesn't.
+ *
  * Event pipeline (one task, which also serializes all its SD writes):
  * trigger → save first frame immediately → up to capture_count-1 follow-ups
  * at capture_interval_ms while motion persists → visit-log row → cool-down. */
@@ -82,6 +88,11 @@ static volatile uint32_t s_trigger_count = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 
 #define GRID_N 8                         /* 8x8 detection grid (FSD §3.1) */
+/* Max cells (of 64) the winning cluster may span. A bird occupies a handful
+ * of cells even close-up; a wide wind-blown grass/foliage swath forms one
+ * big *contiguous* cluster too (connectivity alone doesn't reject it), but
+ * spans far more of the frame. Starting point, not field-calibrated. */
+#define MAX_CLUSTER_CELLS 20
 
 /* Grab one frame, decode small, update s_cur; returns true when the changed
  * area exceeds the sensitivity-derived threshold. Rolls the background only
@@ -182,35 +193,19 @@ static bool detect_once(void)
     }
     if (zone_px == 0) return false;    /* empty zone → detection off everywhere */
 
-    int  pct    = (int) (zone_changed * 100 / zone_px);
-    bool motion = pct >= area_thr;
-
-    if (!motion) {
-        /* roll both backgrounds on quiet frames — whole frame, so masked-out
-         * cells (a swaying branch) are still absorbed and never linger. Fast
-         * EMA (7/8) tracks normal lighting drift; slow EMA (63/64, ~11 s
-         * half-life) deliberately lags behind so a gradual arrival still
-         * shows up against it even after the fast one has absorbed it. */
-        for (int i = 0; i < px; i++) {
-            s_bg[i]      = (uint8_t) (((int) s_bg[i]      * 7  + s_cur[i]) / 8);
-            s_bg_slow[i] = (uint8_t) (((int) s_bg_slow[i] * 63 + s_cur[i]) / 64);
-        }
-        return false;
-    }
-
-    /* ROI = bounding box of the LARGEST 4-connected cluster of moved cells
-     * (weighted by changed pixels), padded one cell each way for context. Two
-     * separate movers (bird + in-zone shadow/feeder swing) no longer merge
-     * into one diluted bbox — the zoom tracks the dominant object. No cell
-     * crossed the per-cell bar (diffuse change, e.g. light) → empty ROI,
-     * i.e. classify the whole frame. */
+    /* Cluster BEFORE deciding motion (moved[] doesn't depend on that decision):
+     * bounding box of the LARGEST 4-connected cluster of moved cells (weighted
+     * by changed pixels), padded one cell each way for context. Two separate
+     * movers (bird + in-zone shadow/feeder swing) no longer merge into one
+     * diluted bbox — the zoom tracks the dominant object. */
     bool seen[GRID_N * GRID_N] = {false};
     long best_wt = -1;
     int  minc = 0, minr = 0, maxc = -1, maxr = -1;
     for (int c0 = 0; c0 < GRID_N * GRID_N; c0++) {
         if (!moved[c0] || seen[c0]) continue;
         int  stack[GRID_N * GRID_N], sp = 0;
-        long wt = 0;
+        long wt  = 0;
+        int  cnt = 0;
         int  lminc = GRID_N, lminr = GRID_N, lmaxc = -1, lmaxr = -1;
         stack[sp++] = c0;
         seen[c0] = true;
@@ -218,6 +213,7 @@ static bool detect_once(void)
             int c  = stack[--sp];
             int cc = c % GRID_N, cr = c / GRID_N;
             wt += cell_changed[c];
+            cnt++;
             if (cc < lminc) lminc = cc;
             if (cc > lmaxc) lmaxc = cc;
             if (cr < lminr) lminr = cr;
@@ -232,7 +228,10 @@ static bool detect_once(void)
                     stack[sp++] = nb[k];
                 }
         }
-        if (wt > best_wt) {
+        /* Oversized clusters are skipped entirely, not just capped — a
+         * smaller genuine cluster elsewhere in the same frame can still win
+         * rather than the whole frame being rejected outright. */
+        if (cnt <= MAX_CLUSTER_CELLS && wt > best_wt) {
             best_wt = wt;
             minc = lminc; minr = lminr; maxc = lmaxc; maxr = lmaxr;
         }
@@ -249,8 +248,32 @@ static bool detect_once(void)
     } else {
         s_roi = roi_none();
     }
-    ESP_LOGI(TAG, "motion: %d%% of zone changed (threshold %d%%), roi [%.2f,%.2f]-[%.2f,%.2f]",
-             pct, area_thr, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
+
+    /* Trigger on the DOMINANT cluster's share of the zone, not the raw
+     * zone-wide %. Wind-blown grass/foliage tends to change many scattered
+     * or loosely-connected cells a little each; a bird changes one compact
+     * blob a lot. Using the largest connected cluster's weight instead of
+     * the sum over all cells rejects the former without needing a manual
+     * zone-mask exclusion for every wind-prone patch of grass. */
+    int  pct         = (int) (zone_changed * 100 / zone_px);
+    int  cluster_pct = best_wt > 0 ? (int) (best_wt * 100 / zone_px) : 0;
+    bool motion      = cluster_pct >= area_thr;
+
+    if (!motion) {
+        /* roll both backgrounds on quiet frames — whole frame, so masked-out
+         * cells (a swaying branch) are still absorbed and never linger. Fast
+         * EMA (7/8) tracks normal lighting drift; slow EMA (63/64, ~11 s
+         * half-life) deliberately lags behind so a gradual arrival still
+         * shows up against it even after the fast one has absorbed it. */
+        for (int i = 0; i < px; i++) {
+            s_bg[i]      = (uint8_t) (((int) s_bg[i]      * 7  + s_cur[i]) / 8);
+            s_bg_slow[i] = (uint8_t) (((int) s_bg_slow[i] * 63 + s_cur[i]) / 64);
+        }
+        return false;
+    }
+
+    ESP_LOGI(TAG, "motion: cluster %d%% / zone %d%% changed (threshold %d%%), roi [%.2f,%.2f]-[%.2f,%.2f]",
+             cluster_pct, pct, area_thr, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
     return true;
 }
 
