@@ -237,10 +237,28 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
         return ESP_ERR_NO_MEM;
     }
 
-    size_t   out_size = (size_t) w * h * 3 + 16;
-    uint8_t *rgb = (uint8_t *) heap_caps_malloc(out_size,
-                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!rgb) return ESP_ERR_NO_MEM;
+    /* The ROI-aware sizing above asks for what the zoom *wants*; free PSRAM
+     * decides what it *gets*. A tight ROI at SXGA wants 640x512 (983 KB),
+     * which routinely exceeds the largest free block once the model + arena
+     * are resident — before v1.45 that failed silently and the whole event
+     * was logged "unclassified". Degrade the decode scale until the buffer
+     * fits instead: a bird cropped from a smaller decode still classifies. */
+    size_t   out_size;
+    uint8_t *rgb;
+    for (;;) {
+        out_size = (size_t) w * h * 3 + 16;
+        rgb = (uint8_t *) heap_caps_malloc(out_size,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (rgb || scale >= 3) break;
+        w >>= 1; h >>= 1; scale++;
+        ESP_LOGW(TAG, "decode buffer %u KB unavailable — degrading to %ux%u",
+                 (unsigned) (out_size / 1024), w, h);
+    }
+    if (!rgb) {
+        ESP_LOGW(TAG, "decode buffer alloc failed (%u KB even at 1/8 scale)",
+                 (unsigned) (out_size / 1024));
+        return ESP_ERR_NO_MEM;
+    }
 
     cfg.outbuf      = rgb;
     cfg.outbuf_size = out_size;
@@ -472,21 +490,27 @@ static void classify_task(void *arg)
             size_t len = 0;
             uint8_t *buf = load_file_psram(full, &len);
             if (!buf) { ESP_LOGW(TAG, "best-of: read %s failed", full); continue; }
+            /* "zoom was attempted", not "zoom succeeded" — the rescue below
+             * must still fire when every zoomed run failed outright. */
+            if (g_settings.detect_zoom && !roi_is_empty(job.rois[i])) zoomed_any = true;
             classify_result_t r;
             esp_err_t err = run_one(buf, len, &r, job.rois[i]);
             free(buf);
             if (err != ESP_OK) continue;
             scored++;
-            if (g_settings.detect_zoom && !roi_is_empty(job.rois[i])) zoomed_any = true;
             if (!have_best || result_better(&r, &best)) { best = r; best_idx = i; have_best = true; }
         }
 
         /* Zoom safety net (§3.2): the ROI crop is a bet that the changed cells
          * contain the bird. If every zoomed frame came back without a real
-         * species, spend ONE extra whole-frame inference on the frame that
-         * scored best — a miss-cropped bird is often still identifiable in the
-         * full view. Skipped when nothing was zoomed (nothing to recover). */
-        if (have_best && best.latin[0] == '\0' && zoomed_any) {
+         * species — or none could be scored at all (e.g. the ROI decode buffer
+         * didn't fit in free PSRAM) — spend ONE extra whole-frame inference on
+         * the frame that scored best (the event's first frame when nothing
+         * scored): a miss-cropped bird is often still identifiable in the full
+         * view, and the whole-frame decode is far smaller than a zoomed one.
+         * Skipped when nothing was zoomed (retrying the same whole-frame run
+         * would fail the same way). */
+        if ((!have_best || best.latin[0] == '\0') && zoomed_any) {
             char full[128];
             snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[best_idx]);
             size_t len = 0;
@@ -494,10 +518,11 @@ static void classify_task(void *arg)
             if (buf) {
                 classify_result_t r;
                 if (run_one(buf, len, &r, roi_none()) == ESP_OK &&
-                    result_better(&r, &best)) {
+                    (!have_best || result_better(&r, &best))) {
                     ESP_LOGI(TAG, "whole-frame fallback rescued: %s (%u%%)",
                              r.species, r.confidence_pct);
                     best = r;
+                    have_best = true;
                     job.rois[best_idx] = roi_none();   /* log the roi actually used */
                 }
                 free(buf);
@@ -603,7 +628,13 @@ esp_err_t classify_init(void)
     }
 
     s_run_mtx = xSemaphoreCreateMutex();
-    s_jobq    = xQueueCreate(2, sizeof(cls_job_t));
+    /* 16 deep (~7.5 KB): a best-of-3 job runs ~13 s (3 x ~4 s inference)
+     * while a busy visit produces an event every ~5 s — at 2 deep most of
+     * those overflowed to the "unclassified" fallback row. Classification is
+     * async and a minutes-deep backlog is acceptable (rows are timestamped
+     * with the event time, not the write time), so buffer a whole busy visit
+     * rather than dropping events. */
+    s_jobq    = xQueueCreate(16, sizeof(cls_job_t));
     if (!s_run_mtx || !s_jobq ||
         xTaskCreatePinnedToCore(classify_task, "classify", 12288, NULL, 3, NULL, 1) != pdPASS) {
         ESP_LOGE(TAG, "task/queue create failed — disabled");
@@ -636,8 +667,15 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
         job.rois[i] = rois ? rois[i] : roi_none();
     }
     job.path_count = n;
-    if (xQueueSend(s_jobq, &job, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "classify queue full — event logged unclassified");
+    /* A full queue means every buffered slot is a real visit waiting for a
+     * label — giving up here writes a permanent "unclassified" row for a
+     * moment of transient pressure. Wait for a slot instead: one in-flight
+     * best-of-3 job takes ~13 s, so 15 s spans it. This runs in the motion
+     * task after the event's frames are safely on SD; the cost of blocking
+     * is a longer cooldown, not lost images. Bounded so a wedged classifier
+     * can't stall capture forever. */
+    if (xQueueSend(s_jobq, &job, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGW(TAG, "classify queue full for 15 s — event logged unclassified");
         return false;
     }
     return true;
