@@ -94,6 +94,12 @@ int         classify_region_matches(void);     /* loaded labels in the N-Euro
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
 
+/* Model label access for the relabel picker (FSD §3.4/v1.51): raw label at
+ * index i ("Latin (Common)"), "" out of range; and whether it's in the
+ * Northern-European region subset (all labels when the model isn't that set). */
+const char *classify_label(int i);
+bool        classify_label_region(int i);
+
 #ifdef __cplusplus
 }
 #endif

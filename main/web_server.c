@@ -226,6 +226,12 @@ static const char INDEX_HTML[] =
 ".gmeta .gidbtn{color:#7fc98b}"
 ".gid{padding:0 8px 7px;font-size:.72rem;color:#cde;line-height:1.35}"
 ".gid .gidt{display:block;color:#9ab;font-size:.66rem}"
+".glabel.gconf{background:rgba(30,70,40,.92);color:#8fe0a0;font-weight:600}"
+".grl{display:flex;gap:6px;padding:0 8px 8px}"
+".grl .rlin{flex:1;min-width:0;padding:4px 6px;background:#12261a;border:1px solid #2a4d34;"
+"color:#dfe;border-radius:4px;font-size:.74rem}"
+".grl .rlok{background:#2f6b3f;border:none;color:#eafff0;border-radius:4px;padding:4px 10px;"
+"cursor:pointer;font-size:.74rem}"
 "h3.sh{color:#7fc98b;font-size:.9rem;margin:18px 0 6px}"
 ".srow{display:flex;align-items:center;gap:8px;font-size:.78rem;margin:3px 0}"
 ".srow .lbl{width:84px;color:#9ab;flex-shrink:0}"
@@ -306,6 +312,7 @@ static const char INDEX_HTML[] =
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
+"<datalist id='speclist'></datalist>"
 "</div>"
 "<div id='statsp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>Visits per day</h3><div id='sDaily'></div>"
@@ -594,14 +601,16 @@ static const char INDEX_HTML[] =
 "var g=$g('grid');g.innerHTML='';"
 "a.forEach(o=>{var p='/captures/'+d+'/'+o.f;"
 "var div=document.createElement('div');div.className='gitem';"
-"var bdg=o.sp?('<div class=\"glabel\" title=\"'+esc(o.sp)+' '+(o.pct||0)+'%\">'"
-"+esc(o.sp)+' '+(o.pct||0)+'%</div>'):'';"
+"var bdg=o.sp?('<div class=\"glabel'+(o.c?' gconf':'')+'\" title=\"'+esc(o.sp)+(o.c?' \\u2013 confirmed':' '+(o.pct||0)+'%')+'\">'"
+"+(o.c?'\\u2713 ':'')+esc(o.sp)+(o.c?'':' '+(o.pct||0)+'%')+'</div>'):'';"
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
 "<span><button class=\"gidbtn\" title=\"identify bird\" "
 "onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
+"<button class=\"gidbtn\" title=\"set/correct species\" data-d=\"'+d+'\" "
+"data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(o.sp||'')+'\" onclick=\"reLabel(this)\">&#9998;</button>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
 "g.appendChild(div);});gSelSync();});}"
 "function idBird(btn,d,f){var it=btn.closest('.gitem');"
@@ -615,6 +624,26 @@ static const char INDEX_HTML[] =
 "out.innerHTML='<b>'+esc(o.species||'?')+'</b> '+(o.confidence||0)+'%'"
 "+(t?'<span class=gidt>'+t+'</span>':'');})"
 ".catch(()=>{btn.disabled=false;out.textContent='identify failed';});}"
+"var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
+"function ensureSpecs(cb){if(g_specMap){cb();return;}"
+"fetch('/api/labels').then(r=>r.json()).then(function(a){g_specMap={};"
+"var dl=$g('speclist');dl.innerHTML=a.map(o=>'<option value=\"'+esc(o.d)+'\">').join('');"
+"a.forEach(o=>{g_specMap[o.d]={c:o.c,l:o.l};});cb();}).catch(()=>{g_specMap={};cb();});}"
+"function reLabel(btn){var d=btn.dataset.d,f=btn.dataset.f,cur=btn.dataset.sp;"
+"var it=btn.closest('.gitem');var box=it.querySelector('.grl');"
+"if(box){box.remove();return;}"   /* toggle closed */
+"ensureSpecs(function(){var b=document.createElement('div');b.className='grl';"
+"b.innerHTML='<input list=speclist class=rlin placeholder=\"species\\u2026\">"
+"<button class=rlok>Save</button>';it.appendChild(b);"
+"var inp=b.querySelector('.rlin');inp.value=cur||'';inp.focus();inp.select();"
+"b.querySelector('.rlok').onclick=function(){var v=inp.value.trim();if(!v)return;"
+"var m=g_specMap[v]||{c:v,l:''};"
+"fetch('/api/relabel',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)"
+"+'&c='+encodeURIComponent(m.c)+'&l='+encodeURIComponent(m.l)})"
+".then(r=>r.json()).then(o=>{if(o.ok)loadDay();else alert(o.error||'Relabel failed');})"
+".catch(()=>alert('Relabel failed'));};"
+"inp.addEventListener('keydown',function(e){if(e.key==='Enter')b.querySelector('.rlok').click();});});}"
 "function gChecks(){return [...document.querySelectorAll('#grid .gchk')];}"
 "function gSelSync(cb){if(cb)cb.closest('.gitem').classList.toggle('sel',cb.checked);"
 "var n=gChecks().filter(c=>c.checked).length;"
@@ -1264,7 +1293,11 @@ static esp_err_t h_days(httpd_req_t *req)
  * with their identification. Only first frames match (one log row per event);
  * follow-up frames stay unlabeled. */
 #define GAL_MAX_LABELS 300
-typedef struct { char base[16]; char sp[72]; uint8_t pct; } gal_label_t;
+/* base holds the capture filename ("YYYY-MM-DD_HH-MM-SS-mmm.jpg", 27 chars);
+ * it was [16] — sized for the pre-v1.30 "HHMMSS.jpg" names — so every
+ * millisecond-era basename truncated to 15 chars and never matched its file,
+ * silently blanking all gallery species badges until v1.53. */
+typedef struct { char base[48]; char sp[72]; uint8_t pct; bool confirmed; } gal_label_t;
 
 /* One CSV field, in place; advances *p past the comma (or to the line end). */
 static char *gal_next_field(char **p)
@@ -1312,7 +1345,9 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
         if (!base) continue;
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
-        if (corrected[0]) { species = corrected; latin = (char *) ""; }
+        labels[count].confirmed = corrected[0] != '\0';
+        if (corrected[0]) species = corrected;   /* user label wins; latin column
+                                                    holds its binomial since v1.51 */
         strlcpy(labels[count].base, base, sizeof(labels[count].base));
         species_localize(species, latin, g_settings.lang,
                          labels[count].sp, sizeof(labels[count].sp));
@@ -1360,16 +1395,18 @@ static esp_err_t h_events(httpd_req_t *req)
         stat(fpath, &st);
         const char *sp = NULL;
         int pct = 0;
+        bool confirmed = false;
         for (int i = 0; i < nlabels; i++)
             if (strcmp(labels[i].base, e->d_name) == 0) {
-                sp = labels[i].sp; pct = labels[i].pct; break;
+                sp = labels[i].sp; pct = labels[i].pct; confirmed = labels[i].confirmed; break;
             }
         char item[256];
         int len;
         if (sp)
             len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d}",
-                           first ? "" : ",", e->d_name, (long) st.st_size, sp, pct);
+                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d,\"c\":%s}",
+                           first ? "" : ",", e->d_name, (long) st.st_size, sp, pct,
+                           confirmed ? "true" : "false");
         else
             len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld}",
                            first ? "" : ",", e->d_name, (long) st.st_size);
@@ -1380,6 +1417,83 @@ static esp_err_t h_events(httpd_req_t *req)
     free(labels);
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* GET /api/labels — species vocabulary for the relabel picker (§3.4/v1.51):
+ * the model's Northern-European subset, each as raw common/latin (the values
+ * stored on relabel) plus a display name localized to the current language. */
+static esp_err_t h_labels(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send_chunk(req, "[", 1);
+    int n = classify_label_count();
+    bool first = true;
+    for (int i = 0; i < n; i++) {
+        if (!classify_label_region(i)) continue;
+        const char *raw = classify_label(i);
+        const char *open = strrchr(raw, '(');
+        if (!open) continue;                     /* guard classes (background) */
+        char latin[64], common[64];
+        size_t ll = (size_t) (open - raw);
+        while (ll > 0 && raw[ll-1] == ' ') ll--;
+        if (ll >= sizeof(latin)) ll = sizeof(latin) - 1;
+        memcpy(latin, raw, ll); latin[ll] = '\0';
+        const char *cp = strchr(open, ')');
+        size_t cl = cp ? (size_t) (cp - (open + 1)) : strlen(open + 1);
+        if (cl >= sizeof(common)) cl = sizeof(common) - 1;
+        memcpy(common, open + 1, cl); common[cl] = '\0';
+        char disp[96];
+        species_localize(common, latin, g_settings.lang, disp, sizeof(disp));
+        char c_e[80], l_e[80], d_e[112];
+        json_escape(c_e, sizeof(c_e), common);
+        json_escape(l_e, sizeof(l_e), latin);
+        json_escape(d_e, sizeof(d_e), disp);
+        char item[300];
+        int len = snprintf(item, sizeof(item), "%s{\"c\":\"%s\",\"l\":\"%s\",\"d\":\"%s\"}",
+                           first ? "" : ",", c_e, l_e, d_e);
+        httpd_resp_send_chunk(req, item, len);
+        first = false;
+    }
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* POST /api/relabel (date, f, c[, l]) — set the user-confirmed species on an
+ * image's visit row (§3.4/v1.51). `c` is the common name (stored in the
+ * "corrected" column), `l` its binomial (stored in "latin"); free-text `c`
+ * with empty `l` is allowed. Adds a row if the image has none. */
+static esp_err_t h_relabel(httpd_req_t *req)
+{
+    char body[256] = {0};
+    int rlen = MIN(req->content_len, (int) sizeof(body) - 1);
+    int got = 0;
+    while (got < rlen) {
+        int r = httpd_req_recv(req, body + got, rlen - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    char date[16] = {0}, file[80] = {0}, common[80] = {0}, latin[80] = {0};
+    httpd_query_key_value(body, "date", date, sizeof(date));
+    httpd_query_key_value(body, "f",    file, sizeof(file));
+    httpd_query_key_value(body, "c",    common, sizeof(common));
+    httpd_query_key_value(body, "l",    latin, sizeof(latin));
+    url_decode(date); url_decode(file); url_decode(common); url_decode(latin);
+
+    httpd_resp_set_type(req, "application/json");
+    if (strlen(date) != 10 || !file[0] || !common[0] ||
+        strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad params");
+        return ESP_OK;
+    }
+    if (storage_relabel(date, file, common, latin) != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"relabel failed\"}");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "relabel %s/%s -> %s", date, file, common);
+    httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -2437,8 +2551,10 @@ esp_err_t web_server_start(void)
     if (server) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 32;     /* headroom above route count — an exact-fit cap
-                                      silently drops later registrations (RemoteStart v1.27) */
+    cfg.max_uri_handlers = 48;     /* headroom above route count (35 as of v1.51) — an
+                                      exact-fit cap silently drops later registrations,
+                                      404ing whichever routes land last (RemoteStart v1.27;
+                                      hit again at v1.51 when the count crossed 32) */
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
                                       pool and wedge the server (RemoteStart v1.35) */
@@ -2462,6 +2578,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
+        { .uri = "/api/labels",  .method = HTTP_GET,  .handler = h_labels     },
+        { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },

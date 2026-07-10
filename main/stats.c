@@ -52,7 +52,10 @@ static void ingest_line(stats_t *st, char *line)
     char *latin     = next_field(&p);
 
     if (!ts[0] || !species[0]) return;
-    if (corrected[0]) { species = corrected; latin = ""; }
+    /* User-confirmed label wins (§3.2/§3.4). Since v1.51 the relabel writes the
+     * corrected species' own binomial into the latin column, so keep it (was
+     * blanked when corrected labels had no known latin) — it localizes right. */
+    if (corrected[0]) species = corrected;
 
     /* Confirmed false positive (classifier said "no bird" at/above the
      * threshold, §3.2): a motion trigger, not a bird visit. Kept out of the

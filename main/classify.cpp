@@ -1050,3 +1050,19 @@ int         classify_label_count(void)      { return s_label_count; }
 int         classify_region_matches(void)   { return s_region_matches; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
+
+const char *classify_label(int i)
+{
+    return (i >= 0 && i < s_label_count) ? s_labels[i] : "";
+}
+
+/* Whether label i would survive the region filter — used to offer the local
+ * subset first in the relabel picker (§3.4/v1.51). When the model isn't the
+ * Northern-European set (s_region_matches == 0) every label counts as
+ * in-region so the picker is never empty. */
+bool classify_label_region(int i)
+{
+    if (i < 0 || i >= s_label_count) return false;
+    if (s_region_matches == 0) return true;
+    return label_in_region(s_labels[i]);
+}

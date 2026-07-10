@@ -53,6 +53,16 @@ int storage_reset_stats(void);
  * the Gallery "wipe day" action. Returns rows removed (0 if none/no SD). */
 int storage_reset_stats_day(const char *date);
 
+/* Sets the user-confirmed species on the visit row whose first_frame basename
+ * is `file` (FSD §3.4/v1.51): writes `common` to the "corrected" column and
+ * `latin` to the "latin" column (both CSV-sanitized), keeping the model's
+ * original guess in "species" for reference. If no row matches the image, a
+ * new user-confirmed row is appended (timestamp parsed from the filename).
+ * A non-empty "corrected" column is the human-confirmed flag other code and
+ * future training export key on. */
+esp_err_t storage_relabel(const char *date, const char *file,
+                          const char *common, const char *latin);
+
 /* The single-writer lock (FSD §7) for callers doing their own SD writes
  * (model upload) — capture/log writes take it internally. */
 void storage_write_lock(void);
