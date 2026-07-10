@@ -320,7 +320,9 @@ int storage_reset_stats_day(const char *date)
     if (!out) { fclose(in); xSemaphoreGive(s_write_mtx);
         ESP_LOGE(TAG, "stats day reset: temp open failed"); return 0; }
 
-    char line[224];
+    /* Sized past the longest possible row (~330 with roi/top3) — an fgets
+     * split would misjudge the row's tail as a separate (kept) line. */
+    char line[400];
     bool header = true;
     int kept = 0;
     while (fgets(line, sizeof(line), in)) {

@@ -556,6 +556,157 @@ static void classify_task(void *arg)
             ESP_LOGW(TAG, "visit log append failed");
     }
 }
+
+/* ── Re-check one day (§3.4): re-classify logged rows with current model ── */
+typedef struct {
+    char  ts[20];
+    char  path[96];    /* first_frame, web-relative */
+    int   frames;
+    roi_t roi;         /* roi column as logged (empty when none) */
+} recheck_row_t;
+
+#define RECHECK_MAX_ROWS 256   /* ~32 kB PSRAM; > any plausible day */
+
+static volatile bool s_rc_busy = false;
+static volatile int  s_rc_done = 0, s_rc_total = 0;
+static char          s_rc_date[11];
+
+/* stats.c-style field scanner — strtok_r would swallow the always-empty
+ * "corrected" column and shift every later field (see stats.c). */
+static char *rc_next_field(char **p)
+{
+    char *start = *p;
+    char *comma = strchr(start, ',');
+    if (comma) {
+        *comma = '\0';
+        *p = comma + 1;
+    } else {
+        char *end = start + strcspn(start, "\r\n");
+        *end = '\0';
+        *p = end;
+    }
+    return start;
+}
+
+/* Swap one row (matched by timestamp + first_frame — the ms-resolution
+ * filename makes that unique) for new_line, filter-to-temp then rename,
+ * same pattern as storage_reset_stats_day. One quick rewrite per row keeps
+ * the write lock short and commits progress row-by-row, so an interrupted
+ * recheck loses nothing already done. */
+static bool rc_rewrite_row(const char *csv, const recheck_row_t *row,
+                           const char *new_line)
+{
+    const char *tmp = STORAGE_MOUNT_POINT "/log/recheck.tmp";
+    storage_write_lock();
+    FILE *in = fopen(csv, "r");
+    if (!in) { storage_write_unlock(); return false; }
+    FILE *out = fopen(tmp, "w");
+    if (!out) { fclose(in); storage_write_unlock(); return false; }
+    char line[400];
+    bool swapped = false;
+    while (fgets(line, sizeof(line), in)) {
+        if (!swapped &&
+            strncmp(line, row->ts, strlen(row->ts)) == 0 &&
+            strstr(line, row->path) != NULL) {
+            fputs(new_line, out);
+            fputc('\n', out);
+            swapped = true;
+            continue;
+        }
+        fputs(line, out);
+    }
+    fclose(in);
+    fclose(out);
+    if (swapped) { unlink(csv); rename(tmp, csv); }
+    else          unlink(tmp);
+    storage_write_unlock();
+    return swapped;
+}
+
+static void recheck_task(void *arg)
+{
+    char csv[64];
+    snprintf(csv, sizeof(csv), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", s_rc_date);
+
+    recheck_row_t *rows = (recheck_row_t *) heap_caps_calloc(
+        RECHECK_MAX_ROWS, sizeof(recheck_row_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int n = 0;
+    if (rows) {
+        storage_write_lock();          /* stable scan vs concurrent appends */
+        FILE *f = fopen(csv, "r");
+        if (f) {
+            char line[400];
+            bool header = true;
+            while (n < RECHECK_MAX_ROWS && fgets(line, sizeof(line), f)) {
+                if (header) { header = false; continue; }
+                if (strncmp(line, s_rc_date, 10) != 0) continue;
+                char *p = line;
+                char *ts        = rc_next_field(&p);
+                rc_next_field(&p);                    /* species */
+                rc_next_field(&p);                    /* confidence */
+                char *frames    = rc_next_field(&p);
+                char *first     = rc_next_field(&p);
+                char *corrected = rc_next_field(&p);
+                rc_next_field(&p);                    /* latin */
+                char *roi_s     = rc_next_field(&p);
+                if (!first[0] || corrected[0]) continue;   /* user label wins */
+                recheck_row_t *r = &rows[n];
+                strlcpy(r->ts, ts, sizeof(r->ts));
+                strlcpy(r->path, first, sizeof(r->path));
+                r->frames = atoi(frames);
+                r->roi = roi_none();
+                float x0, y0, x1, y1;
+                if (sscanf(roi_s, "%f-%f-%f-%f", &x0, &y0, &x1, &y1) == 4) {
+                    r->roi.x0 = x0; r->roi.y0 = y0;
+                    r->roi.x1 = x1; r->roi.y1 = y1;
+                }
+                n++;
+            }
+            fclose(f);
+        }
+        storage_write_unlock();
+    }
+    s_rc_total = n;
+
+    for (int i = 0; i < n; i++) {
+        recheck_row_t *row = &rows[i];
+        char full[128];
+        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", row->path);
+        size_t len = 0;
+        uint8_t *buf = load_file_psram(full, &len);
+        if (!buf) { s_rc_done = i + 1; continue; }   /* photo deleted — keep row */
+
+        classify_result_t r;
+        bool ok = run_one(buf, len, &r, row->roi) == ESP_OK;
+        /* same whole-frame safety net as live events (§3.2) */
+        if (ok && r.latin[0] == '\0' && !roi_is_empty(row->roi)) {
+            classify_result_t w;
+            if (run_one(buf, len, &w, roi_none()) == ESP_OK && result_better(&w, &r)) {
+                r = w;
+                row->roi = roi_none();
+            }
+        }
+        free(buf);
+        if (ok) {
+            char roi_s[24] = "";
+            if (g_settings.detect_zoom && !roi_is_empty(row->roi))
+                snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
+                         row->roi.x0, row->roi.y0, row->roi.x1, row->roi.y1);
+            char top3[112];
+            top3_field(&r, top3, sizeof(top3));
+            char nl[400];
+            snprintf(nl, sizeof(nl), "%s,%s,%u,%d,%s,,%s,%s,%s",
+                     row->ts, r.species, r.confidence_pct, row->frames,
+                     row->path, r.latin, roi_s, top3);
+            rc_rewrite_row(csv, row, nl);
+        }
+        s_rc_done = i + 1;
+    }
+    free(rows);
+    ESP_LOGI(TAG, "recheck %s: %d/%d row(s) re-classified", s_rc_date, s_rc_done, s_rc_total);
+    s_rc_busy = false;
+    vTaskDelete(NULL);
+}
 #endif /* CONFIG_IDF_TARGET_ESP32S3 */
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -682,6 +833,46 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
 #else
     (void) paths; (void) rois; (void) path_count; (void) ts; (void) frames; (void) first_path;
     return false;
+#endif
+}
+
+bool classify_recheck_start(const char *date)
+{
+#if CONFIG_IDF_TARGET_ESP32S3
+    if (!s_available || !storage_sd_present()) return false;
+    if (!date || strlen(date) != 10) return false;
+    if (s_rc_busy) return false;
+    s_rc_busy  = true;
+    s_rc_done  = 0;
+    s_rc_total = 0;
+    strlcpy(s_rc_date, date, sizeof(s_rc_date));
+    /* Priority 2 — below the event task (3), so live visits always win the
+     * run mutex first and a recheck only fills the gaps. */
+    if (xTaskCreatePinnedToCore(recheck_task, "recheck", 12288, NULL, 2, NULL, 1)
+        != pdPASS) {
+        s_rc_busy = false;
+        return false;
+    }
+    return true;
+#else
+    (void) date;
+    return false;
+#endif
+}
+
+void classify_recheck_status(bool *busy, int *done, int *total,
+                             char *date, size_t date_len)
+{
+#if CONFIG_IDF_TARGET_ESP32S3
+    if (busy)  *busy  = s_rc_busy;
+    if (done)  *done  = s_rc_done;
+    if (total) *total = s_rc_total;
+    if (date && date_len) strlcpy(date, s_rc_date, date_len);
+#else
+    if (busy)  *busy  = false;
+    if (done)  *done  = 0;
+    if (total) *total = 0;
+    if (date && date_len) date[0] = '\0';
 #endif
 }
 

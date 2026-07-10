@@ -25,6 +25,12 @@ typedef struct {
 
     uint16_t hour[24];
     uint32_t total;
+
+    /* Rows the classifier confidently decided were "no bird" (background
+     * class at/above the confidence threshold): motion triggers confirmed as
+     * false positives. Counted separately — they are not bird visits and
+     * appear in none of the species/daily/hourly buckets (FSD §3.4). */
+    uint32_t false_pos;
 } stats_t;
 
 /* Fills *out from the visit logs; zero stats (not an error) when no SD or

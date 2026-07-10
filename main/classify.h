@@ -68,6 +68,20 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
 esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len,
                             classify_result_t *out);
 
+/* Re-check one day (FSD §3.4): re-runs species ID over every visit-log row
+ * of `date` ("YYYY-MM-DD") with the current model/settings, rewriting each
+ * row in place as it completes (timestamp/frames/first_frame are preserved;
+ * species/confidence/latin/roi/top3 are replaced; user-corrected rows are
+ * skipped). Asynchronous — runs in its own task, one recheck at a time.
+ * Returns false when the classifier is unavailable, no SD, or a recheck is
+ * already running; a date with no rows finishes immediately (total 0). */
+bool classify_recheck_start(const char *date);
+
+/* Progress of the current (busy=true) or most recent recheck. `date` may be
+ * NULL; done/total are 0 before the row scan finishes. */
+void classify_recheck_status(bool *busy, int *done, int *total,
+                             char *date, size_t date_len);
+
 /* Debug-card data (FSD §5) */
 int32_t     classify_last_duration_ms(void);   /* -1 = none yet */
 const char *classify_model_name(void);         /* "" when no model loaded */

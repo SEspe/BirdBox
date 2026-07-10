@@ -53,6 +53,12 @@ static void ingest_line(stats_t *st, char *line)
 
     if (!ts[0] || !species[0]) return;
     if (corrected[0]) { species = corrected; latin = ""; }
+
+    /* Confirmed false positive (classifier said "no bird" at/above the
+     * threshold, §3.2): a motion trigger, not a bird visit. Count it apart
+     * and keep it out of every visit bucket, so wind events don't pollute
+     * the species table or the daily/hourly charts. */
+    if (strcmp(species, "no bird") == 0) { st->false_pos++; return; }
     st->total++;
 
     /* Daily + hourly buckets need a synced timestamp ("YYYY-MM-DDTHH:...");

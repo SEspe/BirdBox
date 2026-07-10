@@ -298,6 +298,7 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin:0' onclick='gDelSel()'>&#10060; Delete selected</button>"
 "<button class='act' style='margin:0;background:#8a3f3f' onclick='gDelAll()'>&#128465; Delete all</button>"
 "<button class='act' style='margin:0;background:#9e3030' onclick='gWipeDay()'>&#9888; Wipe day (photos+stats)</button>"
+"<button class='act' style='margin:0' onclick='gRecheck()'>&#128269; Recheck species (day)</button>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
@@ -500,7 +501,7 @@ static const char INDEX_HTML[] =
 "var lv=document.getElementById('live');"
 "if(id==='livep'){if(!lv.src.endsWith('/stream'))lv.src='/stream';}"
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
-"if(id==='galleryp')loadDays();"
+"if(id==='galleryp'){loadDays();gRcPoll();}"   /* resume progress after reload */
 "if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
 "if(id==='dbgp')loadDebug();"
@@ -641,9 +642,25 @@ static const char INDEX_HTML[] =
 "+(o.statsRemoved||0)+' log row(s).');loadDays();}).catch(()=>alert('Wipe failed'));}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
+"function gRecheck(){var d=$g('day').value;if(!d)return;"
+"if(d==='no-date'){alert('Recheck needs a dated day (rows are matched by timestamp).');return;}"
+"if(!confirm('Re-run species ID on all of '+d+'\\u2019s visit-log rows with the "
+"current model and settings? Rows are updated in place; user-corrected rows are "
+"kept. Takes ~5\\u201310 s per visit.'))return;"
+"fetch('/api/recheck',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)}).then(r=>r.json())"
+".then(o=>{if(!o.ok){alert(o.error||'Recheck failed');return;}gRcPoll();})"
+".catch(()=>alert('Recheck failed'));}"
+"function gRcPoll(){fetch('/api/recheck').then(r=>r.json()).then(function(o){"
+"var el=$g('gsts');"
+"if(o.busy){el.textContent='Recheck '+o.date+': '+o.done+'/'+o.total+'\\u2026';"
+"setTimeout(gRcPoll,2000);}"
+"else if(o.total){el.textContent='Recheck '+o.date+' done ('+o.done+' row(s))';}"
+"});}"
 "function loadStats(){"
 "Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u).then(r=>r.json())))"
-".then(function(res){var d=res[0],sp=res[1],h=res[2];"
+".then(function(res){var d=res[0],spo=res[1],sp=spo.rows,h=res[2];"
 "d.sort((a,b)=>a.d.localeCompare(b.d));d=d.slice(-30);"
 "var m=Math.max(1,...d.map(o=>o.n));"
 "document.getElementById('sDaily').innerHTML=d.length?d.map(o=>"
@@ -659,7 +676,8 @@ static const char INDEX_HTML[] =
 "document.getElementById('sSpecies').innerHTML="
 "'<tr><th>Species</th><th>Visits</th><th>First seen</th><th>Last seen</th></tr>'+"
 "sp.map(o=>'<tr><td>'+o.s+'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
-"document.getElementById('sTotal').textContent=sp.reduce((a,o)=>a+o.n,0)+' visits total';"
+"document.getElementById('sTotal').textContent=sp.reduce((a,o)=>a+o.n,0)+' visits total'"
+"+(spo.falsePos?' \\u00b7 '+spo.falsePos+' confirmed false positive(s) (no bird)':'');"
 "});}"
 "function statsReset(){"
 "if(!confirm('Reset all statistics? This permanently deletes the visit-log "
@@ -1465,7 +1483,12 @@ static esp_err_t h_stats_species(httpd_req_t *req)
     if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
     stats_collect(st);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send_chunk(req, "[", 1);
+    /* Object, not a bare array (v1.46): confirmed false positives ("no bird"
+     * rows, §3.4) ride alongside the species rows instead of polluting them. */
+    char head[48];
+    int hl = snprintf(head, sizeof(head), "{\"falsePos\":%lu,\"rows\":[",
+                      (unsigned long) st->false_pos);
+    httpd_resp_send_chunk(req, head, hl);
     for (int i = 0; i < st->sp_count; i++) {
         char species[80];
         species_localize(st->sp[i], st->sp_latin[i], g_settings.lang,
@@ -1477,7 +1500,7 @@ static esp_err_t h_stats_species(httpd_req_t *req)
                            st->sp_first[i], st->sp_last[i]);
         httpd_resp_send_chunk(req, item, len);
     }
-    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);
     free(st);
     return ESP_OK;
@@ -1496,6 +1519,54 @@ static esp_err_t h_stats_hourly(httpd_req_t *req)
     }
     strlcat(buf, "]", sizeof(buf));
     free(st);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /api/recheck (date=YYYY-MM-DD) — re-run species ID over that day's
+ * visit-log rows with the current model/settings (FSD §3.4). Asynchronous;
+ * GET /api/recheck reports progress. */
+static esp_err_t h_recheck_post(httpd_req_t *req)
+{
+    char body[48] = {0};
+    int len = MIN(req->content_len, (int) sizeof(body) - 1);
+    if (len > 0) httpd_req_recv(req, body, len);
+    char *dp = strstr(body, "date=");
+    char date[16] = {0};
+    if (dp) strlcpy(date, dp + 5, sizeof(date));
+    char *amp = strchr(date, '&');
+    if (amp) *amp = '\0';
+    if (strlen(date) != 10 || date[4] != '-' || date[7] != '-') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad date");
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    if (!classify_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_sendstr(req, "{\"error\":\"no classifier (no model on SD?)\"}");
+        return ESP_OK;
+    }
+    if (!classify_recheck_start(date)) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"error\":\"a recheck is already running\"}");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "recheck started for %s", date);
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+static esp_err_t h_recheck_get(httpd_req_t *req)
+{
+    bool busy;
+    int done, total;
+    char date[16];
+    classify_recheck_status(&busy, &done, &total, date, sizeof(date));
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+             "{\"busy\":%s,\"date\":\"%s\",\"done\":%d,\"total\":%d}",
+             busy ? "true" : "false", date, done, total);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -2269,6 +2340,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
         { .uri = "/api/stats/reset",   .method = HTTP_POST, .handler = h_stats_reset  },
+        { .uri = "/api/recheck",       .method = HTTP_POST, .handler = h_recheck_post },
+        { .uri = "/api/recheck",       .method = HTTP_GET,  .handler = h_recheck_get  },
         { .uri = "/api/ipconfig",      .method = HTTP_GET,  .handler = h_ipcfg_get  },
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
