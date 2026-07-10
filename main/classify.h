@@ -73,9 +73,12 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len,
  * row in place as it completes (timestamp/frames/first_frame are preserved;
  * species/confidence/latin/roi/top3 are replaced; user-corrected rows are
  * skipped). Asynchronous — runs in its own task, one recheck at a time.
- * Returns false when the classifier is unavailable, no SD, or a recheck is
- * already running; a date with no rows finishes immediately (total 0). */
-bool classify_recheck_start(const char *date);
+ * `files` optionally narrows the run to rows whose first_frame basename is
+ * in the comma-separated list (NULL/empty = the whole day) — the Gallery's
+ * recheck-selected, since a full day takes ~5-10 s per row. Returns false
+ * when the classifier is unavailable, no SD, or a recheck is already
+ * running; a date with no (matching) rows finishes immediately (total 0). */
+bool classify_recheck_start(const char *date, const char *files);
 
 /* Progress of the current (busy=true) or most recent recheck. `date` may be
  * NULL; done/total are 0 before the row scan finishes. */

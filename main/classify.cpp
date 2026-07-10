@@ -570,6 +570,23 @@ typedef struct {
 static volatile bool s_rc_busy = false;
 static volatile int  s_rc_done = 0, s_rc_total = 0;
 static char          s_rc_date[11];
+static char         *s_rc_filter = NULL;   /* comma-separated first_frame
+                                              basenames, NULL = whole day;
+                                              owned/freed by the task */
+
+/* Exact token match within the comma-separated list — plain strstr would
+ * accept a name that is a substring of another entry. */
+static bool rc_in_list(const char *name, const char *list)
+{
+    size_t nl = strlen(name);
+    if (nl == 0) return false;
+    for (const char *p = list; (p = strstr(p, name)) != NULL; p += nl) {
+        bool at_start = (p == list) || (p[-1] == ',');
+        bool at_end   = (p[nl] == '\0' || p[nl] == ',');
+        if (at_start && at_end) return true;
+    }
+    return false;
+}
 
 /* stats.c-style field scanner — strtok_r would swallow the always-empty
  * "corrected" column and shift every later field (see stats.c). */
@@ -650,6 +667,11 @@ static void recheck_task(void *arg)
                 rc_next_field(&p);                    /* latin */
                 char *roi_s     = rc_next_field(&p);
                 if (!first[0] || corrected[0]) continue;   /* user label wins */
+                if (s_rc_filter) {                         /* recheck-selected */
+                    const char *base = strrchr(first, '/');
+                    if (!rc_in_list(base ? base + 1 : first, s_rc_filter))
+                        continue;
+                }
                 recheck_row_t *r = &rows[n];
                 strlcpy(r->ts, ts, sizeof(r->ts));
                 strlcpy(r->path, first, sizeof(r->path));
@@ -703,6 +725,8 @@ static void recheck_task(void *arg)
         s_rc_done = i + 1;
     }
     free(rows);
+    free(s_rc_filter);
+    s_rc_filter = NULL;
     ESP_LOGI(TAG, "recheck %s: %d/%d row(s) re-classified", s_rc_date, s_rc_done, s_rc_total);
     s_rc_busy = false;
     vTaskDelete(NULL);
@@ -836,7 +860,7 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
 #endif
 }
 
-bool classify_recheck_start(const char *date)
+bool classify_recheck_start(const char *date, const char *files)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
     if (!s_available || !storage_sd_present()) return false;
@@ -846,16 +870,25 @@ bool classify_recheck_start(const char *date)
     s_rc_done  = 0;
     s_rc_total = 0;
     strlcpy(s_rc_date, date, sizeof(s_rc_date));
+    s_rc_filter = NULL;
+    if (files && files[0]) {           /* copied — the caller's body is transient */
+        s_rc_filter = (char *) heap_caps_malloc(strlen(files) + 1,
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_rc_filter) { s_rc_busy = false; return false; }
+        strcpy(s_rc_filter, files);
+    }
     /* Priority 2 — below the event task (3), so live visits always win the
      * run mutex first and a recheck only fills the gaps. */
     if (xTaskCreatePinnedToCore(recheck_task, "recheck", 12288, NULL, 2, NULL, 1)
         != pdPASS) {
+        free(s_rc_filter);
+        s_rc_filter = NULL;
         s_rc_busy = false;
         return false;
     }
     return true;
 #else
-    (void) date;
+    (void) date; (void) files;
     return false;
 #endif
 }

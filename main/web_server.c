@@ -299,6 +299,7 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin:0;background:#8a3f3f' onclick='gDelAll()'>&#128465; Delete all</button>"
 "<button class='act' style='margin:0;background:#9e3030' onclick='gWipeDay()'>&#9888; Wipe day (photos+stats)</button>"
 "<button class='act' style='margin:0' onclick='gRecheck()'>&#128269; Recheck species (day)</button>"
+"<button class='act' style='margin:0' onclick='gRecheckSel()'>&#128269; Recheck selected</button>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
@@ -642,16 +643,26 @@ static const char INDEX_HTML[] =
 "+(o.statsRemoved||0)+' log row(s).');loadDays();}).catch(()=>alert('Wipe failed'));}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
-"function gRecheck(){var d=$g('day').value;if(!d)return;"
-"if(d==='no-date'){alert('Recheck needs a dated day (rows are matched by timestamp).');return;}"
+"function gRcStart(d,files){fetch('/api/recheck',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+(files?'&files='+files:'')}).then(r=>r.json())"
+".then(o=>{if(!o.ok){alert(o.error||'Recheck failed');return;}gRcPoll();})"
+".catch(()=>alert('Recheck failed'));}"
+"function gRcDay(d){if(!d)return false;"
+"if(d==='no-date'){alert('Recheck needs a dated day (rows are matched by timestamp).');return false;}"
+"return true;}"
+"function gRecheck(){var d=$g('day').value;if(!gRcDay(d))return;"
 "if(!confirm('Re-run species ID on all of '+d+'\\u2019s visit-log rows with the "
 "current model and settings? Rows are updated in place; user-corrected rows are "
 "kept. Takes ~5\\u201310 s per visit.'))return;"
-"fetch('/api/recheck',{method:'POST',"
-"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-"body:'date='+encodeURIComponent(d)}).then(r=>r.json())"
-".then(o=>{if(!o.ok){alert(o.error||'Recheck failed');return;}gRcPoll();})"
-".catch(()=>alert('Recheck failed'));}"
+"gRcStart(d,'');}"
+"function gRecheckSel(){var d=$g('day').value;if(!gRcDay(d))return;"
+"var fs=gChecks().filter(c=>c.checked).map(c=>c.dataset.f);"
+"if(!fs.length){alert('No images selected');return;}"
+"if(!confirm('Re-run species ID for '+fs.length+' selected photo(s)? Only a photo "
+"that is an event\\u2019s first frame has a visit-log row \\u2014 other selections "
+"are skipped.'))return;"
+"gRcStart(d,fs.join(','));}"
 "function gRcPoll(){fetch('/api/recheck').then(r=>r.json()).then(function(o){"
 "var el=$g('gsts');"
 "if(o.busy){el.textContent='Recheck '+o.date+': '+o.done+'/'+o.total+'\\u2026';"
@@ -1524,35 +1535,58 @@ static esp_err_t h_stats_hourly(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/recheck (date=YYYY-MM-DD) — re-run species ID over that day's
- * visit-log rows with the current model/settings (FSD §3.4). Asynchronous;
- * GET /api/recheck reports progress. */
+/* POST /api/recheck (date=YYYY-MM-DD[&files=a.jpg,b.jpg,...]) — re-run
+ * species ID over that day's visit-log rows with the current model/settings
+ * (FSD §3.4); `files` narrows it to the rows whose first frame is in the
+ * list (Gallery recheck-selected). Asynchronous; GET reports progress.
+ * Body is heap-read like captures/delete: a large multi-select list would
+ * overflow any sensible stack buffer. */
+#define RECHECK_MAX_BODY (8 * 1024)
 static esp_err_t h_recheck_post(httpd_req_t *req)
 {
-    char body[48] = {0};
-    int len = MIN(req->content_len, (int) sizeof(body) - 1);
-    if (len > 0) httpd_req_recv(req, body, len);
+    int total = MIN(req->content_len, RECHECK_MAX_BODY);
+    char *body = calloc(1, total + 1);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        return ESP_OK;
+    }
+    int got = 0;
+    while (got < total) {
+        int r = httpd_req_recv(req, body + got, total - got);
+        if (r <= 0) break;
+        got += r;
+    }
     char *dp = strstr(body, "date=");
     char date[16] = {0};
     if (dp) strlcpy(date, dp + 5, sizeof(date));
     char *amp = strchr(date, '&');
     if (amp) *amp = '\0';
+    char *files = strstr(body, "files=");
+    if (files) {
+        files += 6;
+        char *end = strchr(files, '&');
+        if (end) *end = '\0';
+    }
     if (strlen(date) != 10 || date[4] != '-' || date[7] != '-') {
+        free(body);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad date");
         return ESP_OK;
     }
     httpd_resp_set_type(req, "application/json");
     if (!classify_available()) {
+        free(body);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_sendstr(req, "{\"error\":\"no classifier (no model on SD?)\"}");
         return ESP_OK;
     }
-    if (!classify_recheck_start(date)) {
+    bool started = classify_recheck_start(date, files);
+    free(body);
+    if (!started) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "{\"error\":\"a recheck is already running\"}");
         return ESP_OK;
     }
-    ESP_LOGI(TAG, "recheck started for %s", date);
+    ESP_LOGI(TAG, "recheck started for %s%s", date, files ? " (selected files)" : "");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
