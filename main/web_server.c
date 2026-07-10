@@ -362,6 +362,10 @@ static const char INDEX_HTML[] =
 "garden/feeder species, so the global model can't return an out-of-region bird "
 "(e.g. an American species) by mistake. Needs the default iNaturalist model; ignored "
 "for other models.</p>"
+"<label class='wl'><input type='checkbox' id='stTta'> Extra-look identification (test-time augmentation)</label>"
+"<p class='sts' style='margin-top:2px'>Classifies each frame together with its mirror image and "
+"averages the result, giving the model a second look that lifts confidence on hard poses "
+"(head-on, backlit). Roughly doubles identification time per frame; saved photos are unaffected.</p>"
 "<label class='wl'>Species name language</label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
@@ -786,6 +790,7 @@ static const char INDEX_HTML[] =
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
 "$g('stFshut').checked=c.fshut==1;"
+"$g('stTta').checked=c.tta==1;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "$g('stRes').value=c.res;$g('stContrast').value=c.contrast;g_savedRes=c.res;"
@@ -831,7 +836,8 @@ static const char INDEX_HTML[] =
 "+'&ntp='+encodeURIComponent(ntp)"
 "+'&lang='+$g('stLang').value"
 "+'&dzoom='+($g('stZoom').checked?1:0)"
-"+'&fshut='+($g('stFshut').checked?1:0);"
+"+'&fshut='+($g('stFshut').checked?1:0)"
+"+'&tta='+($g('stTta').checked?1:0);"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
@@ -1900,13 +1906,13 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[560];
+    char buf[580];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
-        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"models\":[",
+        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -1915,7 +1921,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.resolution, (int) g_settings.contrast,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
-        (unsigned) g_settings.fast_shutter);
+        (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -2003,6 +2009,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     }
     g_settings.detect_zoom = field_num(body, "dzoom=", 0, 1, g_settings.detect_zoom);
     g_settings.fast_shutter = field_num(body, "fshut=", 0, 1, g_settings.fast_shutter);
+    g_settings.tta = field_num(body, "tta=", 0, 1, g_settings.tta);
 
     settings_save();
 

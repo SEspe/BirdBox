@@ -55,6 +55,7 @@ static char           **s_labels = NULL;      /* pointers into s_label_buf */
 static char            *s_label_buf = NULL;
 static float           *s_scores = NULL;       /* dequantized output scratch, sized
                                                   s_label_count (run mutex serializes) */
+static float           *s_scores_flip = NULL;  /* TTA flip-pass scratch (§3.2/v1.55) */
 static int              s_out_classes = 0;     /* classes the model actually outputs */
 static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
@@ -204,7 +205,7 @@ static bool load_labels(const char *model_name)
  * permuting the crop/resize indices; the sampling itself (nearest-neighbor,
  * same source pixels) is unchanged, so rotation costs no extra quality. */
 static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst224,
-                                 rotation_t rot, roi_t roi)
+                                 rotation_t rot, roi_t roi, bool hflip)
 {
     esp_jpeg_image_cfg_t cfg = {};
     cfg.indata      = (uint8_t *) jpeg;
@@ -315,9 +316,10 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
             const uint8_t *row = rgb + ((size_t) sy * w + x0) * 3;
             for (int x = 0; x < CLS_INPUT_SIDE; x++) {
                 int sx = x * side / CLS_INPUT_SIDE;
-                drow[x * 3 + 0] = row[sx * 3 + 0];
-                drow[x * 3 + 1] = row[sx * 3 + 1];
-                drow[x * 3 + 2] = row[sx * 3 + 2];
+                int dx = hflip ? CLS_INPUT_SIDE - 1 - x : x;
+                drow[dx * 3 + 0] = row[sx * 3 + 0];
+                drow[dx * 3 + 1] = row[sx * 3 + 1];
+                drow[dx * 3 + 2] = row[sx * 3 + 2];
             }
         } else {
             for (int x = 0; x < CLS_INPUT_SIDE; x++) {
@@ -328,9 +330,10 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
                 if (rot == ROTATE_90) { lx = py;              ly = side - 1 - px; }
                 else                  { lx = side - 1 - py;   ly = px; }
                 const uint8_t *sp = rgb + ((size_t) (y0 + ly) * w + (x0 + lx)) * 3;
-                drow[x * 3 + 0] = sp[0];
-                drow[x * 3 + 1] = sp[1];
-                drow[x * 3 + 2] = sp[2];
+                int dx = hflip ? CLS_INPUT_SIDE - 1 - x : x;
+                drow[dx * 3 + 0] = sp[0];
+                drow[dx * 3 + 1] = sp[1];
+                drow[dx * 3 + 2] = sp[2];
             }
         }
     }
@@ -407,19 +410,16 @@ static void decide_from_scores(const float *scores, int n, classify_result_t *ou
     make_decision(out);
 }
 
-/* ── Inference core (shared by the event task and /api/classify) ────────── */
-/* raw_out (nullable): receives the full dequantized score vector (s_out_classes
- * entries) for evidence pooling; NULL when only the decision is needed. */
-static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out,
-                            roi_t roi, float *raw_out)
+/* One decode+invoke pass. Decodes the JPEG (optionally horizontally mirrored)
+ * into the model input, runs inference, and writes the dequantized score vector
+ * into dst (>= s_label_count floats). *n_out gets the class count, *dur_ms the
+ * inference time. Shared by run_locked's normal and TTA-flip passes. */
+static esp_err_t infer_scores(const uint8_t *jpeg, size_t len, roi_t roi,
+                              bool hflip, float *dst, int *n_out, int32_t *dur_ms)
 {
-    memset(out, 0, sizeof(*out));
     TfLiteTensor *in = s_interp->input(0);
-
-    /* Zoom is opt-out (§3.2): an empty roi already means whole-frame, and the
-     * setting lets the user disable ROI cropping entirely. */
-    if (!g_settings.detect_zoom) roi = roi_none();
-    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8, g_settings.rotation, roi);
+    esp_err_t err = decode_to_input(jpeg, len, in->data.uint8,
+                                    g_settings.rotation, roi, hflip);
     if (err != ESP_OK) return err;
     /* Decoder writes uint8 pixels; the int8 model expects pixel - 128
      * (same scale, zero point shifted). XOR 0x80 is that, in place. */
@@ -431,22 +431,63 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
         ESP_LOGE(TAG, "Invoke failed");
         return ESP_FAIL;
     }
-    out->duration_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
-    s_last_ms = out->duration_ms;
+    *dur_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
 
     TfLiteTensor *ot = s_interp->output(0);
     const int8_t *sc8 = ot->data.int8;
     int n = ot->dims->data[1];
     if (n > s_label_count) n = s_label_count;
-    s_out_classes = n;
+    *n_out = n;
+    float zp = ot->params.zero_point, scale = ot->params.scale;
+    for (int i = 0; i < n; i++) dst[i] = ((float) sc8[i] - zp) * scale;
+    return ESP_OK;
+}
+
+/* ── Inference core (shared by the event task and /api/classify) ────────── */
+/* raw_out (nullable): receives the full dequantized score vector (s_out_classes
+ * entries) for evidence pooling; NULL when only the decision is needed. */
+static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out,
+                            roi_t roi, float *raw_out)
+{
+    memset(out, 0, sizeof(*out));
+
+    /* Zoom is opt-out (§3.2): an empty roi already means whole-frame, and the
+     * setting lets the user disable ROI cropping entirely. */
+    if (!g_settings.detect_zoom) roi = roi_none();
 
     if (!s_scores) {
         s_scores = (float *) heap_caps_malloc(s_label_count * sizeof(float),
                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_scores) return ESP_ERR_NO_MEM;
     }
-    float zp = ot->params.zero_point, scale = ot->params.scale;
-    for (int i = 0; i < n; i++) s_scores[i] = ((float) sc8[i] - zp) * scale;
+    int n = 0;
+    int32_t dur = 0;
+    esp_err_t err = infer_scores(jpeg, len, roi, false, s_scores, &n, &dur);
+    if (err != ESP_OK) return err;
+    out->duration_ms = dur;
+
+    /* Test-time augmentation (§3.2/v1.55): average the scores of the frame and
+     * its horizontal mirror. A left/right flip is label-preserving for birds and
+     * gives the pose-sensitive model a second look, lifting confidence on hard
+     * poses at ~2x inference time. Degrades to the single pass on OOM. */
+    if (g_settings.tta) {
+        if (!s_scores_flip)
+            s_scores_flip = (float *) heap_caps_malloc(s_label_count * sizeof(float),
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_scores_flip) {
+            int nf = 0;
+            int32_t durf = 0;
+            if (infer_scores(jpeg, len, roi, true, s_scores_flip, &nf, &durf) == ESP_OK) {
+                int m = nf < n ? nf : n;
+                for (int i = 0; i < m; i++)
+                    s_scores[i] = 0.5f * (s_scores[i] + s_scores_flip[i]);
+                out->duration_ms += durf;
+            }
+        }
+    }
+    s_last_ms = out->duration_ms;
+
+    s_out_classes = n;
     if (raw_out) memcpy(raw_out, s_scores, (size_t) n * sizeof(float));
 
     decide_from_scores(s_scores, n, out);

@@ -55,6 +55,11 @@ typedef struct {
                                        bird at the cost of a noisier/darker
                                        image (FSD §2.1); 0 = normal auto
                                        exposure. default 0 */
+    uint8_t  tta;                   /* 1 = test-time augmentation: classify each
+                                       frame plus its horizontal mirror and
+                                       average the scores, lifting confidence on
+                                       hard poses (FSD §3.2/v1.55) at ~2x
+                                       inference time; 0 = single pass. default 1 */
 } settings_t;
 
 extern settings_t g_settings;
