@@ -57,9 +57,10 @@ typedef struct {
                                        exposure. default 0 */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
-                                       average the scores, lifting confidence on
-                                       hard poses (FSD §3.2/v1.55) at ~2x
-                                       inference time; 0 = single pass. default 1 */
+                                       average the scores (FSD §3.2/v1.55) at ~2x
+                                       inference time; 0 = single pass. default 0
+                                       — the ~2x cost/heat bought no gain on the
+                                       model's hard cases (v1.56), opt-in only */
 } settings_t;
 
 extern settings_t g_settings;

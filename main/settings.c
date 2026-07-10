@@ -30,7 +30,7 @@ settings_t g_settings = {
     .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
     .detect_zoom        = 1,
     .fast_shutter       = 0,
-    .tta                = 1,
+    .tta                = 0,
 };
 
 esp_err_t settings_load(void)
