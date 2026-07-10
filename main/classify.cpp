@@ -608,6 +608,58 @@ static char *rc_next_field(char **p)
     return start;
 }
 
+/* Reconstruct an event's saved frames for a best-of-N recheck: the logged
+ * first_frame plus the next (frames-1) captures in the day's folder, capped at
+ * CLASSIFY_BEST_OF_N. Motion saves an event's frames back-to-back (single
+ * motion task, cool-down between events), so the immediate timestamp
+ * successors of first_frame ARE that event's follow-up frames — no per-frame
+ * paths need storing. This mirrors what the live event task scored, so a
+ * recheck matches live quality instead of re-scoring only the first frame,
+ * which for a bird is usually the worst (mid-entry / motion-blurred) and was
+ * silently downgrading correctly-labelled rows. Returns the frame count (>=1).
+ * One directory scan per row — negligible beside the inference it feeds. */
+static int rc_event_frames(const recheck_row_t *row,
+                           char paths[CLASSIFY_BEST_OF_N][96])
+{
+    strlcpy(paths[0], row->path, 96);
+    int want = row->frames < CLASSIFY_BEST_OF_N ? row->frames : CLASSIFY_BEST_OF_N;
+    if (want <= 1) return 1;
+
+    const char *base = strrchr(row->path, '/');
+    base = base ? base + 1 : row->path;
+
+    char dir[64];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.10s", s_rc_date);
+    DIR *d = opendir(dir);
+    if (!d) return 1;
+
+    /* keep the (want-1) smallest basenames strictly greater than first_frame,
+     * held sorted ascending (want-1 <= CLASSIFY_BEST_OF_N-1, tiny) */
+    char succ[CLASSIFY_BEST_OF_N - 1][40];
+    int  ns = 0, lim = want - 1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG) continue;
+        if (!strstr(e->d_name, ".jpg")) continue;
+        if (strcmp(e->d_name, base) <= 0) continue;          /* only later frames */
+        if (ns == lim && strcmp(e->d_name, succ[ns - 1]) >= 0) continue;
+        if (ns < lim) ns++;
+        strlcpy(succ[ns - 1], e->d_name, sizeof(succ[0]));   /* place in last slot */
+        for (int j = ns - 1; j > 0 && strcmp(succ[j], succ[j - 1]) < 0; j--) {
+            char tmp[40];
+            strlcpy(tmp,        succ[j],     sizeof(tmp));
+            strlcpy(succ[j],    succ[j - 1], sizeof(succ[0]));
+            strlcpy(succ[j - 1], tmp,        sizeof(succ[0]));
+        }
+    }
+    closedir(d);
+
+    int nf = 1;
+    for (int j = 0; j < ns; j++)
+        snprintf(paths[nf++], 96, "/captures/%.10s/%s", s_rc_date, succ[j]);
+    return nf;
+}
+
 /* Swap one row (matched by timestamp + first_frame — the ms-resolution
  * filename makes that unique) for new_line, filter-to-temp then rename,
  * same pattern as storage_reset_stats_day. One quick rewrite per row keeps
@@ -734,34 +786,56 @@ static void recheck_task(void *arg)
 
     for (int i = 0; i < n; i++) {
         recheck_row_t *row = &rows[i];
-        char full[128];
-        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", row->path);
-        size_t len = 0;
-        uint8_t *buf = load_file_psram(full, &len);
-        if (!buf) { s_rc_done = i + 1; continue; }   /* photo deleted — keep row */
 
-        classify_result_t r;
-        bool ok = run_one(buf, len, &r, row->roi) == ESP_OK;
-        /* same whole-frame safety net as live events (§3.2) */
-        if (ok && r.latin[0] == '\0' && !roi_is_empty(row->roi)) {
-            classify_result_t w;
-            if (run_one(buf, len, &w, roi_none()) == ESP_OK && result_better(&w, &r)) {
-                r = w;
-                row->roi = roi_none();
+        /* Best-of-N over the event's frames (reconstructed), mirroring the live
+         * task — only frame 0's ROI is logged, so follow-ups score whole-frame;
+         * run_locked forces whole-frame anyway when detect_zoom is off. */
+        char paths[CLASSIFY_BEST_OF_N][96];
+        int  nf = rc_event_frames(row, paths);
+        classify_result_t best;
+        bool  have_best = false;
+        roi_t win_roi = row->roi;
+        for (int k = 0; k < nf; k++) {
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", paths[k]);
+            size_t len = 0;
+            uint8_t *buf = load_file_psram(full, &len);
+            if (!buf) continue;
+            roi_t roi = (k == 0) ? row->roi : roi_none();
+            classify_result_t r;
+            esp_err_t err = run_one(buf, len, &r, roi);
+            free(buf);
+            if (err != ESP_OK) continue;
+            if (!have_best || result_better(&r, &best)) {
+                best = r; have_best = true; win_roi = roi;
             }
         }
-        free(buf);
-        if (ok) {
+        /* same whole-frame safety net as live events (§3.2): a zoomed frame 0
+         * that scored no real species gets one whole-frame attempt */
+        if (have_best && best.latin[0] == '\0' && !roi_is_empty(row->roi)) {
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", row->path);
+            size_t len = 0;
+            uint8_t *buf = load_file_psram(full, &len);
+            if (buf) {
+                classify_result_t w;
+                if (run_one(buf, len, &w, roi_none()) == ESP_OK && result_better(&w, &best)) {
+                    best = w; win_roi = roi_none();
+                }
+                free(buf);
+            }
+        }
+        if (have_best) {
             char roi_s[24] = "";
-            if (g_settings.detect_zoom && !roi_is_empty(row->roi))
+            if (g_settings.detect_zoom && !roi_is_empty(win_roi))
                 snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
-                         row->roi.x0, row->roi.y0, row->roi.x1, row->roi.y1);
+                         win_roi.x0, win_roi.y0, win_roi.x1, win_roi.y1);
             char top3[112];
-            top3_field(&r, top3, sizeof(top3));
+            top3_field(&best, top3, sizeof(top3));
             char nl[400];
             snprintf(nl, sizeof(nl), "%s,%s,%u,%d,%s,,%s,%s,%s",
-                     row->ts, r.species, r.confidence_pct, row->frames,
-                     row->path, r.latin, roi_s, top3);
+                     row->ts, best.species, best.confidence_pct, row->frames,
+                     row->path, best.latin, roi_s, top3);
             if (row->add) {
                 if (storage_append_visit_log(nl) != ESP_OK)
                     ESP_LOGW(TAG, "recheck: append for %s failed", row->path);
