@@ -659,15 +659,15 @@ static const char INDEX_HTML[] =
 "function gRecheckSel(){var d=$g('day').value;if(!gRcDay(d))return;"
 "var fs=gChecks().filter(c=>c.checked).map(c=>c.dataset.f);"
 "if(!fs.length){alert('No images selected');return;}"
-"if(!confirm('Re-run species ID for '+fs.length+' selected photo(s)? Only a photo "
-"that is an event\\u2019s first frame has a visit-log row \\u2014 other selections "
-"are skipped.'))return;"
+"if(!confirm('Re-run species ID for '+fs.length+' selected photo(s)? A photo with "
+"a visit-log row is updated in place; one without (after a stats reset, or a "
+"follow-up frame) is ADDED as a new visit row.'))return;"
 "gRcStart(d,fs.join(','));}"
 "function gRcPoll(){fetch('/api/recheck').then(r=>r.json()).then(function(o){"
 "var el=$g('gsts');"
 "if(o.busy){el.textContent='Recheck '+o.date+': '+o.done+'/'+o.total+'\\u2026';"
 "setTimeout(gRcPoll,2000);}"
-"else if(o.total){el.textContent='Recheck '+o.date+' done ('+o.done+' row(s))';}"
+"else if(o.date){el.textContent='Recheck '+o.date+' done ('+o.done+'/'+o.total+' row(s))';}"
 "});}"
 "function loadStats(){"
 "Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u).then(r=>r.json())))"
@@ -806,6 +806,7 @@ static const char INDEX_HTML[] =
 "drow('Free heap',Math.round(d.heap/1024)+' KB')+"
 "drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
 "drow('Uptime',fmtAge(d.uptime))+"
+"drow('Last reset',d.resetReason,(d.resetReason==='power-on'||d.resetReason==='software')?'':'bad')+"
 "drow('Device time',(d.time?d.time+' ('+d.clockSrc+')':'not set'),(d.time?(d.clockSrc==='ntp'?'ok':''):'bad'))+"
 "drow('SoC temperature',(d.socTempC>-100?d.socTempC.toFixed(1)+'\\u00b0C':'n/a'),(d.socTempC>75?'bad':(d.socTempC>-100?'ok':'')))+"
 "drow('WiFi reconnects',d.wifiDisc)+"
@@ -1904,6 +1905,25 @@ static esp_err_t h_status(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Why the chip last rebooted (FSD §5): "panic"/"wdt" point at a firmware
+ * fault, "brownout" at power, "software" is OTA/reboot-button — first
+ * question to answer when a unit restarts unexpectedly in the field. */
+static const char *reset_reason_str(void)
+{
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "external-pin";
+        case ESP_RST_SW:        return "software";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int-wdt";
+        case ESP_RST_TASK_WDT:  return "task-wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        default:                return "unknown";
+    }
+}
+
 /* GET /api/sysinfo — Debug tab: heap/low-water/uptime/reconnects, WiFi link,
  * SD card health, camera sensor status, last-inference timing (FSD §5, §6) */
 static esp_err_t h_sysinfo(httpd_req_t *req)
@@ -1929,9 +1949,10 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[912];
+    char buf[960];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
+        "\"resetReason\":\"%s\","
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"apSsid\":\"%s\",\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
@@ -1944,6 +1965,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
         now_us / 1000000,
+        reset_reason_str(),
         (unsigned long) g_wifi_disconnect_count,
         g_wifi_last_disc_ts_us ? (long long) ((now_us - g_wifi_last_disc_ts_us) / 1000000) : -1,
         mac_str, rssi, ch, apssid, tstr, tsrc,

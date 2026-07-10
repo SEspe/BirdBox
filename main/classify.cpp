@@ -563,6 +563,9 @@ typedef struct {
     char  path[96];    /* first_frame, web-relative */
     int   frames;
     roi_t roi;         /* roi column as logged (empty when none) */
+    bool  add;         /* no existing row — append a new one instead of
+                          rewriting (selected photo whose row was wiped by a
+                          stats reset, or a follow-up frame) */
 } recheck_row_t;
 
 #define RECHECK_MAX_ROWS 256   /* ~32 kB PSRAM; > any plausible day */
@@ -688,6 +691,45 @@ static void recheck_task(void *arg)
         }
         storage_write_unlock();
     }
+
+    /* Explicitly selected photos with no matching row still deserve one —
+     * the row may have been wiped by a stats reset, or the photo is a
+     * follow-up frame that never had its own. Synthesize the row from the
+     * filename's timestamp ("YYYY-MM-DD_HH-MM-SS-mmm.jpg") and append it
+     * after classifying, so recheck-selected doubles as "re-log these
+     * photos into statistics". Day-wide rechecks stay row-based — blanket
+     * re-logging would turn every follow-up frame into a phantom visit. */
+    if (rows && s_rc_filter) {
+        const char *list = s_rc_filter;
+        while (*list && n < RECHECK_MAX_ROWS) {
+            const char *comma = strchr(list, ',');
+            size_t tl = comma ? (size_t) (comma - list) : strlen(list);
+            char name[64];
+            if (tl > 0 && tl < sizeof(name)) {
+                memcpy(name, list, tl);
+                name[tl] = '\0';
+                bool have = false;
+                for (int i = 0; i < n && !have; i++) {
+                    const char *b = strrchr(rows[i].path, '/');
+                    have = strcmp(b ? b + 1 : rows[i].path, name) == 0;
+                }
+                if (!have && strncmp(name, s_rc_date, 10) == 0 &&
+                    strlen(name) >= 20 && name[10] == '_') {
+                    recheck_row_t *r = &rows[n];
+                    snprintf(r->ts, sizeof(r->ts), "%.10sT%.2s:%.2s:%.2s",
+                             name, name + 11, name + 14, name + 17);
+                    snprintf(r->path, sizeof(r->path), "/captures/%s/%s",
+                             s_rc_date, name);
+                    r->frames = 1;
+                    r->roi    = roi_none();
+                    r->add    = true;
+                    n++;
+                }
+            }
+            if (!comma) break;
+            list = comma + 1;
+        }
+    }
     s_rc_total = n;
 
     for (int i = 0; i < n; i++) {
@@ -720,7 +762,12 @@ static void recheck_task(void *arg)
             snprintf(nl, sizeof(nl), "%s,%s,%u,%d,%s,,%s,%s,%s",
                      row->ts, r.species, r.confidence_pct, row->frames,
                      row->path, r.latin, roi_s, top3);
-            rc_rewrite_row(csv, row, nl);
+            if (row->add) {
+                if (storage_append_visit_log(nl) != ESP_OK)
+                    ESP_LOGW(TAG, "recheck: append for %s failed", row->path);
+            } else {
+                rc_rewrite_row(csv, row, nl);
+            }
         }
         s_rc_done = i + 1;
     }
