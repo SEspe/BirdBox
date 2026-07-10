@@ -53,6 +53,9 @@ static int              s_region_matches = 0; /* labels whose binomial is in the
                                                  Northern-European set (§3.2.1) */
 static char           **s_labels = NULL;      /* pointers into s_label_buf */
 static char            *s_label_buf = NULL;
+static float           *s_scores = NULL;       /* dequantized output scratch, sized
+                                                  s_label_count (run mutex serializes) */
+static int              s_out_classes = 0;     /* classes the model actually outputs */
 static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
 static char             s_last_latin[64] = "";
@@ -373,8 +376,42 @@ static void make_decision(classify_result_t *r)
         strlcpy(r->species, "Unidentified bird", sizeof(r->species));
 }
 
+/* Rank a dequantized score vector (region-filtered), fill top-3 + confidence,
+ * and decide. Shared by single-frame inference and multi-frame evidence pooling
+ * (Phase 0, §3.2/v1.54) so a pooled distribution is judged with exactly the
+ * same threshold and background guard as one frame. Region filter (§3.2.1):
+ * confidence is NOT renormalized — an out-of-region winner simply loses its
+ * class and the best in-region score falls below threshold; skipped when the
+ * loaded model doesn't match the set so it can't blank everything. */
+static void decide_from_scores(const float *scores, int n, classify_result_t *out)
+{
+    bool rf = g_settings.region_filter && s_region_matches > 0;
+    int best[3] = { -1, -1, -1 };
+    for (int i = 0; i < n; i++) {
+        if (rf && !label_in_region(s_labels[i])) continue;
+        for (int k = 0; k < 3; k++) {
+            if (best[k] < 0 || scores[i] > scores[best[k]]) {
+                for (int m = 2; m > k; m--) best[m] = best[m - 1];
+                best[k] = i;
+                break;
+            }
+        }
+    }
+    for (int k = 0; k < 3; k++) { out->top_label[k][0] = '\0'; out->top_pct[k] = 0; }
+    for (int k = 0; k < 3; k++) {
+        if (best[k] < 0) break;
+        strlcpy(out->top_label[k], s_labels[best[k]], sizeof(out->top_label[k]));
+        float p = scores[best[k]] < 0 ? 0 : scores[best[k]];
+        out->top_pct[k] = (uint8_t) (p * 100.0f + 0.5f);
+    }
+    make_decision(out);
+}
+
 /* ── Inference core (shared by the event task and /api/classify) ────────── */
-static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out, roi_t roi)
+/* raw_out (nullable): receives the full dequantized score vector (s_out_classes
+ * entries) for evidence pooling; NULL when only the decision is needed. */
+static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *out,
+                            roi_t roi, float *raw_out)
 {
     memset(out, 0, sizeof(*out));
     TfLiteTensor *in = s_interp->input(0);
@@ -398,44 +435,31 @@ static esp_err_t run_locked(const uint8_t *jpeg, size_t len, classify_result_t *
     s_last_ms = out->duration_ms;
 
     TfLiteTensor *ot = s_interp->output(0);
-    const int8_t *scores = ot->data.int8;
+    const int8_t *sc8 = ot->data.int8;
     int n = ot->dims->data[1];
     if (n > s_label_count) n = s_label_count;
+    s_out_classes = n;
 
-    /* Region filter (§3.2.1): restrict the ranking to Northern-European species
-     * (plus no-binomial guard labels). Confidence is NOT renormalized — an
-     * out-of-region animal simply loses its winning class and the best in-region
-     * score falls below the threshold, landing as "Unidentified bird". Skipped
-     * when the loaded model doesn't match the set, so it can't blank everything. */
-    bool rf = g_settings.region_filter && s_region_matches > 0;
+    if (!s_scores) {
+        s_scores = (float *) heap_caps_malloc(s_label_count * sizeof(float),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_scores) return ESP_ERR_NO_MEM;
+    }
+    float zp = ot->params.zero_point, scale = ot->params.scale;
+    for (int i = 0; i < n; i++) s_scores[i] = ((float) sc8[i] - zp) * scale;
+    if (raw_out) memcpy(raw_out, s_scores, (size_t) n * sizeof(float));
 
-    int best[3] = { -1, -1, -1 };
-    for (int i = 0; i < n; i++) {
-        if (rf && !label_in_region(s_labels[i])) continue;
-        for (int k = 0; k < 3; k++) {
-            if (best[k] < 0 || scores[i] > scores[best[k]]) {
-                for (int m = 2; m > k; m--) best[m] = best[m - 1];
-                best[k] = i;
-                break;
-            }
-        }
-    }
-    for (int k = 0; k < 3; k++) {
-        if (best[k] < 0) break;
-        strlcpy(out->top_label[k], s_labels[best[k]], sizeof(out->top_label[k]));
-        float p = ((float) scores[best[k]] - ot->params.zero_point) * ot->params.scale;
-        out->top_pct[k] = (uint8_t) (p * 100.0f + 0.5f);
-    }
-    make_decision(out);
+    decide_from_scores(s_scores, n, out);
     return ESP_OK;
 }
 
-/* One inference, taking the run mutex for just this frame (best-of-N loops
- * lock per frame so a manual /api/classify isn't blocked for the whole run). */
-static esp_err_t run_one(const uint8_t *jpeg, size_t len, classify_result_t *out, roi_t roi)
+/* One inference, taking the run mutex for just this frame (event loops lock
+ * per frame so a manual /api/classify isn't blocked for the whole run). */
+static esp_err_t run_one(const uint8_t *jpeg, size_t len, classify_result_t *out,
+                         roi_t roi, float *raw_out)
 {
     xSemaphoreTake(s_run_mtx, portMAX_DELAY);
-    esp_err_t err = run_locked(jpeg, len, out, roi);
+    esp_err_t err = run_locked(jpeg, len, out, roi, raw_out);
     xSemaphoreGive(s_run_mtx);
     return err;
 }
@@ -473,7 +497,95 @@ static void top3_field(const classify_result_t *r, char *out, size_t n)
     }
 }
 
-/* ── Event task: best-of-N classify, then write the visit-log row (async) ── */
+/* ── Multi-frame aggregation (§3.2, Phase 0/v1.54) ───────────────────────── */
+/* Aggregate an event's frames into one decision. Two aggregators are computed
+ * and the more confident real species wins (result_better):
+ *   • best-of-N  — the single most-confident frame (the pre-v1.54 behaviour),
+ *                  which a lone good frame among background ones needs so it
+ *                  isn't diluted; and
+ *   • evidence pooling — the mean softmax across every scored frame, which
+ *                  combines weak views (a head-on frame + a side-on frame) into
+ *                  a confident call the underconfident model won't reach alone.
+ * Keeping best-of-N as a floor means this never scores below the old logic.
+ * Falls back to one whole-frame pass if the winner is a sentinel and any frame
+ * was zoom-cropped (a miss-cropped bird is often still identifiable whole).
+ * `paths` are web-relative ("/captures/.."); fills *best_out and *win_roi (the
+ * ROI to log — empty when a pooled or whole-frame result won, as those aren't
+ * tied to one frame's crop). Returns false if no frame could be scored. */
+static bool aggregate_frames(const char (*paths)[96], const roi_t *rois, int nf,
+                             int *scored_out, classify_result_t *best_out, roi_t *win_roi)
+{
+    float *accum = (float *) heap_caps_calloc(s_label_count, sizeof(float),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    float *tmp   = (float *) heap_caps_malloc(s_label_count * sizeof(float),
+                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool pool = accum && tmp;                 /* pooling degrades to best-of-N on OOM */
+
+    classify_result_t best;
+    bool  have_best = false;
+    int   scored = 0, best_idx = 0;
+    bool  zoomed_any = false;
+    roi_t win = roi_none();
+
+    for (int i = 0; i < nf; i++) {
+        char full[128];
+        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", paths[i]);
+        size_t len = 0;
+        uint8_t *buf = load_file_psram(full, &len);
+        if (!buf) { ESP_LOGW(TAG, "aggregate: read %s failed", full); continue; }
+        /* "zoom was attempted", not "succeeded" — the rescue must still fire
+         * when every zoomed run failed outright. */
+        if (g_settings.detect_zoom && !roi_is_empty(rois[i])) zoomed_any = true;
+        classify_result_t r;
+        esp_err_t err = run_one(buf, len, &r, rois[i], pool ? tmp : NULL);
+        free(buf);
+        if (err != ESP_OK) continue;
+        scored++;
+        if (pool) for (int k = 0; k < s_out_classes; k++) accum[k] += tmp[k];
+        if (!have_best || result_better(&r, &best)) { best = r; best_idx = i; win = rois[i]; have_best = true; }
+    }
+
+    /* Pooled decision — only meaningful with >=2 frames of evidence. */
+    if (pool && scored >= 2) {
+        for (int k = 0; k < s_out_classes; k++) accum[k] /= scored;
+        classify_result_t pooled;
+        memset(&pooled, 0, sizeof(pooled));
+        decide_from_scores(accum, s_out_classes, &pooled);
+        if (!have_best || result_better(&pooled, &best)) {
+            ESP_LOGI(TAG, "pooled(%d frames) won: %s (%u%%)",
+                     scored, pooled.species, pooled.confidence_pct);
+            best = pooled;
+            win  = roi_none();               /* multi-frame: no single crop */
+        }
+    }
+    free(accum);
+    free(tmp);
+
+    if ((!have_best || best.latin[0] == '\0') && zoomed_any) {
+        char full[128];
+        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", paths[best_idx]);
+        size_t len = 0;
+        uint8_t *buf = load_file_psram(full, &len);
+        if (buf) {
+            classify_result_t w;
+            if (run_one(buf, len, &w, roi_none(), NULL) == ESP_OK &&
+                (!have_best || result_better(&w, &best))) {
+                ESP_LOGI(TAG, "whole-frame fallback rescued: %s (%u%%)",
+                         w.species, w.confidence_pct);
+                best = w;
+                have_best = true;
+                win = roi_none();
+            }
+            free(buf);
+        }
+    }
+
+    if (scored_out) *scored_out = scored;
+    if (have_best) { *best_out = best; *win_roi = win; }
+    return have_best;
+}
+
+/* ── Event task: aggregate frames, then write the visit-log row (async) ── */
 static void classify_task(void *arg)
 {
     cls_job_t job;
@@ -481,68 +593,24 @@ static void classify_task(void *arg)
         if (xQueueReceive(s_jobq, &job, portMAX_DELAY) != pdTRUE) continue;
 
         classify_result_t best;
-        bool  have_best = false;
-        int   scored = 0, best_idx = 0;
-        bool  zoomed_any = false;
-        for (int i = 0; i < job.path_count; i++) {
-            char full[128];
-            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[i]);
-            size_t len = 0;
-            uint8_t *buf = load_file_psram(full, &len);
-            if (!buf) { ESP_LOGW(TAG, "best-of: read %s failed", full); continue; }
-            /* "zoom was attempted", not "zoom succeeded" — the rescue below
-             * must still fire when every zoomed run failed outright. */
-            if (g_settings.detect_zoom && !roi_is_empty(job.rois[i])) zoomed_any = true;
-            classify_result_t r;
-            esp_err_t err = run_one(buf, len, &r, job.rois[i]);
-            free(buf);
-            if (err != ESP_OK) continue;
-            scored++;
-            if (!have_best || result_better(&r, &best)) { best = r; best_idx = i; have_best = true; }
-        }
-
-        /* Zoom safety net (§3.2): the ROI crop is a bet that the changed cells
-         * contain the bird. If every zoomed frame came back without a real
-         * species — or none could be scored at all (e.g. the ROI decode buffer
-         * didn't fit in free PSRAM) — spend ONE extra whole-frame inference on
-         * the frame that scored best (the event's first frame when nothing
-         * scored): a miss-cropped bird is often still identifiable in the full
-         * view, and the whole-frame decode is far smaller than a zoomed one.
-         * Skipped when nothing was zoomed (retrying the same whole-frame run
-         * would fail the same way). */
-        if ((!have_best || best.latin[0] == '\0') && zoomed_any) {
-            char full[128];
-            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job.paths[best_idx]);
-            size_t len = 0;
-            uint8_t *buf = load_file_psram(full, &len);
-            if (buf) {
-                classify_result_t r;
-                if (run_one(buf, len, &r, roi_none()) == ESP_OK &&
-                    (!have_best || result_better(&r, &best))) {
-                    ESP_LOGI(TAG, "whole-frame fallback rescued: %s (%u%%)",
-                             r.species, r.confidence_pct);
-                    best = r;
-                    have_best = true;
-                    job.rois[best_idx] = roi_none();   /* log the roi actually used */
-                }
-                free(buf);
-            }
-        }
+        roi_t win = roi_none();
+        int   scored = 0;
+        bool  have_best = aggregate_frames(job.paths, job.rois, job.path_count,
+                                           &scored, &best, &win);
 
         char line[400];
         if (have_best) {
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
             strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
-            ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', best of %d/%d frame(s), %ld ms)",
+            ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);
             /* winning frame's ROI ("x0-y0-x1-y1", empty = whole frame) + top-3
              * as trailing columns — field-tuning data (§3.4) */
             char roi_s[24] = "";
-            roi_t ur = job.rois[best_idx];
-            if (g_settings.detect_zoom && !roi_is_empty(ur))
+            if (g_settings.detect_zoom && !roi_is_empty(win))
                 snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
-                         ur.x0, ur.y0, ur.x1, ur.y1);
+                         win.x0, win.y0, win.x1, win.y1);
             char top3[112];
             top3_field(&best, top3, sizeof(top3));
             snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s",
@@ -787,44 +855,20 @@ static void recheck_task(void *arg)
     for (int i = 0; i < n; i++) {
         recheck_row_t *row = &rows[i];
 
-        /* Best-of-N over the event's frames (reconstructed), mirroring the live
-         * task — only frame 0's ROI is logged, so follow-ups score whole-frame;
-         * run_locked forces whole-frame anyway when detect_zoom is off. */
-        char paths[CLASSIFY_BEST_OF_N][96];
-        int  nf = rc_event_frames(row, paths);
+        /* Reconstruct the event's frames and aggregate them exactly like a live
+         * event (best-of-N + evidence pooling + rescue) so a recheck matches
+         * live quality (v1.49/v1.54). Only frame 0's ROI is known; follow-ups
+         * score whole-frame (and run_locked forces whole-frame when zoom off). */
+        char  paths[CLASSIFY_BEST_OF_N][96];
+        int   nf = rc_event_frames(row, paths);
+        roi_t rois[CLASSIFY_BEST_OF_N];
+        rois[0] = row->roi;
+        for (int k = 1; k < nf; k++) rois[k] = roi_none();
+
         classify_result_t best;
-        bool  have_best = false;
-        roi_t win_roi = row->roi;
-        for (int k = 0; k < nf; k++) {
-            char full[128];
-            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", paths[k]);
-            size_t len = 0;
-            uint8_t *buf = load_file_psram(full, &len);
-            if (!buf) continue;
-            roi_t roi = (k == 0) ? row->roi : roi_none();
-            classify_result_t r;
-            esp_err_t err = run_one(buf, len, &r, roi);
-            free(buf);
-            if (err != ESP_OK) continue;
-            if (!have_best || result_better(&r, &best)) {
-                best = r; have_best = true; win_roi = roi;
-            }
-        }
-        /* same whole-frame safety net as live events (§3.2): a zoomed frame 0
-         * that scored no real species gets one whole-frame attempt */
-        if (have_best && best.latin[0] == '\0' && !roi_is_empty(row->roi)) {
-            char full[128];
-            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", row->path);
-            size_t len = 0;
-            uint8_t *buf = load_file_psram(full, &len);
-            if (buf) {
-                classify_result_t w;
-                if (run_one(buf, len, &w, roi_none()) == ESP_OK && result_better(&w, &best)) {
-                    best = w; win_roi = roi_none();
-                }
-                free(buf);
-            }
-        }
+        roi_t win_roi = roi_none();
+        int   scored = 0;
+        bool  have_best = aggregate_frames(paths, rois, nf, &scored, &best, &win_roi);
         if (have_best) {
             char roi_s[24] = "";
             if (g_settings.detect_zoom && !roi_is_empty(win_roi))
@@ -1035,7 +1079,7 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len, classify_result_t *
 #if CONFIG_IDF_TARGET_ESP32S3
     if (!s_available) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_run_mtx, portMAX_DELAY);
-    esp_err_t err = run_locked(jpeg, len, out, roi_none());  /* manual: whole frame */
+    esp_err_t err = run_locked(jpeg, len, out, roi_none(), NULL);  /* manual: whole frame */
     xSemaphoreGive(s_run_mtx);
     return err;
 #else
