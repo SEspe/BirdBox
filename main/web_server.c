@@ -2767,6 +2767,68 @@ static esp_err_t h_model_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /model/delete?name=<file> — remove a model/labels file from /sd/model,
+ * the symmetric counterpart to /model/upload (candidate models accrete during
+ * the §3.2.2 retrain iteration and need cleanup without pulling the card).
+ * Refuses to delete any file belonging to the currently loaded model — its
+ * .tflite or its .txt, matched by basename stem — so you can't blow away what's
+ * running. */
+static esp_err_t h_model_delete(httpd_req_t *req)
+{
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no SD card");
+        return ESP_OK;
+    }
+    char query[80] = {0}, name[48] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "name", name, sizeof(name));
+    url_decode(name);
+    const char *dot = strrchr(name, '.');
+    if (!name[0] || strstr(name, "..") || strchr(name, '/') || strchr(name, '\\') ||
+        !dot || (strcasecmp(dot, ".tflite") && strcasecmp(dot, ".txt") &&
+                 strcasecmp(dot, ".csv"))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "name must be a plain .tflite/.txt/.csv filename");
+        return ESP_OK;
+    }
+    /* Guard the loaded model set (its .tflite and .txt share a basename stem). */
+    const char *active = classify_model_name();          /* "" if none loaded */
+    if (active[0]) {
+        char astem[48];
+        strlcpy(astem, active, sizeof(astem));
+        char *ad = strrchr(astem, '.');
+        if (ad) *ad = '\0';
+        size_t nstem = (size_t) (dot - name);
+        if (strlen(astem) == nstem && strncmp(name, astem, nstem) == 0) {
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req,
+                "{\"error\":\"that model is in use — select another and reboot first\"}");
+            return ESP_OK;
+        }
+    }
+    char path[96];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/model/%.48s", name);
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such model file");
+        return ESP_OK;
+    }
+    storage_write_lock();
+    int rc = unlink(path);
+    storage_write_unlock();
+    if (rc != 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "delete failed");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "model file deleted: %s", path);
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"deleted\":\"%s\"}", name);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
 /* Pins already spoken for by the camera/SD/flash-PSRAM bus or fixed to a
  * boot-strapping/USB/UART role — off limits for the raw GPIO debug toggle
  * below, since driving one of these can wedge the camera, SD card or the
@@ -2908,6 +2970,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
+        { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(server, &routes[i]);
