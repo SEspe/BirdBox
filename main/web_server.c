@@ -227,6 +227,10 @@ static const char INDEX_HTML[] =
 ".gid{padding:0 8px 7px;font-size:.72rem;color:#cde;line-height:1.35}"
 ".gid .gidt{display:block;color:#9ab;font-size:.66rem}"
 ".glabel.gconf{background:rgba(30,70,40,.92);color:#8fe0a0;font-weight:600}"
+".glabel.gcls{background:rgba(74,62,22,.9);color:#e8d494}"   /* model-classified, unconfirmed */
+".glabel.gunc{background:rgba(44,46,52,.82);color:#9aa6b0}"  /* unclassified / no bird */
+".gflt{background:#24402c;color:#cfe;border:1px solid #3a5a42;border-radius:5px;"
+"padding:3px 6px;font-size:.8rem;margin:0}"
 ".grl{display:flex;gap:6px;padding:0 8px 8px}"
 ".grl .rlin{flex:1;min-width:0;padding:4px 6px;background:#12261a;border:1px solid #2a4d34;"
 "color:#dfe;border-radius:4px;font-size:.74rem}"
@@ -309,6 +313,12 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin:0;background:#9e3030' onclick='gWipeDay()'>&#9888; Wipe day (photos+stats)</button>"
 "<button class='act' style='margin:0' onclick='gRecheck()'>&#128269; Recheck species (day)</button>"
 "<button class='act' style='margin:0' onclick='gRecheckSel()'>&#128269; Recheck selected</button>"
+"<span class='sts' style='margin:0 0 0 4px'>Show</span>"
+"<select id='gfilter' class='gflt' onchange='setFilter(this.value)'>"
+"<option value='all'>All</option>"
+"<option value='cls'>Classified</option>"
+"<option value='conf'>Confirmed</option>"
+"<option value='unc'>Unclassified</option></select>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='grid' id='grid'></div>"
@@ -599,24 +609,40 @@ static const char INDEX_HTML[] =
 "function loadDay(){var d=$g('day').value;if(!d)return;"
 "fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.f.localeCompare(x.f));"
-"var lab=a.filter(o=>o.sp).length;"
-"$g('gsts').textContent=a.length+' capture'+(a.length!==1?'s':'')"
-"+(lab?(' \\u00b7 '+lab+' labelled'):'');"
+"var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length;"
+"g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified';"
 "var g=$g('grid');g.innerHTML='';"
-"a.forEach(o=>{var p='/captures/'+d+'/'+o.f;"
-"var div=document.createElement('div');div.className='gitem';"
-"var bdg=o.sp?('<div class=\"glabel'+(o.c?' gconf':'')+'\" title=\"'+esc(o.sp)+(o.c?' \\u2013 confirmed':' '+(o.pct||0)+'%')+'\">'"
-"+(o.c?'\\u2713 ':'')+esc(o.sp)+(o.c?'':' '+(o.pct||0)+'%')+'</div>'):'';"
+"a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';"
+"var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;"
+"var bcl=st===2?'gconf':(st===1?'gcls':'gunc');"
+"var btxt=st===2?('\\u2713 '+esc(nm)):(st===1?(esc(nm)+' '+(o.pct||0)+'%'):(nm?esc(nm):'unclassified'));"
+"var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):(st===1?(esc(nm)+' '+(o.pct||0)+'% \\u2013 classified'):'unclassified');"
+"var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+'</div>';"
+"var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>'):'';"
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
 "<span><button class=\"gidbtn\" title=\"identify bird\" "
-"onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
+"onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>'+cfb+'"
 "<button class=\"gidbtn\" title=\"set/correct species\" data-d=\"'+d+'\" "
-"data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(o.sp||'')+'\" onclick=\"reLabel(this)\">&#9998;</button>"
+"data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(nm)+'\" onclick=\"reLabel(this)\">&#9998;</button>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
-"g.appendChild(div);});gSelSync();});}"
+"g.appendChild(div);});gSelSync();applyFilter();});}"
+"var g_gfilter='all',g_gbase='';"
+"function setFilter(v){g_gfilter=v;applyFilter();}"
+"function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0;"
+"items.forEach(function(it){var st=+(it.dataset.st||0);"
+"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='unc'&&st===0);"
+"it.style.display=show?'':'none';if(show)vis++;});"
+"$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'');}"
+"function confirmSp(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
+"fetch('/api/confirm',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)})"
+".then(r=>r.json()).then(o=>{if(o.ok){var b=it.querySelector('.glabel');var nm=it.dataset.sp||'';"
+"if(b){b.className='glabel gconf';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 confirmed';}"
+"it.dataset.st=2;btn.remove();applyFilter();}else{btn.disabled=false;alert(o.error||'Nothing to confirm');}})"
+".catch(()=>{btn.disabled=false;});}"
 "function idBird(btn,d,f){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
 "if(!out){out=document.createElement('div');out.className='gid';it.appendChild(out);}"
@@ -630,7 +656,8 @@ static const char INDEX_HTML[] =
 "if(o.saved){var bdg=it.querySelector('.glabel');"
 "if(!bdg){bdg=document.createElement('div');bdg.className='glabel';it.insertBefore(bdg,it.firstChild);}"
 "bdg.className='glabel gconf';bdg.textContent='\\u2713 '+(o.species||'');"
-"bdg.title=(o.species||'')+' \\u2013 confirmed';}})"
+"bdg.title=(o.species||'')+' \\u2013 confirmed';it.dataset.st=2;it.dataset.sp=(o.species||'');"
+"var cb=it.querySelector('.gcfb');if(cb)cb.remove();applyFilter();}})"
 ".catch(()=>{btn.disabled=false;out.textContent='identify failed';});}"
 "var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
 "function ensureSpecs(cb){if(g_specMap){cb();return;}"
@@ -1307,7 +1334,11 @@ static esp_err_t h_days(httpd_req_t *req)
  * it was [16] — sized for the pre-v1.30 "HHMMSS.jpg" names — so every
  * millisecond-era basename truncated to 15 chars and never matched its file,
  * silently blanking all gallery species badges until v1.53. */
-typedef struct { char base[48]; char sp[72]; uint8_t pct; bool confirmed; } gal_label_t;
+/* state: 0 = unclassified (no real species — sentinel "no bird"/"Unidentified"
+ * row, or no row at all), 1 = classified by the model (a real species, latin
+ * non-empty, not yet human-confirmed), 2 = human-confirmed (corrected set —
+ * whether the user accepted the model's guess or typed their own). §3.4/v1.59 */
+typedef struct { char base[48]; char sp[72]; uint8_t pct; bool confirmed; uint8_t state; } gal_label_t;
 
 /* One CSV field, in place; advances *p past the comma (or to the line end). */
 static char *gal_next_field(char **p)
@@ -1356,6 +1387,10 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
         labels[count].confirmed = corrected[0] != '\0';
+        /* State before corrected-wins swap: a real model classification has a
+         * latin binomial; the "no bird"/"Unidentified"/"unclassified" sentinels
+         * don't. Corrected always wins to confirmed. */
+        labels[count].state = corrected[0] ? 2 : (latin[0] ? 1 : 0);
         if (corrected[0]) species = corrected;   /* user label wins; latin column
                                                     holds its binomial since v1.51 */
         strlcpy(labels[count].base, base, sizeof(labels[count].base));
@@ -1406,19 +1441,21 @@ static esp_err_t h_events(httpd_req_t *req)
         const char *sp = NULL;
         int pct = 0;
         bool confirmed = false;
+        int state = 0;
         for (int i = 0; i < nlabels; i++)
             if (strcmp(labels[i].base, e->d_name) == 0) {
-                sp = labels[i].sp; pct = labels[i].pct; confirmed = labels[i].confirmed; break;
+                sp = labels[i].sp; pct = labels[i].pct;
+                confirmed = labels[i].confirmed; state = labels[i].state; break;
             }
         char item[256];
         int len;
         if (sp)
             len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d,\"c\":%s}",
+                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d}",
                            first ? "" : ",", e->d_name, (long) st.st_size, sp, pct,
-                           confirmed ? "true" : "false");
+                           confirmed ? "true" : "false", state);
         else
-            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld}",
+            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld,\"st\":0}",
                            first ? "" : ",", e->d_name, (long) st.st_size);
         httpd_resp_send_chunk(req, item, len);
         first = false;
@@ -1564,6 +1601,45 @@ static esp_err_t h_relabel(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "relabel %s/%s -> %s", date, file, common);
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* POST /api/confirm (date, f) — accept the model's existing classification as
+ * the human-confirmed label (§3.4/v1.59), without re-running the model or
+ * retyping the species. One-click "yes, the ESP32 got it right." Copies the
+ * row's species into corrected; a row with nothing to confirm (no real species,
+ * or already confirmed) replies ok:false so the UI can leave the badge as-is. */
+static esp_err_t h_confirm(httpd_req_t *req)
+{
+    char body[160] = {0};
+    int rlen = MIN(req->content_len, (int) sizeof(body) - 1);
+    int got = 0;
+    while (got < rlen) {
+        int r = httpd_req_recv(req, body + got, rlen - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    char date[16] = {0}, file[80] = {0};
+    httpd_query_key_value(body, "date", date, sizeof(date));
+    httpd_query_key_value(body, "f",    file, sizeof(file));
+    url_decode(date); url_decode(file);
+
+    httpd_resp_set_type(req, "application/json");
+    if (strlen(date) != 10 || !file[0] ||
+        strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad params");
+        return ESP_OK;
+    }
+    esp_err_t e = storage_confirm(date, file);
+    if (e == ESP_OK) {
+        ESP_LOGI(TAG, "confirm %s/%s", date, file);
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+    } else if (e == ESP_ERR_NOT_FOUND) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"nothing to confirm\"}");
+    } else {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"confirm failed\"}");
+    }
     return ESP_OK;
 }
 
@@ -2667,6 +2743,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/labels",  .method = HTTP_GET,  .handler = h_labels     },
         { .uri = "/api/labels/confirmed", .method = HTTP_GET, .handler = h_labels_confirmed },
         { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
+        { .uri = "/api/confirm", .method = HTTP_POST, .handler = h_confirm    },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },

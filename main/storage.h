@@ -63,6 +63,12 @@ int storage_reset_stats_day(const char *date);
 esp_err_t storage_relabel(const char *date, const char *file,
                           const char *common, const char *latin);
 
+/* Accept the model's current classification as human-confirmed (§3.4/v1.59):
+ * copies the row's species into its "corrected" column. Returns ESP_ERR_NOT_FOUND
+ * when there's nothing confirmable (no row, a sentinel/no-latin row, or already
+ * confirmed). Never adds a row. */
+esp_err_t storage_confirm(const char *date, const char *file);
+
 /* The single-writer lock (FSD §7) for callers doing their own SD writes
  * (model upload) — capture/log writes take it internally. */
 void storage_write_lock(void);

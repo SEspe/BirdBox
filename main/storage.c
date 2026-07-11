@@ -344,6 +344,67 @@ int storage_reset_stats_day(const char *date)
     return removed;
 }
 
+/* Accept the model's existing classification as human-confirmed (§3.4/v1.59):
+ * copy the row's species(1) into the corrected(5) column, keeping its latin(6).
+ * Only a real, not-yet-confirmed classification is confirmable — a row with an
+ * empty latin (sentinel "no bird"/"Unidentified") or one already corrected is
+ * left untouched and ESP_ERR_NOT_FOUND is returned so the caller can report it.
+ * Unlike storage_relabel this never adds a row: there's nothing to confirm on an
+ * image with no visit row. */
+esp_err_t storage_confirm(const char *date, const char *file)
+{
+    if (!s_sd_present || !date || !date[0] || !file || !file[0])
+        return ESP_ERR_INVALID_ARG;
+
+    char path[64], tmp[72];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    FILE *in = fopen(path, "r");
+    if (!in) { xSemaphoreGive(s_write_mtx); return ESP_ERR_NOT_FOUND; }
+    FILE *out = fopen(tmp, "w");
+    if (!out) { fclose(in); xSemaphoreGive(s_write_mtx);
+        ESP_LOGE(TAG, "confirm: temp open failed"); return ESP_FAIL; }
+
+    bool found = false;
+    char line[400];
+    bool header = true;
+    while (fgets(line, sizeof(line), in)) {
+        if (header) { fputs(line, out); header = false; continue; }
+        if (line[0] == '\0' || line[0] == '\n') continue;
+        line[strcspn(line, "\r\n")] = '\0';
+        char *fld[9] = {0};
+        int nf = 0;
+        char *p = line;
+        fld[nf++] = p;
+        while (nf < 9 && (p = strchr(p, ',')) != NULL) { *p++ = '\0'; fld[nf++] = p; }
+        const char *ff  = nf > 4 ? fld[4] : "";
+        const char *base = strrchr(ff, '/');
+        base = base ? base + 1 : ff;
+        const char *species = nf > 1 ? fld[1] : "";
+        const char *corr    = nf > 5 ? fld[5] : "";
+        const char *latin   = nf > 6 ? fld[6] : "";
+        if (!found && strcmp(base, file) == 0 && !corr[0] && latin[0]) {
+            found = true;                /* corrected(5)=species(1); latin(6) kept */
+            fprintf(out, "%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+                    nf>0?fld[0]:"", species, nf>2?fld[2]:"", nf>3?fld[3]:"",
+                    ff, species, latin, nf>7?fld[7]:"", nf>8?fld[8]:"");
+        } else {
+            for (int i = 0; i < nf; i++) { if (i) fputc(',', out); fputs(fld[i], out); }
+            fputc('\n', out);
+        }
+    }
+    fclose(in);
+    fclose(out);
+
+    if (found) { unlink(path); rename(tmp, path); }
+    else        unlink(tmp);
+    xSemaphoreGive(s_write_mtx);
+    ESP_LOGI(TAG, "confirm %s/%s -> %s", date, file, found ? "ok" : "nothing-to-confirm");
+    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t storage_relabel(const char *date, const char *file,
                           const char *common, const char *latin)
 {
