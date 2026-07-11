@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "esp_err.h"
 
 /* WiFi provisioning & connection (FSD §4) — RemoteStart pattern:
@@ -14,6 +15,19 @@ esp_err_t wifi_start(void);
 
 bool wifi_is_connected(void);
 bool wifi_in_portal_mode(void);
+
+/* Portal provisioning verification (FSD §4.4): after the user submits new
+ * credentials at the first-boot portal, wifi.c connects with them while the
+ * SoftAP is still up and reports the DHCP-acquired IP back so the setup page
+ * (GET /api/portal-status) can show the box's LAN address before it reboots.
+ * ip_out receives the address once state is CONNECTED. */
+typedef enum {
+    WIFI_PORTAL_IDLE = 0,   /* not provisioning through the portal          */
+    WIFI_PORTAL_PENDING,    /* connecting with the submitted credentials    */
+    WIFI_PORTAL_CONNECTED,  /* got an IP — see ip_out                        */
+    WIFI_PORTAL_FAILED,     /* couldn't connect in time (e.g. wrong pass)    */
+} wifi_portal_state_t;
+wifi_portal_state_t wifi_portal_status(char *ip_out, size_t len);
 
 /* Re-applies g_settings.ntp_server (FSD §3.4/§5): a no-op until the first
  * successful connect starts SNTP, after which the Settings tab can call

@@ -128,21 +128,57 @@ static const char WIFI_SETUP_HTML[] =
 ".net:hover{background:#356343}"
 ".meta{font-size:.72rem;color:#aac}"
 ".lk{color:#7fc98b}"
+".note{font-size:.72rem;color:#9ab;margin-top:8px}"
+".iplink{display:inline-block;font-size:1.05rem;color:#7fc98b;"
+"word-break:break-all;margin:6px 0}"
 "</style></head>"
 "<body><div class='box'>"
 "<h2>&#128038; " FIRMWARE_NAME " WiFi Setup</h2>"
 "<button class='btn btn-s' onclick='doScan()'>&#128246; Scan Networks</button>"
 "<div class='sts' id='sts'></div>"
 "<div class='nets' id='nets'></div>"
-"<form action='/wifi-save' method='POST'>"
+"<form id='wf' onsubmit='return doSave(event)'>"
 "<label>SSID</label>"
 "<input id='sid' name='ssid' type='text' placeholder='tap network or type' required>"
 "<label>Password</label>"
-"<input name='pass' type='password' placeholder='leave blank if open'>"
+"<input id='pw' name='pass' type='password' placeholder='leave blank if open'>"
+"<div class='note'>&#8505;&#65039; IP is assigned automatically (DHCP).</div>"
 "<button class='btn btn-c' type='submit'>Connect &amp; Save</button>"
 "</form>"
+"<div id='res' style='display:none'></div>"
 "<script>"
 "function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
+"function doSave(e){e.preventDefault();"
+"var sid=document.getElementById('sid').value;"
+"if(!sid){return false;}"
+"var pw=document.getElementById('pw').value;"
+"document.getElementById('wf').style.display='none';"
+"var r=document.getElementById('res');r.style.display='block';"
+"r.innerHTML='<div class=\"sts\">Connecting to '+esc(sid)+'\\u2026 this can take ~20s.</div>';"
+"var body='ssid='+encodeURIComponent(sid)+'&pass='+encodeURIComponent(pw);"
+"fetch('/wifi-save',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});"
+"setTimeout(poll,2000);return false;}"
+"function poll(){"
+"fetch('/api/portal-status').then(function(r){return r.json();}).then(function(s){"
+"var r=document.getElementById('res');"
+"if(s.state==='connected'){done(s.ip);}"
+"else if(s.state==='failed'){"
+"r.innerHTML='<div class=\"sts\" style=\"color:#f88\">&#10060; Couldn&#39;t connect \\u2014 "
+"check the password and try again.</div>"
+"<button class=\"btn btn-c\" onclick=\"location.reload()\">Try again</button>';}"
+"else{setTimeout(poll,1500);}"
+"}).catch(function(){setTimeout(poll,1500);});}"
+"function done(ip){var n=10;"
+"function tick(){"
+"document.getElementById('res').innerHTML="
+"'<div class=\"sts\" style=\"color:#7fc98b\">&#9989; Connected!</div>'+"
+"'<p style=\"font-size:.9rem\">Your BirdBox is at</p>'+"
+"'<a class=\"iplink\" href=\"http://'+ip+'\">http://'+ip+'</a>'+"
+"'<p class=\"note\">Reconnect your phone to your home WiFi, then open that "
+"address. Rebooting in '+n+'s\\u2026</p>';"
+"if(n<=0){return;}n--;setTimeout(tick,1000);}"
+"tick();}"
 "function doScan(){"
 "var st=document.getElementById('sts');"
 "st.textContent='Scanning\\u2026';"
@@ -1237,6 +1273,23 @@ static esp_err_t h_wificfg(httpd_req_t *req)
     char buf[256];
     int n = snprintf(buf, sizeof(buf),
         "{\"primary\":\"%s\",\"alt\":\"%s\",\"connected\":\"%s\"}", p, a, c);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
+/* GET /api/portal-status — first-boot portal credential-verify result, so the
+ * setup page can show the box's DHCP IP before it reboots onto the LAN
+ * (FSD §4.4). state: idle|pending|connected|failed; ip valid when connected. */
+static esp_err_t h_portal_status(httpd_req_t *req)
+{
+    char ip[16] = {0};
+    wifi_portal_state_t st = wifi_portal_status(ip, sizeof(ip));
+    const char *s = st == WIFI_PORTAL_CONNECTED ? "connected"
+                  : st == WIFI_PORTAL_FAILED    ? "failed"
+                  : st == WIFI_PORTAL_PENDING   ? "pending" : "idle";
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"ip\":\"%s\"}", s, ip);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -2960,6 +3013,7 @@ esp_err_t web_server_start(void)
         { .uri = "/stream",      .method = HTTP_GET,  .handler = h_stream     },
         { .uri = "/wifi-setup",  .method = HTTP_GET,  .handler = h_wifi_setup },
         { .uri = "/wifi-save",   .method = HTTP_POST, .handler = h_wifi_save  },
+        { .uri = "/api/portal-status", .method = HTTP_GET, .handler = h_portal_status },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },

@@ -41,6 +41,11 @@ static const char *TAG = "wifi";
 #define BOOT_BTN_GPIO       GPIO_NUM_0
 #define BOOT_BTN_HOLD_MS    5000
 #define PORTAL_RETRY_MS     60000
+/* Portal credential verification (§4.4): how long to wait for the submitted
+ * network to associate + get a DHCP lease, and how long to leave the acquired
+ * IP on screen before rebooting onto the LAN. */
+#define PORTAL_VERIFY_MS    25000
+#define PORTAL_SHOW_MS      12000
 
 static EventGroupHandle_t s_wifi_eg;
 static int                s_retry_count = 0;
@@ -49,6 +54,12 @@ static bool               s_connected = false;
 static bool               s_portal_mode = false;
 static bool               s_have_stored_creds = false;
 static bool               s_sntp_started = false;
+
+/* Portal verify state (§4.4): PENDING while the submitted creds are being
+ * tested with the SoftAP still up, CONNECTED (with s_portal_ip filled) once a
+ * DHCP lease lands, FAILED on timeout. Read by GET /api/portal-status. */
+static volatile wifi_portal_state_t s_portal_state = WIFI_PORTAL_IDLE;
+static char               s_portal_ip[16] = {0};
 
 /* Up to two stored networks (FSD §4.7). s_nets[0] = primary, s_nets[1] =
  * alternative ("alt1"); ssid is "" when a slot is unconfigured. s_net_count is
@@ -192,6 +203,31 @@ static void nvs_save_ipcfg(void)
     }
 }
 
+/* Reset IP config to DHCP. Provisioning through the SoftAP portal almost
+ * always means the box has moved to a new location on a new subnet, where a
+ * static IP saved for the old network would strand it — it associates but is
+ * unreachable at an out-of-subnet address, and (having "GOT_IP" immediately
+ * with a static address) never falls back to the portal. So a portal
+ * reprovision clears the stored static and reverts to DHCP (FSD §4.5). The
+ * in-service WiFi tab is left alone — it has its own explicit IP-config
+ * controls and its network changes stay on the reachable subnet. */
+static void nvs_reset_ipcfg_dhcp(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "ipmode");
+        nvs_erase_key(h, "ip");
+        nvs_erase_key(h, "mask");
+        nvs_erase_key(h, "gw");
+        nvs_erase_key(h, "dns");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    g_ipcfg_static = false;
+    g_ipcfg_ip[0] = g_ipcfg_mask[0] = g_ipcfg_gw[0] = g_ipcfg_dns[0] = '\0';
+    ESP_LOGI(TAG, "portal reprovision — IP config reset to DHCP");
+}
+
 /* Applies a saved static IP to the STA netif before esp_wifi_start(); a
  * no-op (DHCP keeps running) in DHCP mode or when the saved ip/mask are
  * missing/invalid — an invalid config must degrade to DHCP, not brick the
@@ -314,6 +350,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_connected = true;
         s_wifi_ever_connected = true;
         if (s_portal_mode) {
+            if (s_portal_state == WIFI_PORTAL_PENDING) {
+                /* User submitted creds through the portal — capture the
+                 * DHCP-acquired IP and hand it to the setup page instead of
+                 * rebooting immediately (§4.4). start_config_portal persists
+                 * the creds and reboots after a short display window. */
+                snprintf(s_portal_ip, sizeof(s_portal_ip), IPSTR,
+                         IP2STR(&ev->ip_info.ip));
+                s_portal_state = WIFI_PORTAL_CONNECTED;
+                ESP_LOGI(TAG, "Portal verify connected — IP %s", s_portal_ip);
+                return;
+            }
             /* Stored network came back into reach while the portal was open —
              * reboot into a clean normal-mode connect (FSD §4.4). */
             ESP_LOGI(TAG, "Connected during portal mode — rebooting to apply");
@@ -368,29 +415,67 @@ static void start_config_portal(void)
 
     web_server_start();   /* serves the setup page, /api/scan and /wifi-save */
 
-    /* Block until the user submits credentials; meanwhile, if stored
-     * credentials exist (boot-time connect failed, §4.4), keep retrying them
-     * in the background — the router may just have been down. */
-    int64_t last_retry_us = esp_timer_get_time();
-    while (!g_wifi_save_requested) {
-        if (s_have_stored_creds &&
-            esp_timer_get_time() - last_retry_us > (int64_t) PORTAL_RETRY_MS * 1000) {
-            last_retry_us = esp_timer_get_time();
-            /* Alternate stored networks each cycle so the portal keeps trying
-             * both the primary and alt1 (FSD §4.7). */
-            if (s_net_count > 1) {
-                s_cur_net = (s_cur_net + 1) % s_net_count;
-                set_sta_config(s_cur_net);
+    /* Outer loop so a failed verify (e.g. mistyped password) drops back to
+     * waiting for another submission rather than bricking the portal. */
+    for (;;) {
+        /* Block until the user submits credentials; meanwhile, if stored
+         * credentials exist (boot-time connect failed, §4.4), keep retrying
+         * them in the background — the router may just have been down. */
+        int64_t last_retry_us = esp_timer_get_time();
+        while (!g_wifi_save_requested) {
+            if (s_have_stored_creds &&
+                esp_timer_get_time() - last_retry_us > (int64_t) PORTAL_RETRY_MS * 1000) {
+                last_retry_us = esp_timer_get_time();
+                /* Alternate stored networks each cycle so the portal keeps
+                 * trying both the primary and alt1 (FSD §4.7). */
+                if (s_net_count > 1) {
+                    s_cur_net = (s_cur_net + 1) % s_net_count;
+                    set_sta_config(s_cur_net);
+                }
+                ESP_LOGI(TAG, "Portal open — retrying %s in background", s_nets[s_cur_net].ssid);
+                esp_wifi_connect();   /* GOT_IP handler reboots on success */
             }
-            ESP_LOGI(TAG, "Portal open — retrying %s in background", s_nets[s_cur_net].ssid);
-            esp_wifi_connect();   /* GOT_IP handler reboots on success */
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
+        g_wifi_save_requested = false;   /* consume the submission */
+
+        /* Verify the submitted creds with the SoftAP still up so we can report
+         * the DHCP IP to the setup page (§4.4). Force DHCP first: a stale
+         * static from a previous location would otherwise associate and report
+         * a wrong, out-of-subnet address. */
+        esp_wifi_disconnect();
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta) esp_netif_dhcpc_start(sta);   /* ALREADY_STARTED is harmless */
+        wifi_config_t sta_cfg = {0};
+        strlcpy((char *) sta_cfg.sta.ssid,     g_new_ssid, sizeof(sta_cfg.sta.ssid));
+        strlcpy((char *) sta_cfg.sta.password, g_new_pass, sizeof(sta_cfg.sta.password));
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+        s_portal_ip[0] = '\0';
+        s_portal_state = WIFI_PORTAL_PENDING;
+        ESP_LOGI(TAG, "Portal verify — connecting to %s", g_new_ssid);
+        esp_wifi_connect();
+
+        int64_t t0 = esp_timer_get_time();
+        while (s_portal_state == WIFI_PORTAL_PENDING &&
+               esp_timer_get_time() - t0 < (int64_t) PORTAL_VERIFY_MS * 1000) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        if (s_portal_state == WIFI_PORTAL_CONNECTED) {
+            nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
+            nvs_reset_ipcfg_dhcp();   /* new location ⇒ drop stale static IP (§4.5) */
+            ESP_LOGI(TAG, "Credentials verified (IP %s) — rebooting in %d s",
+                     s_portal_ip, PORTAL_SHOW_MS / 1000);
+            vTaskDelay(pdMS_TO_TICKS(PORTAL_SHOW_MS));   /* let the page show the IP */
+            esp_restart();
+        }
+
+        /* Timed out — surface the failure to the page and loop back so the
+         * user can re-enter the password. */
+        s_portal_state = WIFI_PORTAL_FAILED;
+        esp_wifi_disconnect();
+        ESP_LOGW(TAG, "Portal verify failed for %s — awaiting retry", g_new_ssid);
     }
-    nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
-    ESP_LOGI(TAG, "Credentials saved, restarting…");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -468,3 +553,9 @@ esp_err_t wifi_start(void)
 
 bool wifi_is_connected(void)   { return s_connected; }
 bool wifi_in_portal_mode(void) { return s_portal_mode; }
+
+wifi_portal_state_t wifi_portal_status(char *ip_out, size_t len)
+{
+    if (ip_out && len) strlcpy(ip_out, s_portal_ip, len);
+    return s_portal_state;
+}
