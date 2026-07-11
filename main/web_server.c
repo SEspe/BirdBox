@@ -626,7 +626,11 @@ static const char INDEX_HTML[] =
 "if(o.error){out.textContent=o.error;return;}"
 "var t=(o.top3||[]).filter(x=>x.pct>0).map(x=>esc(x.label)+' '+x.pct+'%').join(', ');"
 "out.innerHTML='<b>'+esc(o.species||'?')+'</b> '+(o.confidence||0)+'%'"
-"+(t?'<span class=gidt>'+t+'</span>':'');})"
+"+(o.saved?' \\u2013 saved \\u2713':'')+(t?'<span class=gidt>'+t+'</span>':'');"
+"if(o.saved){var bdg=it.querySelector('.glabel');"
+"if(!bdg){bdg=document.createElement('div');bdg.className='glabel';it.insertBefore(bdg,it.firstChild);}"
+"bdg.className='glabel gconf';bdg.textContent='\\u2713 '+(o.species||'');"
+"bdg.title=(o.species||'')+' \\u2013 confirmed';}})"
 ".catch(()=>{btn.disabled=false;out.textContent='identify failed';});}"
 "var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
 "function ensureSpecs(cb){if(g_specMap){cb();return;}"
@@ -2323,7 +2327,11 @@ static void classify_localize_label(const char *raw, char *out, size_t outsz)
 
 /* Shared JSON reply for the classify endpoints: localized species name plus
  * the top-3 labels (localized to the display language) / percentages / timing. */
-static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r)
+/* `saved`: the gallery identify path persisted this result as the row's
+ * confirmed label (§3.4/v1.58) — the UI flips the thumbnail badge to confirmed.
+ * Always false for the posted-image classify (no visit row to write). */
+static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r,
+                                    bool saved)
 {
     char species[80];
     species_localize(r->species, r->latin, g_settings.lang, species, sizeof(species));
@@ -2333,12 +2341,12 @@ static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r
     classify_localize_label(r->top_label[1], l1, sizeof(l1));
     classify_localize_label(r->top_label[2], l2, sizeof(l2));
 
-    char buf[768];
+    char buf[800];
     snprintf(buf, sizeof(buf),
-        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"top3\":["
+        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"saved\":%s,\"top3\":["
         "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
         "{\"label\":\"%s\",\"pct\":%u}]}",
-        species, r->confidence_pct, (long) r->duration_ms,
+        species, r->confidence_pct, (long) r->duration_ms, saved ? "true" : "false",
         l0, r->top_pct[0], l1, r->top_pct[1], l2, r->top_pct[2]);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
@@ -2389,7 +2397,7 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
         return ESP_OK;
     }
-    return classify_send_json(req, &r);
+    return classify_send_json(req, &r, false);   /* posted image → no row to save into */
 }
 
 /* GET /api/classify-file?date=<day>&f=<file> — classify a JPEG already on the
@@ -2457,7 +2465,18 @@ static esp_err_t h_classify_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
         return ESP_OK;
     }
-    return classify_send_json(req, &r);
+    /* Gallery identify persists its result as the row's confirmed label
+     * (§3.4/v1.58): a non-empty latin means a real species was decided (above
+     * threshold) — write it via the same path the ✎ relabel button uses, so
+     * the record changes and it feeds the retrain export (v1.57). An
+     * under-threshold "Unidentified"/"no bird" result writes nothing (latin is
+     * empty), so an inconclusive identify never wipes a good row. */
+    bool saved = false;
+    if (r.latin[0] && storage_relabel(date, file, r.species, r.latin) == ESP_OK) {
+        saved = true;
+        ESP_LOGI(TAG, "identify saved %s/%s -> %s", date, file, r.species);
+    }
+    return classify_send_json(req, &r, saved);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
