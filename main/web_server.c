@@ -41,6 +41,9 @@
 #include "driver/gpio.h"
 #include "illum.h"
 
+#include <sys/socket.h>   /* recv() peek — detect a stream client's TCP close */
+#include <errno.h>
+
 static const char *TAG = "web";
 
 /* Clock source for the time shown in the UI (FSD §3.4): "ntp" once SNTP has
@@ -982,13 +985,32 @@ static const char INDEX_HTML[] =
 
 static volatile int s_stream_clients = 0;
 
+/* Has the stream client closed its TCP connection? A browser that navigates
+ * away, clears the <img> src, or reloads sends a FIN, but the MJPEG client
+ * never sends request data — so any readability on the socket means EOF (recv
+ * 0) or error, i.e. the client is gone. Polling this each frame frees the slot
+ * promptly; without it the task only noticed on a *send* failure, which a
+ * half-open socket can defer indefinitely, leaking the slot until reboot (the
+ * "stream busy / no video after a while" bug). */
+static bool stream_peer_closed(int fd)
+{
+    if (fd < 0) return false;
+    char b;
+    int r = recv(fd, &b, 1, MSG_DONTWAIT | MSG_PEEK);
+    if (r == 0) return true;                       /* orderly close (FIN) */
+    if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return true;  /* RST/error */
+    return false;                                   /* r>0 (unexpected data) or EAGAIN: still open */
+}
+
 static void stream_task(void *arg)
 {
     httpd_req_t *req = (httpd_req_t *) arg;
     httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
+    int fd = httpd_req_to_sockfd(req);
 
     char hdr[64];
     for (;;) {
+        if (stream_peer_closed(fd)) break;         /* client gone — free the slot now */
         camera_fb_t *fb = camera_grab();
         if (!fb) {
             ESP_LOGW(TAG, "stream: no frame from camera");
