@@ -228,7 +228,9 @@ static const char INDEX_HTML[] =
 ".gid .gidt{display:block;color:#9ab;font-size:.66rem}"
 ".glabel.gconf{background:rgba(30,70,40,.92);color:#8fe0a0;font-weight:600}"
 ".glabel.gcls{background:rgba(74,62,22,.9);color:#e8d494}"   /* model-classified, unconfirmed */
-".glabel.gunc{background:rgba(44,46,52,.82);color:#9aa6b0}"  /* unclassified / no bird */
+".glabel.gunc{background:rgba(44,46,52,.82);color:#9aa6b0}"  /* unclassified */
+".glabel.gnb{background:rgba(64,42,42,.86);color:#d6a6a6}"   /* model says no bird (review) */
+".glabel.gnbc{background:rgba(40,58,50,.9);color:#a6cbb6;font-weight:600}"  /* confirmed no-bird */
 ".gflt{background:#24402c;color:#cfe;border:1px solid #3a5a42;border-radius:5px;"
 "padding:3px 6px;font-size:.8rem;margin:0}"
 ".grl{display:flex;gap:6px;padding:0 8px 8px}"
@@ -317,7 +319,9 @@ static const char INDEX_HTML[] =
 "<select id='gfilter' class='gflt' onchange='setFilter(this.value)'>"
 "<option value='all'>All</option>"
 "<option value='cls'>Classified</option>"
-"<option value='conf'>Confirmed</option>"
+"<option value='conf'>Confirmed (bird)</option>"
+"<option value='nb'>No bird (review)</option>"
+"<option value='cnb'>Confirmed no-bird</option>"
 "<option value='unc'>Unclassified</option></select>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
@@ -609,16 +613,17 @@ static const char INDEX_HTML[] =
 "function loadDay(){var d=$g('day').value;if(!d)return;"
 "fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.f.localeCompare(x.f));"
-"var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length;"
-"g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified';"
+"var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length,nB=a.filter(o=>o.st===3).length,nX=a.filter(o=>o.st===4).length;"
+"g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified \\u00b7 '+nB+' no-bird'+(nX?(' \\u00b7 '+nX+' conf.no-bird'):'');"
 "var g=$g('grid');g.innerHTML='';"
-"a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';"
+"a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';var pc=' '+(o.pct||0)+'%';"
 "var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;"
-"var bcl=st===2?'gconf':(st===1?'gcls':'gunc');"
-"var btxt=st===2?('\\u2713 '+esc(nm)):(st===1?(esc(nm)+' '+(o.pct||0)+'%'):(nm?esc(nm):'unclassified'));"
-"var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):(st===1?(esc(nm)+' '+(o.pct||0)+'% \\u2013 classified'):'unclassified');"
+"var bcl=st===2?'gconf':st===1?'gcls':st===3?'gnb':st===4?'gnbc':'gunc';"
+"var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
+"var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
 "var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+'</div>';"
-"var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>'):'';"
+"var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
+":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
@@ -633,7 +638,7 @@ static const char INDEX_HTML[] =
 "function setFilter(v){g_gfilter=v;applyFilter();}"
 "function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0;"
 "items.forEach(function(it){var st=+(it.dataset.st||0);"
-"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='unc'&&st===0);"
+"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='unc'&&st===0);"
 "it.style.display=show?'':'none';if(show)vis++;});"
 "$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'');}"
 "function confirmSp(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
@@ -642,6 +647,13 @@ static const char INDEX_HTML[] =
 ".then(r=>r.json()).then(o=>{if(o.ok){var b=it.querySelector('.glabel');var nm=it.dataset.sp||'';"
 "if(b){b.className='glabel gconf';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 confirmed';}"
 "it.dataset.st=2;btn.remove();applyFilter();}else{btn.disabled=false;alert(o.error||'Nothing to confirm');}})"
+".catch(()=>{btn.disabled=false;});}"
+"function confirmNoBird(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
+"fetch('/api/relabel',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)+'&c='+encodeURIComponent('no bird')+'&l='})"
+".then(r=>r.json()).then(o=>{if(o.ok){var b=it.querySelector('.glabel');var nm=it.dataset.sp||'no bird';"
+"if(b){b.className='glabel gnbc';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 no bird (confirmed)';}"
+"it.dataset.st=4;btn.remove();applyFilter();}else{btn.disabled=false;alert(o.error||'Failed');}})"
 ".catch(()=>{btn.disabled=false;});}"
 "function idBird(btn,d,f){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
@@ -1387,10 +1399,18 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
         labels[count].confirmed = corrected[0] != '\0';
-        /* State before corrected-wins swap: a real model classification has a
-         * latin binomial; the "no bird"/"Unidentified"/"unclassified" sentinels
-         * don't. Corrected always wins to confirmed. */
-        labels[count].state = corrected[0] ? 2 : (latin[0] ? 1 : 0);
+        /* State before corrected-wins swap. Five per-image states (§3.4/v1.60):
+         *   4 confirmed no-bird — human verified the frame is empty (corrected ==
+         *     "no bird"); a ground-truth negative for the retrain.
+         *   2 confirmed species — human set a real label (corrected, not no-bird).
+         *   1 classified — model decided a real species (latin present), unverified.
+         *   3 no-bird — model's confident "no bird" call, not yet reviewed (often a
+         *     missed bird on this domain-mismatched model, so its own review bucket).
+         *   0 unclassified — "Unidentified bird"/no-row frames. */
+        labels[count].state = (corrected[0] && strcmp(corrected, "no bird") == 0) ? 4
+                            : corrected[0] ? 2
+                            : latin[0]      ? 1
+                            : strcmp(species, "no bird") == 0 ? 3 : 0;
         if (corrected[0]) species = corrected;   /* user label wins; latin column
                                                     holds its binomial since v1.51 */
         strlcpy(labels[count].base, base, sizeof(labels[count].base));
