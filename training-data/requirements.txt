@@ -1,0 +1,5 @@
+# PC/Colab training deps for train.py (NOT the firmware). Python 3.10-3.11.
+# CPU is fine for a small class set; a GPU build just trains faster.
+tensorflow>=2.15,<2.17
+numpy>=1.23
+flatbuffers>=23.0        # used by ../tools/schema_py_generated.py for the op-set check

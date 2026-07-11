@@ -57,3 +57,36 @@ visits/days/light/individuals) matters more than raw count, and stock
 photos from iNaturalist/GBIF (§3.2.1) still supply pose/angle diversity a
 single camera position can't. This archive's job is specifically to close
 the domain gap (real blur/crop/color) that stock photography can't.
+
+## Training (`train.py`, FSD §3.2.2 Phase B)
+
+Off-device fine-tune that turns the collected/confirmed images into a
+device-ready model. Reads the class sources listed in the `CLASSES` table at
+the top of `train.py` (the exported `dataset/<class>/` folders plus curated
+sets like `lavskrike/candidate/` — several dirs merge into one class), transfer-
+learns a MobileNetV2 224 classifier, and exports:
+
+- `<OUT_NAME>.tflite` — full-int8, `1x224x224x3`, only the six ops the firmware
+  registers, input `zero_point==0` (the firmware feeds `pixel-128` directly —
+  `classify.cpp:427`).
+- `<OUT_NAME>.txt` — index-aligned labels, `Latin (Common)` per line (localized
+  on device by binomial), or a literal `background` guard line.
+
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python train.py                       # trains + exports nordic-v1.{tflite,txt}
+python train.py --verify-only nordic-v1.tflite   # re-run the contract checks
+```
+
+The last step **verifies** the model against the device contract (op set,
+int8 input with `zero_point==0`, shapes) and prints PASS/FAIL — a bad export
+is caught here on the PC, not as a silent `AllocateTensors` failure on the
+ESP32. On PASS, upload with the two `curl` commands it prints (see
+`docs/MODEL.md`), pick the model under Settings → Region / species model, reboot.
+
+Edit `CLASSES` to add species; each needs its Latin binomial (so `species_i18n.c`
+localizes it) and one or more image dirs. Add a `background` class (confirmed
+no-bird frames) before any real field deployment. Current defaults are a small
+Dompap + Lavskrike proof, deliberately tiny to validate the whole loop before
+scaling to §3.2.1's ~100-150 species.
