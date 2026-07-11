@@ -42,6 +42,7 @@
 #include "illum.h"
 
 #include <sys/socket.h>   /* recv() peek — detect a stream client's TCP close */
+#include <sys/time.h>     /* struct timeval for SO_SNDTIMEO */
 #include <errno.h>
 
 static const char *TAG = "web";
@@ -198,6 +199,13 @@ static const char INDEX_HTML[] =
 "align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
 "border-radius:4px}"
+".livemsg{position:absolute;inset:0;z-index:4;display:none;flex-direction:column;"
+"align-items:center;justify-content:center;gap:10px;text-align:center;padding:18px;"
+"background:rgba(10,20,14,.9);color:#dfe8e2;font-size:.95rem}"
+".livemsg.on{display:flex}"
+".livemsg .lms{font-size:.8rem;color:#9fb0a6;max-width:280px}"
+".livemsg button{background:#2f6f45;color:#eaf6ee;border:none;border-radius:6px;"
+"padding:6px 16px;font-size:.85rem;cursor:pointer}"
 ".pausebadge.on{display:inline-flex}"
 "button.act.off{background:#8a6d3f}"
 ".zone{position:absolute;inset:0;z-index:4;display:none;"
@@ -290,7 +298,8 @@ static const char INDEX_HTML[] =
 "<div class='detbadge' id='detbadge'><span class='dot'></span>DETECTING</div>"
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
-" onerror=\"this.alt='no camera / stream unavailable';\">"
+" onerror='liveErr()' onload='liveOk()'>"
+"<div class='livemsg' id='livemsg'></div>"
 "<div class='zone' id='zone'></div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
@@ -562,7 +571,17 @@ static const char INDEX_HTML[] =
 "if(s.quarantineS>0){var pb=$g('pausebadge');"
 "if(pb){pb.innerHTML='\\u23F3 BOOT QUARANTINE '+s.quarantineS+'s';pb.classList.add('on');}}"
 "else if(typeof s.detect!=='undefined')detApply(!!s.detect);"
+"var lm=$g('livemsg');"
+"if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
+"function liveOk(){var m=$g('livemsg');if(m)m.classList.remove('on');}"
+"function liveErr(){var lv=$g('live');if(!lv||lv.src.indexOf('/stream')<0)return;"   /* src cleared on tab switch — ignore */
+"var m=$g('livemsg');if(!m)return;m.classList.add('on');m.innerHTML='\\u23F3 connecting\\u2026';"
+"fetch('/api/status').then(r=>r.json()).then(function(s){var rb='<br><button onclick=\"liveRetry()\">Retry</button>';"
+"if(s.streamUsed>=s.streamMax)m.innerHTML='\\uD83D\\uDCF5 Live view busy<div class=lms>All '+s.streamMax+' stream slots are in use by other viewers. It will reconnect automatically when one frees.</div>'+rb;"
+"else m.innerHTML='\\u26A0\\uFE0F No video<div class=lms>Camera stream unavailable.</div>'+rb;"
+"}).catch(function(){m.innerHTML='\\u26A0\\uFE0F No connection to the device<br><button onclick=\"liveRetry()\">Retry</button>';});}"
+"function liveRetry(){var lv=$g('live');if(lv)lv.src='/stream?t='+Date.now();}"
 "function detApply(en){var b=$g('detBtn');if(b){b.dataset.on=en?'1':'0';"
 "b.innerHTML=en?'\\u23F8 Disable detection':'\\u25B6 Enable detection';"
 "b.classList.toggle('off',!en);}"
@@ -1007,6 +1026,18 @@ static void stream_task(void *arg)
     httpd_req_t *req = (httpd_req_t *) arg;
     httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
     int fd = httpd_req_to_sockfd(req);
+
+    /* Bound the ungraceful-disconnect case: if a client vanishes *without*
+     * closing (Wi-Fi drop, sleep, power off) it sends no FIN, so the peer-close
+     * poll below never sees it; instead its unacked frames fill the TCP send
+     * buffer and the next send blocks. SO_SNDTIMEO makes that blocked send fail
+     * after 5 s instead of hanging (and holding the slot) until the stack's much
+     * longer retransmit timeout. A live client ACKs in milliseconds, so this
+     * only ever trips a genuinely dead one. */
+    if (fd >= 0) {
+        struct timeval snd_to = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd_to, sizeof(snd_to));
+    }
 
     char hdr[64];
     for (;;) {
@@ -2276,13 +2307,14 @@ static esp_err_t h_status(httpd_req_t *req)
     char tstr[24]; const char *tsrc;
     device_time(tstr, sizeof(tstr), &tsrc);
 
-    char buf[672];
+    char buf[720];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
         "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
+        "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
@@ -2295,6 +2327,7 @@ static esp_err_t h_status(httpd_req_t *req)
         motion_active() ? "true" : "false",
         motion_detection_enabled() ? "true" : "false",
         (unsigned) motion_quarantine_remaining_s(),
+        s_stream_clients, STREAM_MAX_CLIENTS,
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
         classify_last_species()[0] ? species : "");
