@@ -679,7 +679,7 @@ static const char INDEX_HTML[] =
 "it.style.display=show?'':'none';if(show)vis++;});"
 "$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'')"
 "+(g_gfilter==='unc'?' \\u00b7 double-click a tile = no bird':'')"
-"+(g_gfilter==='near'?(' \\u00b7 top guess '+lo+'\\u2013'+(g_conf-1)+'% (just under the '+g_conf+'% threshold) \\u00b7 double-click = no bird':''));}"
+"+(g_gfilter==='near'?(' \\u00b7 top guess '+lo+'\\u2013'+(g_conf-1)+'% (just under the '+g_conf+'% threshold) \\u00b7 double-click = no bird'):'');}"
 "function confirmSp(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
 "fetch('/api/confirm',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)})"
