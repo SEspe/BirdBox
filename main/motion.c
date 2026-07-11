@@ -37,6 +37,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_camera.h"
 #include "jpeg_decoder.h"
@@ -304,11 +305,28 @@ static void capture_event(roi_t roi)
 
 static void motion_task(void *arg)
 {
+    bool quarantine_logged = false;
     for (;;) {
         if (!s_detect_enabled) {
             /* Maintenance pause: drop the baseline so detection re-seeds
              * against the current scene when it resumes (light/subject may
              * have changed while paused), and don't touch the camera. */
+            s_have_bg = false;
+            vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
+            continue;
+        }
+        /* Boot quarantine (§3.1/v1.61): for the first detect_quarantine_s
+         * seconds of uptime, don't trigger — the OV2640's auto-exposure/gain
+         * settle over the first frames (their swings read as motion), and the
+         * clock hasn't SNTP-synced yet, so any event would file under /no-date.
+         * Keep re-seeding the baseline so detection starts clean when it lifts. */
+        if (g_settings.detect_quarantine_s &&
+            esp_timer_get_time() < (int64_t) g_settings.detect_quarantine_s * 1000000) {
+            if (!quarantine_logged) {
+                ESP_LOGI(TAG, "detection quarantined for %us after boot",
+                         g_settings.detect_quarantine_s);
+                quarantine_logged = true;
+            }
             s_have_bg = false;
             vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
             continue;
@@ -349,6 +367,14 @@ esp_err_t motion_start(void)
 
 bool     motion_active(void)        { return s_motion_active; }
 uint32_t motion_trigger_count(void) { return s_trigger_count; }
+
+uint16_t motion_quarantine_remaining_s(void)
+{
+    if (!g_settings.detect_quarantine_s) return 0;
+    int64_t up_s = esp_timer_get_time() / 1000000;
+    return up_s < g_settings.detect_quarantine_s
+         ? (uint16_t) (g_settings.detect_quarantine_s - up_s) : 0;
+}
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }

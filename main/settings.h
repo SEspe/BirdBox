@@ -55,6 +55,12 @@ typedef struct {
                                        bird at the cost of a noisier/darker
                                        image (FSD §2.1); 0 = normal auto
                                        exposure. default 0 */
+    uint16_t detect_quarantine_s;   /* after boot, suppress motion detection for
+                                       this many seconds so the camera's warm-up
+                                       frames and the pre-SNTP (~1970) clock — which
+                                       files captures under /no-date — can't fire
+                                       false events during startup (FSD §3.1/v1.61).
+                                       default 60; 0 = disabled */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x

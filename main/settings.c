@@ -30,6 +30,7 @@ settings_t g_settings = {
     .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
     .detect_zoom        = 1,
     .fast_shutter       = 0,
+    .detect_quarantine_s = 60,
     .tta                = 0,
 };
 
@@ -69,6 +70,7 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_zoom", &u8)  == ESP_OK) g_settings.detect_zoom = u8;
     if (nvs_get_u8 (h, "s_fshut",&u8)  == ESP_OK) g_settings.fast_shutter = u8;
     if (nvs_get_u8 (h, "s_tta",  &u8)  == ESP_OK) g_settings.tta = u8;
+    if (nvs_get_u16(h, "s_qtn",  &u16) == ESP_OK) g_settings.detect_quarantine_s = u16;
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -105,6 +107,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_zoom", g_settings.detect_zoom);
     nvs_set_u8 (h, "s_fshut", g_settings.fast_shutter);
     nvs_set_u8 (h, "s_tta",   g_settings.tta);
+    nvs_set_u16(h, "s_qtn",   g_settings.detect_quarantine_s);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");

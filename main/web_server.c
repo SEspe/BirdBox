@@ -231,6 +231,8 @@ static const char INDEX_HTML[] =
 ".glabel.gunc{background:rgba(44,46,52,.82);color:#9aa6b0}"  /* unclassified */
 ".glabel.gnb{background:rgba(64,42,42,.86);color:#d6a6a6}"   /* model says no bird (review) */
 ".glabel.gnbc{background:rgba(40,58,50,.9);color:#a6cbb6;font-weight:600}"  /* confirmed no-bird */
+"#grid.nbmode .gitem>a{pointer-events:none;cursor:default}"   /* dbl-click marks no-bird */
+"#grid.nbmode .gitem{cursor:pointer}"
 ".gflt{background:#24402c;color:#cfe;border:1px solid #3a5a42;border-radius:5px;"
 "padding:3px 6px;font-size:.8rem;margin:0}"
 ".grl{display:flex;gap:6px;padding:0 8px 8px}"
@@ -352,6 +354,11 @@ static const char INDEX_HTML[] =
 "<input class='wi' type='number' min='250' max='10000' step='250' id='stCivl'>"
 "<label class='wl'>Cool-down between events (s)</label>"
 "<input class='wi' type='number' min='1' max='600' id='stCool'>"
+"<label class='wl'>Boot detection quarantine (s)</label>"
+"<input class='wi' type='number' min='0' max='3600' id='stQtn'>"
+"<p class='sts' style='margin-top:2px'>After a reboot, ignore motion for this many seconds so "
+"the camera's warm-up frames and the not-yet-synced clock (which files captures under "
+"<i>no-date</i>) don't create false events. 0 disables it; 60 is typical.</p>"
 "<label class='wl'><input type='checkbox' id='stZoom'> Zoom species ID to the motion area</label>"
 "<p class='sts' style='margin-top:2px'>Crops the classifier input to the changed 8&times;8 "
 "grid cells so the bird fills more of the model input (better ID). Saved photos are "
@@ -531,7 +538,8 @@ static const char INDEX_HTML[] =
 "var lv=document.getElementById('live');"
 "if(id==='livep'){if(!lv.src.endsWith('/stream'))lv.src='/stream';}"
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
-"if(id==='galleryp'){loadDays();gRcPoll();}"   /* resume progress after reload */
+"if(id==='galleryp'){loadDays();gRcPoll();"
+"if(!g_nbBound){var gg=$g('grid');if(gg){gg.addEventListener('dblclick',nbDbl);g_nbBound=true;}}}"
 "if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
 "if(id==='dbgp')loadDebug();"
@@ -540,19 +548,22 @@ static const char INDEX_HTML[] =
 "var t=(s.time?('\\uD83D\\uDD52 '+s.time+' ('+s.clockSrc+')'):'\\uD83D\\uDD52 clock not set')+' | '"
 "+s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
 "+' | SD '+(s.sdPresent?s.sdFreeMB+' MB free':'none')"
-"+' | motion '+(s.motion?'ACTIVE':'idle')+' | events '+s.events;"
+"+' | motion '+(s.motion?'ACTIVE':'idle')+' | events '+s.events"
+"+(s.quarantineS>0?(' | \\u23F3 quarantine '+s.quarantineS+'s'):'');"
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
 "if(lw)lw.classList.toggle('det',!!s.motion);"
-"if(typeof s.detect!=='undefined')detApply(!!s.detect);"
+"if(s.quarantineS>0){var pb=$g('pausebadge');"
+"if(pb){pb.innerHTML='\\u23F3 BOOT QUARANTINE '+s.quarantineS+'s';pb.classList.add('on');}}"
+"else if(typeof s.detect!=='undefined')detApply(!!s.detect);"
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 "function detApply(en){var b=$g('detBtn');if(b){b.dataset.on=en?'1':'0';"
 "b.innerHTML=en?'\\u23F8 Disable detection':'\\u25B6 Enable detection';"
 "b.classList.toggle('off',!en);}"
-"var pb=$g('pausebadge');if(pb)pb.classList.toggle('on',!en);}"
+"var pb=$g('pausebadge');if(pb){pb.innerHTML='\\u23F8 DETECTION OFF';pb.classList.toggle('on',!en);}}"
 "function detToggle(){var b=$g('detBtn');var on=b.dataset.on==='1';b.disabled=true;"
 "fetch('/api/detect',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
@@ -617,7 +628,7 @@ static const char INDEX_HTML[] =
 "g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified \\u00b7 '+nB+' no-bird'+(nX?(' \\u00b7 '+nX+' conf.no-bird'):'');"
 "var g=$g('grid');g.innerHTML='';"
 "a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';var pc=' '+(o.pct||0)+'%';"
-"var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;"
+"var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;div.dataset.f=o.f;"
 "var bcl=st===2?'gconf':st===1?'gcls':st===3?'gnb':st===4?'gnbc':'gunc';"
 "var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
 "var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
@@ -634,13 +645,14 @@ static const char INDEX_HTML[] =
 "data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(nm)+'\" onclick=\"reLabel(this)\">&#9998;</button>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
 "g.appendChild(div);});gSelSync();applyFilter();});}"
-"var g_gfilter='all',g_gbase='';"
-"function setFilter(v){g_gfilter=v;applyFilter();}"
+"var g_gfilter='all',g_gbase='',g_nbBound=false;"
+"function setFilter(v){g_gfilter=v;$g('grid').classList.toggle('nbmode',v==='unc');applyFilter();}"
 "function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0;"
 "items.forEach(function(it){var st=+(it.dataset.st||0);"
 "var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='unc'&&st===0);"
 "it.style.display=show?'':'none';if(show)vis++;});"
-"$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'');}"
+"$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'')"
+"+(g_gfilter==='unc'?' \\u00b7 double-click a tile = no bird':'');}"
 "function confirmSp(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
 "fetch('/api/confirm',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)})"
@@ -648,13 +660,19 @@ static const char INDEX_HTML[] =
 "if(b){b.className='glabel gconf';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 confirmed';}"
 "it.dataset.st=2;btn.remove();applyFilter();}else{btn.disabled=false;alert(o.error||'Nothing to confirm');}})"
 ".catch(()=>{btn.disabled=false;});}"
-"function confirmNoBird(btn){var d=btn.dataset.d,f=btn.dataset.f,it=btn.closest('.gitem');btn.disabled=true;"
+"function markNoBird(d,f,it,btn){if(btn)btn.disabled=true;"
 "fetch('/api/relabel',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)+'&c='+encodeURIComponent('no bird')+'&l='})"
 ".then(r=>r.json()).then(o=>{if(o.ok){var b=it.querySelector('.glabel');var nm=it.dataset.sp||'no bird';"
-"if(b){b.className='glabel gnbc';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 no bird (confirmed)';}"
-"it.dataset.st=4;btn.remove();applyFilter();}else{btn.disabled=false;alert(o.error||'Failed');}})"
-".catch(()=>{btn.disabled=false;});}"
+"if(!b){b=document.createElement('div');b.className='glabel';it.insertBefore(b,it.firstChild);}"
+"b.className='glabel gnbc';b.textContent='\\u2713 '+nm;b.title=nm+' \\u2013 no bird (confirmed)';"
+"it.dataset.st=4;var cb=it.querySelector('.gcfb');if(cb)cb.remove();applyFilter();}"
+"else if(btn){btn.disabled=false;alert(o.error||'Failed');}}).catch(()=>{if(btn)btn.disabled=false;});}"
+"function confirmNoBird(btn){markNoBird(btn.dataset.d,btn.dataset.f,btn.closest('.gitem'),btn);}"
+"function nbDbl(e){var g=$g('grid');if(!g.classList.contains('nbmode'))return;"
+"if(e.target.closest('button,input,.grl'))return;"
+"var it=e.target.closest('.gitem');if(!it||it.dataset.st!=='0')return;"
+"e.preventDefault();markNoBird($g('day').value,it.dataset.f,it,null);}"
 "function idBird(btn,d,f){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
 "if(!out){out=document.createElement('div');out.className='gid';it.appendChild(out);}"
@@ -674,7 +692,8 @@ static const char INDEX_HTML[] =
 "var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
 "function ensureSpecs(cb){if(g_specMap){cb();return;}"
 "fetch('/api/labels').then(r=>r.json()).then(function(a){g_specMap={};"
-"var dl=$g('speclist');dl.innerHTML=a.map(o=>'<option value=\"'+esc(o.d)+'\">').join('');"
+"var dl=$g('speclist');dl.innerHTML='<option value=\"No bird\">'+a.map(o=>'<option value=\"'+esc(o.d)+'\">').join('');"
+"g_specMap['No bird']={c:'no bird',l:''};"
 "a.forEach(o=>{g_specMap[o.d]={c:o.c,l:o.l};});cb();}).catch(()=>{g_specMap={};cb();});}"
 "function reLabel(btn){var d=btn.dataset.d,f=btn.dataset.f,cur=btn.dataset.sp;"
 "var it=btn.closest('.gitem');var box=it.querySelector('.grl');"
@@ -830,6 +849,7 @@ static const char INDEX_HTML[] =
 "(c.mode===1?$g('stFeed'):$g('stNest')).checked=true;"
 "$g('stSens').value=c.sens;stSensShow();"
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
+"$g('stQtn').value=c.qtn;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
 "$g('stFshut').checked=c.fshut==1;"
@@ -869,6 +889,7 @@ static const char INDEX_HTML[] =
 "var b='mode='+($g('stFeed').checked?'feeder':'nestbox')"
 "+'&sens='+$g('stSens').value+'&ccnt='+$g('stCcnt').value"
 "+'&civl='+$g('stCivl').value+'&cool='+$g('stCool').value"
+"+'&qtn='+$g('stQtn').value"
 "+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
 "+'&rfilt='+$g('stRfilt').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
@@ -2066,13 +2087,13 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[580];
+    char buf[600];
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
-        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"models\":[",
+        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -2081,7 +2102,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.resolution, (int) g_settings.contrast,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
-        (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta);
+        (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
+        (unsigned) g_settings.detect_quarantine_s);
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -2170,6 +2192,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.detect_zoom = field_num(body, "dzoom=", 0, 1, g_settings.detect_zoom);
     g_settings.fast_shutter = field_num(body, "fshut=", 0, 1, g_settings.fast_shutter);
     g_settings.tta = field_num(body, "tta=", 0, 1, g_settings.tta);
+    g_settings.detect_quarantine_s = field_num(body, "qtn=", 0, 3600, g_settings.detect_quarantine_s);
 
     settings_save();
 
@@ -2231,13 +2254,14 @@ static esp_err_t h_status(httpd_req_t *req)
     char tstr[24]; const char *tsrc;
     device_time(tstr, sizeof(tstr), &tsrc);
 
-    char buf[640];
+    char buf[672];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
         "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
-        "\"motion\":%s,\"detect\":%s,\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
+        "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
+        "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -2248,6 +2272,7 @@ static esp_err_t h_status(httpd_req_t *req)
         tstr, tsrc,
         motion_active() ? "true" : "false",
         motion_detection_enabled() ? "true" : "false",
+        (unsigned) motion_quarantine_remaining_s(),
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
         classify_last_species()[0] ? species : "");

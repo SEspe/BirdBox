@@ -13,6 +13,10 @@ esp_err_t motion_start(void);
 bool     motion_active(void);          /* an event is being captured right now */
 uint32_t motion_trigger_count(void);   /* events since boot */
 
+/* Seconds of post-boot detection quarantine still remaining (FSD §3.1/v1.61),
+ * 0 once detection is live. Lets the UI explain why nothing triggers at boot. */
+uint16_t motion_quarantine_remaining_s(void);
+
 /* Runtime enable/disable of detection, for maintenance (FSD §5). A disabled
  * detector keeps its task alive but skips all frame grabbing/differencing, so
  * the live stream and manual snapshots still work while no visit events fire.
