@@ -41,11 +41,17 @@ static const char *TAG = "wifi";
 #define BOOT_BTN_GPIO       GPIO_NUM_0
 #define BOOT_BTN_HOLD_MS    5000
 #define PORTAL_RETRY_MS     60000
-/* Portal credential verification (§4.4): how long to wait for the submitted
- * network to associate + get a DHCP lease, and how long to leave the acquired
- * IP on screen before rebooting onto the LAN. */
+/* Portal credential verification (§4.4). PORTAL_VERIFY_MS: how long to wait
+ * for the submitted network to associate + get a DHCP lease. Then, because a
+ * single-radio ESP32 in APSTA must move the SoftAP to the STA's channel when
+ * it associates — briefly kicking the phone off BirdBox-Config — we do NOT
+ * reboot on a blind timer. We wait until the setup page has actually fetched
+ * the acquired IP (the phone auto-rejoins the AP, now co-channel with the STA,
+ * within a few seconds), capped by PORTAL_SEEN_MS in case it never comes back,
+ * then leave the IP on screen for PORTAL_SHOW_MS before rebooting. */
 #define PORTAL_VERIFY_MS    25000
-#define PORTAL_SHOW_MS      12000
+#define PORTAL_SHOW_MS      10000
+#define PORTAL_SEEN_MS      60000
 
 static EventGroupHandle_t s_wifi_eg;
 static int                s_retry_count = 0;
@@ -60,6 +66,10 @@ static bool               s_sntp_started = false;
  * DHCP lease lands, FAILED on timeout. Read by GET /api/portal-status. */
 static volatile wifi_portal_state_t s_portal_state = WIFI_PORTAL_IDLE;
 static char               s_portal_ip[16] = {0};
+/* Set once the setup page has fetched the CONNECTED status (i.e. the phone
+ * rejoined the AP and actually saw the IP) — the portal loop waits for this
+ * before rebooting so the address is never shown to nobody. */
+static volatile bool      s_portal_ip_seen = false;
 
 /* Up to two stored networks (FSD §4.7). s_nets[0] = primary, s_nets[1] =
  * alternative ("alt1"); ssid is "" when a slot is unconfigured. s_net_count is
@@ -451,6 +461,7 @@ static void start_config_portal(void)
         strlcpy((char *) sta_cfg.sta.password, g_new_pass, sizeof(sta_cfg.sta.password));
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         s_portal_ip[0] = '\0';
+        s_portal_ip_seen = false;
         s_portal_state = WIFI_PORTAL_PENDING;
         ESP_LOGI(TAG, "Portal verify — connecting to %s", g_new_ssid);
         esp_wifi_connect();
@@ -464,9 +475,21 @@ static void start_config_portal(void)
         if (s_portal_state == WIFI_PORTAL_CONNECTED) {
             nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
             nvs_reset_ipcfg_dhcp();   /* new location ⇒ drop stale static IP (§4.5) */
-            ESP_LOGI(TAG, "Credentials verified (IP %s) — rebooting in %d s",
-                     s_portal_ip, PORTAL_SHOW_MS / 1000);
-            vTaskDelay(pdMS_TO_TICKS(PORTAL_SHOW_MS));   /* let the page show the IP */
+            /* Associating with the STA's AP hopped our SoftAP to its channel,
+             * dropping the phone; wait for it to rejoin and actually fetch the
+             * IP (s_portal_ip_seen) before starting the reboot countdown, so
+             * the address is never shown to a disconnected phone. Capped in
+             * case the phone never returns. */
+            ESP_LOGI(TAG, "Credentials verified (IP %s) — awaiting page fetch", s_portal_ip);
+            int64_t seen0 = esp_timer_get_time();
+            while (!s_portal_ip_seen &&
+                   esp_timer_get_time() - seen0 < (int64_t) PORTAL_SEEN_MS * 1000) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            ESP_LOGI(TAG, "%s — rebooting onto the LAN in %d s",
+                     s_portal_ip_seen ? "Page showed the IP" : "Page never returned",
+                     PORTAL_SHOW_MS / 1000);
+            vTaskDelay(pdMS_TO_TICKS(PORTAL_SHOW_MS));   /* countdown window */
             esp_restart();
         }
 
@@ -557,5 +580,8 @@ bool wifi_in_portal_mode(void) { return s_portal_mode; }
 wifi_portal_state_t wifi_portal_status(char *ip_out, size_t len)
 {
     if (ip_out && len) strlcpy(ip_out, s_portal_ip, len);
+    /* The page reached us and is reading a CONNECTED result — it can now show
+     * the IP, so the portal loop is free to run its reboot countdown. */
+    if (s_portal_state == WIFI_PORTAL_CONNECTED) s_portal_ip_seen = true;
     return s_portal_state;
 }
