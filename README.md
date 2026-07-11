@@ -19,21 +19,39 @@ gets a changelog entry there.
 
 ## Features
 
-- **Live MJPEG stream** in the browser (or any player, e.g. VLC/Home Assistant).
+- **Live MJPEG stream** in the browser (or any player, e.g. VLC/Home Assistant),
+  with a "stream busy" message + auto-reconnect when the 2 client slots are full.
 - **Motion-triggered capture** to microSD, with configurable sensitivity,
-  follow-up frame count, and cool-down.
+  follow-up frame count, cool-down, and a **boot detection quarantine** that
+  suppresses false triggers from the camera's warm-up frames / not-yet-synced
+  clock after a reboot.
 - **On-device species identification** — a quantized TFLite-Micro model
   (default: Google's iNaturalist-birds, 965 species, Apache-2.0) runs on the
-  S3 itself, no cloud call. Optional **Northern-Europe species filter**
-  restricts results to ~80 regional garden/feeder birds so the global model
-  can't return an out-of-region false guess.
-- **Gallery** — browse captures by day; each event's first frame is badged
-  with its species + confidence. Delete a single photo, multi-select delete,
-  delete a whole day, or **wipe a day** (photos + that day's stats together).
-- **Stats** — visits per day, species leaderboard, activity-by-hour, with a
-  one-click **Reset Statistics** for clearing history without touching photos.
-- **Settings** — placement mode, motion tuning, confidence threshold, species
-  set (global/regional), species-model region + SD-swappable model files,
+  S3 itself, no cloud call. Multi-frame **evidence pooling** and optional
+  **test-time augmentation** squeeze extra confidence out of a hard pose;
+  an optional **Northern-Europe species filter** restricts results to ~80
+  regional garden/feeder birds so the global model can't return an
+  out-of-region false guess.
+- **Gallery** — browse captures by day; each image carries a per-image
+  **classification state** (unclassified / classified / human-confirmed /
+  no-bird / confirmed-no-bird), colour-badged on the thumbnail. **Filter** by
+  state, including a **Near threshold** view that surfaces under-scored birds
+  (top guess just below the confidence setting) for quick review. Delete a
+  single photo, multi-select delete, delete a whole day, or **wipe a day**
+  (photos + that day's stats together).
+- **Human-in-the-loop classification** — accept the model's guess with one
+  click (**✓ confirm**), correct it (**✎ relabel**, with autocomplete + a
+  free-text/"No bird" option), or re-run **identify** on a saved photo (which
+  now persists its result). Confirmed labels become the authoritative tag *and*
+  ground-truth training data: a `training-data/export-labels.ps1` tool pulls
+  every confirmed sighting into a retrain-ready dataset (see FSD §3.2.1).
+- **Stats** — visits per day, species leaderboard, activity-by-hour, a
+  confirmed **false-positive** row, per-row last-10 image thumbnails, plus a
+  **recheck** (re-run species ID over a day or a selection) and one-click
+  **Reset Statistics** for clearing history without touching photos.
+- **Settings** — placement mode, motion tuning, confidence threshold, boot
+  quarantine, capture count/interval/cool-down, species set (global/regional),
+  extra-look (TTA) toggle, species-model region + SD-swappable model files,
   display language (English/Norwegian), retention cap, stream quality, camera
   **resolution** (VGA–SXGA) and **contrast**, image **rotation** (0/90/180/270°
   to correct how the camera is physically mounted), timezone, NTP server, IR
@@ -93,11 +111,12 @@ To reset WiFi credentials: hold the boot button ≥ 5 s while powering on.
 
 **Live** stream (MJPEG, also usable directly at `/stream` in Home
 Assistant/VLC), with a quick rotation toggle · **Gallery** of captures with
-species labels, multi-select delete, and combined photo+stats day wipe ·
-**Stats** (visits per day, species leaderboard, activity by hour, reset
-button) · **Settings** (motion, species ID, camera resolution/contrast/
-rotation, storage, system) · **Debug** · **WiFi** (incl. static IP) ·
-**OTA Update**.
+per-image classification-state badges, state filters (incl. Near-threshold),
+one-click confirm / relabel / identify, multi-select delete, and combined
+photo+stats day wipe · **Stats** (visits per day, species leaderboard,
+activity by hour, false-positive row, recheck, reset button) · **Settings**
+(motion, boot quarantine, species ID, camera resolution/contrast/rotation,
+storage, system) · **Debug** · **WiFi** (incl. static IP) · **OTA Update**.
 
 Everything is also available as JSON under `/api/…` — see FSD §6.
 
