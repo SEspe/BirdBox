@@ -32,6 +32,10 @@ typedef struct {
                                        change needs a reboot. default = SVGA */
     int8_t   contrast;              /* OV2640 contrast -2..+2 (the sensor has no
                                        sharpness control); applied live. default 0 */
+    int8_t   ae_level;              /* OV2640 auto-exposure level -2..+2: shifts the
+                                       AE target brighter/darker for scenes the
+                                       default metering renders too dark/bright.
+                                       Applied live. default 0 */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
     char     region[32];            /* species-model region: filename under
                                        /sd/model (FSD §3.2), "" = auto */

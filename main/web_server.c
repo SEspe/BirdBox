@@ -424,8 +424,13 @@ static const char INDEX_HTML[] =
 "<option value='-2'>-2 (soft)</option><option value='-1'>-1</option>"
 "<option value='0'>0 (default)</option><option value='1'>+1</option>"
 "<option value='2'>+2 (punchy)</option></select>"
-"<p class='sts' style='margin-top:2px'>Resolution takes effect after a reboot; contrast "
-"applies immediately. Higher resolution uses more memory and slows species ID.</p>"
+"<label class='wl'>Brightness (auto-exposure level)</label>"
+"<select class='wi' id='stAe'>"
+"<option value='-2'>-2 (darker)</option><option value='-1'>-1</option>"
+"<option value='0'>0 (default)</option><option value='1'>+1</option>"
+"<option value='2'>+2 (brighter)</option></select>"
+"<p class='sts' style='margin-top:2px'>Resolution takes effect after a reboot; contrast, "
+"brightness apply immediately. Higher resolution uses more memory and slows species ID.</p>"
 "<label class='wl'>Image rotation (correct mount vs. subject)</label>"
 "<select class='wi' id='stRot'>"
 "<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
@@ -899,7 +904,7 @@ static const char INDEX_HTML[] =
 "$g('stTta').checked=c.tta==1;"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
-"$g('stRes').value=c.res;$g('stContrast').value=c.contrast;g_savedRes=c.res;"
+"$g('stRes').value=c.res;$g('stContrast').value=c.contrast;$g('stAe').value=c.ae_level;g_savedRes=c.res;"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -937,7 +942,7 @@ static const char INDEX_HTML[] =
 "+'&rfilt='+$g('stRfilt').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
 "+'&rot='+$g('stRot').value+'&res='+$g('stRes').value"
-"+'&contrast='+$g('stContrast').value"
+"+'&contrast='+$g('stContrast').value+'&ael='+$g('stAe').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&region='+encodeURIComponent($g('stRegion').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
@@ -1436,7 +1441,14 @@ static esp_err_t h_days(httpd_req_t *req)
  * + species, so join that to the day's image files to badge event thumbnails
  * with their identification. Only first frames match (one log row per event);
  * follow-up frames stay unlabeled. */
-#define GAL_MAX_LABELS 300
+/* Max visit-log rows loaded per gallery day. A busy feeder day at the reference
+ * unit runs 600+ captures (and relabel/copy-last APPENDS a row per no-row frame,
+ * landing past the old 300 cap), so labels beyond the cap were silently dropped
+ * and their images reverted to "unclassified" in the gallery though the label
+ * was saved and in the export. Raised well over a realistic day's row count;
+ * the array is PSRAM-backed (~150 KB at 1200) since it's too big for internal
+ * heap. Match is O(files×labels) but only on an occasional gallery load. */
+#define GAL_MAX_LABELS 1200
 /* base holds the capture filename ("YYYY-MM-DD_HH-MM-SS-mmm.jpg", 27 chars);
  * it was [16] — sized for the pre-v1.30 "HHMMSS.jpg" names — so every
  * millisecond-era basename truncated to 15 chars and never matched its file,
@@ -1541,7 +1553,8 @@ static esp_err_t h_events(httpd_req_t *req)
         return ESP_OK;
     }
 
-    gal_label_t *labels = calloc(GAL_MAX_LABELS, sizeof(gal_label_t));
+    gal_label_t *labels = heap_caps_calloc(GAL_MAX_LABELS, sizeof(gal_label_t),
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int nlabels = labels ? gal_build_labels(date, labels) : 0;
 
     httpd_resp_send_chunk(req, "[", 1);
@@ -2187,7 +2200,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
-        "\"res\":%u,\"contrast\":%d,\"tz\":\"%s\","
+        "\"res\":%u,\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
@@ -2196,6 +2209,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
         (unsigned) g_settings.region_filter,
         (unsigned) g_settings.resolution, (int) g_settings.contrast,
+        (int) g_settings.ae_level,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
@@ -2260,6 +2274,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
     g_settings.resolution          = field_num(body, "res=",  0,   4,    g_settings.resolution);
     g_settings.contrast            = field_num(body, "contrast=", -2, 2, g_settings.contrast);
+    g_settings.ae_level            = field_num(body, "ael=", -2, 2, g_settings.ae_level);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
     /* region becomes a /sd/model/<region> path when §3.2 lands — reject
@@ -2298,6 +2313,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
     camera_set_rotation(g_settings.rotation);        /* no-op without camera */
     camera_set_contrast(g_settings.contrast);        /* no-op without camera */
+    camera_set_ae_level(g_settings.ae_level);        /* no-op without camera */
     /* fast_shutter is applied by motion.c's ambient-dark check (FSD v1.38),
      * not here — it only engages when the scene actually reads dark, and
      * forcing it unconditionally on every save is what caused v1.37's

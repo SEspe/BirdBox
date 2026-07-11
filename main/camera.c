@@ -136,6 +136,7 @@ static esp_err_t camera_hw_init(void)
     s_available = true;
     camera_set_rotation(g_settings.rotation);   /* settings_load ran first */
     camera_set_contrast(g_settings.contrast);
+    camera_set_ae_level(g_settings.ae_level);
     camera_set_fast_shutter(false);   /* always boot/recover into normal auto
                                          exposure — motion.c's ambient-dark
                                          check (FSD v1.38) decides from here
@@ -348,6 +349,17 @@ esp_err_t camera_set_contrast(int level)
     sensor_t *s = esp_camera_sensor_get();
     if (!s || s->set_contrast(s, level) != 0) return ESP_FAIL;
     ESP_LOGI(TAG, "contrast set to %d", level);
+    return ESP_OK;
+}
+
+esp_err_t camera_set_ae_level(int level)
+{
+    if (!s_available) return ESP_ERR_INVALID_STATE;
+    if (level < -2) level = -2;
+    if (level >  2) level =  2;
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s || s->set_ae_level(s, level) != 0) return ESP_FAIL;
+    ESP_LOGI(TAG, "ae_level set to %d", level);
     return ESP_OK;
 }
 

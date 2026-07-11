@@ -44,6 +44,11 @@ esp_err_t camera_set_quality(uint8_t quality);
  * no sharpness control, so contrast is the closest supported "crispness" knob. */
 esp_err_t camera_set_contrast(int level);
 
+/* OV2640 auto-exposure level, clamped to -2..+2, applied live (FSD §5): raises
+ * (+) or lowers (-) the AE brightness target so a scene the default metering
+ * renders too dark/bright can be corrected without fixing the exposure. */
+esp_err_t camera_set_ae_level(int level);
+
 /* Fixed-short-exposure ("fast shutter") mode, applied live (FSD §2.1): fixes
  * the sensor's integration time short instead of letting AEC lengthen it in
  * dim light (the main source of motion blur on a close/fast bird), while
