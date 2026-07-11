@@ -1601,6 +1601,28 @@ static esp_err_t h_labels(httpd_req_t *req)
         httpd_resp_send_chunk(req, item, len);
         first = false;
     }
+    /* Off-model target species (§3.2.1/§3.2.2): boreal specialists the v1 model
+     * can't emit but that we want to hand-label as ground truth for the Nordic
+     * retrain. Offered in the relabel picker with a stable binomial so the
+     * export keys on it — one class folder per species, immune to common-name
+     * typos. Kept in sync with the "inert" boreal entries in species_i18n.c. */
+    static const struct { const char *latin; const char *common; } EXTRA_LABELS[] = {
+        { "Perisoreus infaustus", "Siberian Jay" },   /* Lavskrike */
+    };
+    for (size_t e = 0; e < sizeof(EXTRA_LABELS) / sizeof(EXTRA_LABELS[0]); e++) {
+        char disp[96];
+        species_localize(EXTRA_LABELS[e].common, EXTRA_LABELS[e].latin,
+                         g_settings.lang, disp, sizeof(disp));
+        char c_e[80], l_e[80], d_e[112];
+        json_escape(c_e, sizeof(c_e), EXTRA_LABELS[e].common);
+        json_escape(l_e, sizeof(l_e), EXTRA_LABELS[e].latin);
+        json_escape(d_e, sizeof(d_e), disp);
+        char item[300];
+        int len = snprintf(item, sizeof(item), "%s{\"c\":\"%s\",\"l\":\"%s\",\"d\":\"%s\"}",
+                           first ? "" : ",", c_e, l_e, d_e);
+        httpd_resp_send_chunk(req, item, len);
+        first = false;
+    }
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
