@@ -20,10 +20,11 @@ Device contract this script MUST satisfy (verified against main/classify.cpp):
     int8 input tensor and does NOT apply the tensor's scale/zero-point
     (classify.cpp:420-427). So the model's input must be int8 with
     zero_point == 0 and be trained on x = (pixel-128)/128  ∈ [-1, 1).
-  * Ops: the firmware registers exactly six builtins — CONV_2D,
-    DEPTHWISE_CONV_2D, ADD, AVERAGE_POOL_2D, FULLY_CONNECTED, SOFTMAX. The
-    classifier head therefore uses AveragePooling2D + a 1x1 Conv (not
-    GlobalAveragePooling+Dense, which lowers to MEAN/RESHAPE — unregistered).
+  * Ops: the firmware registers seven builtins — CONV_2D, DEPTHWISE_CONV_2D,
+    ADD, AVERAGE_POOL_2D, FULLY_CONNECTED, SOFTMAX, PAD. The classifier head
+    therefore uses AveragePooling2D + a 1x1 Conv (not GlobalAveragePooling+
+    Dense, which lowers to MEAN/RESHAPE — unregistered). PAD is emitted by
+    Keras MobileNetV2's ZeroPadding2D and is registered for exactly this path.
   * Output: read dynamically (scale/zero_point), so it is unconstrained.
   * Labels: index-aligned .txt, "Scientific name (Common Name)" (localized on
     device via species_i18n.c by the binomial); a literal `background` line is
@@ -44,10 +45,43 @@ import glob
 import os
 import sys
 
+# TFLite full-int8 conversion is unreliable under Keras 3 (TF>=2.16 default):
+# the MLIR converter aborts with `LLVM ERROR: Failed to infer result type(s)` /
+# `missing attribute 'value'` on a plain Conv ReadVariableOp. Route tf.keras to
+# the classic Keras 2 implementation, whose from_keras_model int8 path is solid.
+# Must be set BEFORE TensorFlow is imported — it is, since tf is imported lazily
+# inside the functions below. Requires the `tf_keras` package (requirements.txt).
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
+# Windows consoles default to cp1252, which can't encode the box-drawing / arrow
+# glyphs used in the progress prints — force UTF-8 so output never crashes.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── Config ──────────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))            # training-data/
 IMG_SIZE = 224
-OUT_NAME = "nordic-v1"
+LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
+
+# Model version scheme (MAJOR.MINOR), keyed on DATA PROVENANCE, not accuracy:
+#   0.x  pre-baseline experiments — include local BirdBox captures, prove the
+#        pipeline (this data-thin Dompap+Lavskrike proof is 0.1).
+#   1.0  first proper baseline trained PURELY from external data (iNaturalist/
+#        GBIF stock) — the reference, no device images.
+#   1.x  1.0 + x rounds of local BirdBox captures mixed in (domain adaptation).
+#   2.0  breaking change — class set added/removed (label indices shift) or a
+#        different architecture/input.
+# Bump MODEL_VERSION per retrain and record it in the registry (README).
+MODEL_VERSION = "0.1"
+# Where THIS build's training images come from: "external" (stock only),
+# "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
+# model's provenance is never guessed later. A 1.0 must be "external".
+DATA_PROVENANCE = "local"
+
+OUT_NAME = f"{LINEAGE}-v{MODEL_VERSION}"
 VAL_FRAC = 0.2
 SEED = 1337
 
@@ -78,8 +112,12 @@ CLASSES = [
     # {"latin": "", "common": "background", "dirs": ["dataset/no_bird"]},
 ]
 
-ALLOWED_OPS = {"CONV_2D", "DEPTHWISE_CONV_2D", "ADD",
-               "AVERAGE_POOL_2D", "FULLY_CONNECTED", "SOFTMAX"}
+# The builtins the firmware registers (classify.cpp MicroMutableOpResolver).
+# PAD was added for the Keras MobileNetV2 retrain path (its ZeroPadding2D
+# before stride-2 convs); FULLY_CONNECTED stays registered for stock models
+# though this script's conv head doesn't use it.
+ALLOWED_OPS = {"CONV_2D", "DEPTHWISE_CONV_2D", "ADD", "AVERAGE_POOL_2D",
+               "FULLY_CONNECTED", "SOFTMAX", "PAD"}
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 
 
@@ -188,7 +226,7 @@ def build_model(n_classes):
         include_top=False, weights="imagenet")
     backbone.trainable = False
 
-    # Head kept inside the 6 registered ops: AveragePooling2D collapses the
+    # Head kept inside the registered ops: AveragePooling2D collapses the
     # HxW feature map (MEAN-free), a 1x1 Conv is the classifier (== the Coral
     # inat model's fully-convolutional head), Softmax over the channel axis.
     # Output stays [b,1,1,C]; the firmware reads C contiguous int8 values.
@@ -241,7 +279,9 @@ def write_labels(names, out_path):
 
 
 def verify(tflite_path):
-    """Check the produced model against the device contract. Returns True/ok."""
+    """Check the produced model against the device contract.
+    Returns (ok, info) where info captures the op set + I/O quant for the
+    manifest, so provenance/contract facts are recorded, not re-derived."""
     import tensorflow as tf
     ok = True
     print(f"\n── Verifying {os.path.basename(tflite_path)} against device contract ──")
@@ -252,10 +292,10 @@ def verify(tflite_path):
     print(f"  ops: {sorted(ops)}")
     if extra:
         ok = False
-        print(f"  !! FAIL: ops outside the firmware's registered six: {sorted(extra)}")
+        print(f"  !! FAIL: ops outside the firmware's registered set: {sorted(extra)}")
         print("     Fix the head, or register these in main/classify.cpp's resolver.")
     else:
-        print("  ok: op set within the registered six")
+        print("  ok: op set within the registered set")
 
     # Input/output quantization.
     interp = tf.lite.Interpreter(model_path=tflite_path)
@@ -263,10 +303,11 @@ def verify(tflite_path):
     inp = interp.get_input_details()[0]
     out = interp.get_output_details()[0]
     iscale, izp = inp["quantization"]
+    oscale, ozp = out["quantization"]
     print(f"  input : dtype={inp['dtype'].__name__} shape={list(inp['shape'])} "
           f"scale={iscale:.6f} zero_point={izp}")
     print(f"  output: dtype={out['dtype'].__name__} shape={list(out['shape'])} "
-          f"scale={out['quantization'][0]:.6f} zero_point={out['quantization'][1]}")
+          f"scale={oscale:.6f} zero_point={ozp}")
     if inp["dtype"].__name__ != "int8" or list(inp["shape"]) != [1, IMG_SIZE, IMG_SIZE, 3]:
         ok = False
         print("  !! FAIL: input must be int8 1x224x224x3")
@@ -281,7 +322,52 @@ def verify(tflite_path):
         print("  !! FAIL: output must be int8 (firmware reads int8 + params)")
 
     print("  RESULT:", "PASS — safe to upload" if ok else "FAIL — do NOT upload")
-    return ok
+    info = {
+        "ops": sorted(ops),
+        "ops_ok": not extra,
+        "input": {"dtype": inp["dtype"].__name__,
+                  "shape": [int(x) for x in inp["shape"]],
+                  "scale": float(iscale), "zero_point": int(izp)},
+        "output": {"dtype": out["dtype"].__name__,
+                   "shape": [int(x) for x in out["shape"]],
+                   "scale": float(oscale), "zero_point": int(ozp)},
+        "contract_pass": bool(ok),
+    }
+    return ok, info
+
+
+def write_manifest(out_path, names, counts, split_sizes, verify_info):
+    """Sidecar JSON recording a model's identity + provenance, so a .tflite on
+    an SD card is never an anonymous blob. The device ignores it; it's the
+    PC-side registry record (see the versioning scheme in the config)."""
+    import datetime
+    import json
+    try:
+        import tensorflow as tf
+        tf_ver = tf.__version__
+    except Exception:
+        tf_ver = None
+    manifest = {
+        "lineage": LINEAGE,
+        "version": MODEL_VERSION,
+        "data_provenance": DATA_PROVENANCE,
+        "built": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "tensorflow": tf_ver,
+        "input_size": IMG_SIZE,
+        "backbone": "MobileNetV2 alpha=1.0 (ImageNet)",
+        "classes": [{"index": i, "label": n, "train_images": counts[i]}
+                    for i, n in enumerate(names)],
+        "train_count": split_sizes[0],
+        "val_count": split_sizes[1],
+        "hparams": {"head_epochs": HEAD_EPOCHS, "ft_epochs": FT_EPOCHS,
+                    "ft_unfreeze": FT_UNFREEZE, "batch": BATCH,
+                    "head_lr": HEAD_LR, "ft_lr": FT_LR, "val_frac": VAL_FRAC,
+                    "seed": SEED},
+        "verify": verify_info,
+    }
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
 
 
 def _op_set(tflite_path):
@@ -309,10 +395,20 @@ def main():
     args = ap.parse_args()
 
     if args.verify_only:
-        sys.exit(0 if verify(args.verify_only) else 1)
+        ok, _ = verify(args.verify_only)
+        sys.exit(0 if ok else 1)
+
+    # Provenance guard: a .0 baseline from v1.0 up must be pure external
+    # (the whole point of "1.0 = pure from external").
+    major, _, minor = MODEL_VERSION.partition(".")
+    if int(major) >= 1 and minor in ("0", "") and DATA_PROVENANCE != "external":
+        sys.exit(f"Version {MODEL_VERSION} is a baseline (.0) but DATA_PROVENANCE="
+                 f"'{DATA_PROVENANCE}'. A vN.0 must be trained purely from external "
+                 "data; bump to a .1+ for local/mixed data, or set provenance.")
 
     import tensorflow as tf
     print(f"TensorFlow {tf.__version__}")
+    print(f"Building {LINEAGE}-v{MODEL_VERSION}  (provenance: {DATA_PROVENANCE})")
     print("Classes / image counts:")
     paths, labels, names = list_images()
     n_classes = len(CLASSES)
@@ -345,13 +441,16 @@ def main():
 
     tflite_path = os.path.join(ROOT, args.out + ".tflite")
     txt_path = os.path.join(ROOT, args.out + ".txt")
+    json_path = os.path.join(ROOT, args.out + ".json")
     print(f"\nExporting int8 TFLite -> {tflite_path}")
     export_tflite(model, tr_p, tflite_path)
     write_labels(names, txt_path)
     print(f"Wrote labels -> {txt_path}")
     print(f"Model size: {os.path.getsize(tflite_path) / 1e6:.2f} MB")
 
-    ok = verify(tflite_path)
+    ok, info = verify(tflite_path)
+    write_manifest(json_path, names, counts, (len(tr_p), len(va_p)), info)
+    print(f"Wrote manifest -> {json_path}")
     print("\nNext: upload to the device (see docs/MODEL.md):")
     print(f'  curl -X POST --data-binary @{args.out}.tflite '
           f'"http://192.168.1.111/model/upload?name={args.out}.tflite"')

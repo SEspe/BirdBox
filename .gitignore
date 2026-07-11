@@ -31,3 +31,10 @@ training-data/lavskrike/
 training-data/not-lavskrike/
 training-data/manifest.txt
 training-data/dataset/
+
+# Training env + trained-model outputs (train.py) — big binaries / venv, not
+# source. The script, requirements.txt and README stay tracked.
+training-data/.venv/
+training-data/*.tflite
+training-data/*-v*.txt
+training-data/*-v*.json

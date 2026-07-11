@@ -208,3 +208,33 @@ labels feed the next retrain. Each pass tightens accuracy on your local birds.
 > meaningful accuracy result. Keep confirming Dompap to balance it before you
 > read anything into the numbers. Scaling to §3.2.1's ~100-150 species is the
 > same steps with a longer `CLASSES` table and more data.
+
+## Model versioning & registry
+
+Every build is named `<lineage>-v<MAJOR>.<MINOR>` and ships three files —
+`.tflite` (the model), `.txt` (labels), and `.json` (a manifest recording its
+identity + provenance so a model on an SD card is never an anonymous blob). The
+device selects a model by its `.tflite` filename (Settings → Region / species
+model), so the version lives in the name.
+
+**Versions track data provenance, not accuracy** (set `MODEL_VERSION` /
+`DATA_PROVENANCE` at the top of `train.py`):
+
+| Version | Meaning |
+|---|---|
+| **`0.x`** | Pre-baseline experiments — include local BirdBox captures; prove the pipeline. |
+| **`1.0`** | First proper baseline trained **purely from external data** (iNaturalist/GBIF stock). The reference — **no device images**. |
+| **`1.x`** | `1.0` + *x* rounds of local BirdBox captures mixed in (domain adaptation). |
+| **`2.0`** | Breaking change — class set added/removed (label indices shift) or a different architecture/input. |
+
+`train.py` enforces this: a `vN.0` (`MINOR==0`, `N≥1`) refuses to build unless
+`DATA_PROVENANCE == "external"`, so a baseline can never be quietly polluted
+with local data.
+
+**Registry** — keep this table current as you build models:
+
+| Model | Provenance | Classes | Notes |
+|---|---|---|---|
+| `inat-v1.0` (stock `inat-birds-v1.tflite`) | external | 965 | Google/Coral iNaturalist-birds, the shipped v1 default (§3.2.1). |
+| `nordic-v0.1` | local | Dompap, Lavskrike | First pipeline proof — data-thin, not an accuracy result. |
+| `nordic-v1.0` | external | *(planned)* | Pure iNat/GBIF-stock baseline for the Nordic class set. |

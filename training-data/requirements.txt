@@ -1,5 +1,9 @@
 # PC/Colab training deps for train.py (NOT the firmware). Python 3.10-3.11.
 # CPU is fine for a small class set; a GPU build just trains faster.
-tensorflow>=2.15,<2.17
-numpy>=1.23
+# Pin the TF / tf_keras pair exactly — tf_keras must match the TF minor, and an
+# unpinned `tf_keras` pulls the latest and drags TensorFlow up with it.
+tensorflow==2.16.2
+tf_keras==2.16.0         # classic Keras 2 — TFLite int8 convert is unreliable under Keras 3 (train.py sets TF_USE_LEGACY_KERAS=1)
+protobuf<5               # TF 2.16 needs protobuf 3.20-4.x; the tf_keras upgrade otherwise pulls 7.x
+numpy>=1.23,<2           # TF 2.16 requires numpy 1.x
 flatbuffers>=23.0        # used by ../tools/schema_py_generated.py for the op-set check
