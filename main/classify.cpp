@@ -985,13 +985,18 @@ esp_err_t classify_init(void)
         return ESP_OK;
     }
 
-    /* Ops verified against the reference model (mobilenet_v2 iNat-birds) */
-    static tflite::MicroMutableOpResolver<6> resolver;
+    /* Ops verified against the reference model (mobilenet_v2 iNat-birds) plus
+     * PAD, which Keras-built MobileNetV2 emits as explicit ZeroPadding2D before
+     * its stride-2 convs — required by the §3.2.2 retrain path (training-data/
+     * train.py). The stock Coral model used SAME-padding and needs only 6, so
+     * PAD is harmless there; it just makes locally-retrained models load too. */
+    static tflite::MicroMutableOpResolver<7> resolver;
     resolver.AddAdd();
     resolver.AddAveragePool2D();
     resolver.AddConv2D();
     resolver.AddDepthwiseConv2D();
     resolver.AddFullyConnected();
+    resolver.AddPad();
     resolver.AddSoftmax();
 
     s_interp = new tflite::MicroInterpreter(model, resolver, s_arena, CLS_ARENA_BYTES);

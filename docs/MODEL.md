@@ -74,8 +74,9 @@ Any TFLite image classifier works if it is:
   through `tools/convert_model_int8.py` first,
 - input `1x224x224x3` RGB,
 - built from ops in: `CONV_2D`, `DEPTHWISE_CONV_2D`, `ADD`,
-  `AVERAGE_POOL_2D`, `FULLY_CONNECTED`, `SOFTMAX`
-  (MobileNet-family models qualify),
+  `AVERAGE_POOL_2D`, `FULLY_CONNECTED`, `SOFTMAX`, `PAD`
+  (MobileNet-family models qualify; `PAD` added in fw 0.49.0 for
+  Keras-built MobileNetV2, whose `ZeroPadding2D` emits it),
 - ≤ ~4.5 MB, with an index-aligned labels `.txt` (one label per line;
   a literal `background` label is treated as the no-bird guard class).
 
