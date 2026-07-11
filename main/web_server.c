@@ -669,7 +669,9 @@ static const char INDEX_HTML[] =
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
-"<span><button class=\"gidbtn\" title=\"identify bird\" "
+"<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
+"onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
+"<button class=\"gidbtn\" title=\"identify bird\" "
 "onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>'+cfb+'"
 "<button class=\"gidbtn\" title=\"set/correct species\" data-d=\"'+d+'\" "
 "data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(nm)+'\" onclick=\"reLabel(this)\">&#9998;</button>"
@@ -790,6 +792,11 @@ static const char INDEX_HTML[] =
 "+(o.statsRemoved||0)+' log row(s).');loadDays();}).catch(()=>alert('Wipe failed'));}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
+/* Open the full capture in a new tab — a per-tile button so it works in the
+ * Unclassified/Near filter too, where the image's own link is disabled to keep
+ * the double-click = no-bird gesture clean (§3.4). window.open in a click
+ * handler is a direct user gesture, so it isn't popup-blocked. */
+"function openFull(p){window.open(p,'_blank');}"
 "function gRcStart(d,files){fetch('/api/recheck',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+(files?'&files='+files:'')}).then(r=>r.json())"
