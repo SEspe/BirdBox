@@ -354,7 +354,7 @@ static const char INDEX_HTML[] =
 "<input class='wi' type='number' min='250' max='10000' step='250' id='stCivl'>"
 "<label class='wl'>Cool-down between events (s)</label>"
 "<input class='wi' type='number' min='1' max='600' id='stCool'>"
-"<label class='wl'>Boot detection quarantine (s)</label>"
+"<label class='wl'>Detection quarantine after boot (s)</label>"
 "<input class='wi' type='number' min='0' max='3600' id='stQtn'>"
 "<p class='sts' style='margin-top:2px'>After a reboot, ignore motion for this many seconds so "
 "the camera's warm-up frames and the not-yet-synced clock (which files captures under "
