@@ -29,7 +29,9 @@ settings_t g_settings = {
     .ntp_server         = "pool.ntp.org",
     .lang               = LANG_EN,
     .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
-    .detect_zoom        = 1,
+    .detect_zoom        = 0,   /* off: cropping HURTS the v1 iNat model — tight
+                                * crops read as "no bird" (whole-frame wins). Keep
+                                * 0 until a Nordic-retrained model ships (§3.2.1). */
     .fast_shutter       = 0,
     .detect_quarantine_s = 60,
     .tta                = 0,
