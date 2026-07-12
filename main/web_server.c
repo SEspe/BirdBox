@@ -281,6 +281,8 @@ static const char INDEX_HTML[] =
 ".glabel.gunc{background:rgba(44,46,52,.82);color:#9aa6b0}"  /* unclassified */
 ".glabel.gnb{background:rgba(64,42,42,.86);color:#d6a6a6}"   /* model says no bird (review) */
 ".glabel.gnbc{background:rgba(40,58,50,.9);color:#a6cbb6;font-weight:600}"  /* confirmed no-bird */
+".glabel.goth{background:rgba(58,42,64,.9);color:#c6a6d6;font-weight:600}"  /* other/not-a-bird (hard negative) */
+".glabel.gunk{background:rgba(58,52,40,.9);color:#d6c69a;font-weight:600}"  /* unknown/bad-bird (excluded) */
 "#grid.nbmode .gitem>a{pointer-events:none;cursor:default}"   /* dbl-click marks no-bird */
 "#grid.nbmode .gitem{cursor:pointer}"
 ".gflt{background:#24402c;color:#cfe;border:1px solid #3a5a42;border-radius:5px;"
@@ -375,6 +377,8 @@ static const char INDEX_HTML[] =
 "<option value='conf'>Confirmed (bird)</option>"
 "<option value='nb'>No bird (review)</option>"
 "<option value='cnb'>Confirmed no-bird</option>"
+"<option value='oth'>Other (not a bird)</option>"
+"<option value='unk'>Unknown / bad bird</option>"
 "<option value='unc'>Unclassified</option>"
 "<option value='near'>Near threshold</option></select>"
 "<span class='sts' id='gsts' style='margin:0'></span>"
@@ -693,14 +697,14 @@ static const char INDEX_HTML[] =
 "function loadDay(){var d=$g('day').value;if(!d)return;"
 "fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.f.localeCompare(x.f));"
-"var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length,nB=a.filter(o=>o.st===3).length,nX=a.filter(o=>o.st===4).length;"
-"g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified \\u00b7 '+nB+' no-bird'+(nX?(' \\u00b7 '+nX+' conf.no-bird'):'');"
+"var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length,nB=a.filter(o=>o.st===3).length,nX=a.filter(o=>o.st===4).length,nO=a.filter(o=>o.st===5).length,nU=a.filter(o=>o.st===6).length;"
+"g_gbase=a.length+' capture'+(a.length!==1?'s':'')+' \\u00b7 '+nF+' confirmed \\u00b7 '+nC+' classified \\u00b7 '+nB+' no-bird'+(nX?(' \\u00b7 '+nX+' conf.no-bird'):'')+(nO?(' \\u00b7 '+nO+' other'):'')+(nU?(' \\u00b7 '+nU+' unknown'):'');"
 "var g=$g('grid');g.innerHTML='';"
 "a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';var pc=' '+(o.pct||0)+'%';"
 "var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;div.dataset.f=o.f;div.dataset.pct=(o.pct==null?-1:o.pct);"
-"var bcl=st===2?'gconf':st===1?'gcls':st===3?'gnb':st===4?'gnbc':'gunc';"
-"var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
-"var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
+"var bcl=st===2?'gconf':st===1?'gcls':st===3?'gnb':st===4?'gnbc':st===5?'goth':st===6?'gunk':'gunc';"
+"var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===5?'\\u2713 not a bird':st===6?'\\u2713 unknown bird':st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
+"var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===5?'other / not a bird \\u2013 hard negative':st===6?'unknown / bad bird \\u2013 excluded from training':st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
 "var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+'</div>';"
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
 ":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
@@ -723,7 +727,7 @@ static const char INDEX_HTML[] =
 "function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0,lo=g_conf-5;"
 "items.forEach(function(it){var st=+(it.dataset.st||0),p=+(it.dataset.pct);"
 "var near=st===0&&p>=lo&&p<g_conf;"   /* top-1 within 5% below the ID threshold */
-"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='unc'&&st===0)||(g_gfilter==='near'&&near);"
+"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='oth'&&st===5)||(g_gfilter==='unk'&&st===6)||(g_gfilter==='unc'&&st===0)||(g_gfilter==='near'&&near);"
 "it.style.display=show?'':'none';if(show)vis++;});"
 "$g('gsts').textContent=g_gbase+(g_gfilter!=='all'?(' \\u00b7 '+vis+' shown'):'')"
 "+(g_gfilter==='unc'?' \\u00b7 double-click a tile = no bird':'')"
@@ -767,8 +771,10 @@ static const char INDEX_HTML[] =
 "var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
 "function ensureSpecs(cb){if(g_specMap){cb();return;}"
 "fetch('/api/labels').then(r=>r.json()).then(function(a){g_specMap={};"
-"var dl=$g('speclist');dl.innerHTML='<option value=\"No bird\">'+a.map(o=>'<option value=\"'+esc(o.d)+'\">').join('');"
+"var dl=$g('speclist');dl.innerHTML='<option value=\"No bird\"><option value=\"Other (not a bird)\"><option value=\"Unknown bird\">'+a.map(o=>'<option value=\"'+esc(o.d)+'\">').join('');"
 "g_specMap['No bird']={c:'no bird',l:''};"
+"g_specMap['Other (not a bird)']={c:'other',l:''};"
+"g_specMap['Unknown bird']={c:'unknown',l:''};"
 "a.forEach(o=>{g_specMap[o.d]={c:o.c,l:o.l};});cb();}).catch(()=>{g_specMap={};cb();});}"
 "function reLabel(btn){var d=btn.dataset.d,f=btn.dataset.f,cur=btn.dataset.sp;"
 "var it=btn.closest('.gitem');var box=it.querySelector('.grl');"
@@ -1569,15 +1575,23 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
         labels[count].confirmed = corrected[0] != '\0';
-        /* State before corrected-wins swap. Five per-image states (§3.4/v1.60):
+        /* State before corrected-wins swap. Seven per-image states (§3.4/v1.76):
          *   4 confirmed no-bird — human verified the frame is empty (corrected ==
          *     "no bird"); a ground-truth negative for the retrain.
-         *   2 confirmed species — human set a real label (corrected, not no-bird).
+         *   5 other/not-a-bird — human tagged a non-bird subject (cat, sheep;
+         *     corrected == "other"); exports as an `other/` HARD NEGATIVE distractor,
+         *     kept distinct from empty-frame no-bird.
+         *   6 unknown/bad-bird — a bird IS present but is unidentifiable or too
+         *     blurry to use (corrected == "unknown"); EXCLUDED from the export — a
+         *     bird can never be a hard negative, and it has no usable species label.
+         *   2 confirmed species — human set a real label (corrected, not a sentinel).
          *   1 classified — model decided a real species (latin present), unverified.
          *   3 no-bird — model's confident "no bird" call, not yet reviewed (often a
          *     missed bird on this domain-mismatched model, so its own review bucket).
          *   0 unclassified — "Unidentified bird"/no-row frames. */
         labels[count].state = (corrected[0] && strcmp(corrected, "no bird") == 0) ? 4
+                            : (corrected[0] && strcmp(corrected, "other")   == 0) ? 5
+                            : (corrected[0] && strcmp(corrected, "unknown") == 0) ? 6
                             : corrected[0] ? 2
                             : latin[0]      ? 1
                             : strcmp(species, "no bird") == 0 ? 3 : 0;

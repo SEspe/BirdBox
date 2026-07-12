@@ -33,7 +33,7 @@ if (-not $rows) { Write-Output "No confirmed labels on the device yet - relabel 
 # (Re)write the manifest header; rows are appended as we go.
 "file,common,latin,timestamp,relpath" | Out-File -FilePath $Labels -Encoding utf8
 
-$pulled = 0; $skipped = 0; $missing = 0
+$pulled = 0; $skipped = 0; $missing = 0; $excluded = 0
 $counts = @{}
 
 foreach ($r in $rows) {
@@ -42,6 +42,13 @@ foreach ($r in $rows) {
     $latin   = [string]$r.l
     $ts      = [string]$r.ts
     if ([string]::IsNullOrWhiteSpace($capPath)) { continue }
+
+    # "unknown" = a bird IS present but is unidentifiable or too blurry to use
+    # (gallery state 6). It's neither a usable species positive nor a valid hard
+    # negative (a bird must never train the detector to suppress birds), so it is
+    # excluded from the dataset entirely. "other" (cat/sheep, state 5) is kept:
+    # it sanitizes to an `other/` folder, used as a hard-negative distractor class.
+    if ($common -eq 'unknown') { $excluded++; continue }
 
     $fname = Split-Path $capPath -Leaf
     $class = if (-not [string]::IsNullOrWhiteSpace($latin)) { Sanitize $latin } else { Sanitize $common }
@@ -72,7 +79,7 @@ foreach ($r in $rows) {
 }
 
 Write-Output ""
-Write-Output "Done. $pulled new, $skipped already had, $missing missing on device."
+Write-Output "Done. $pulled new, $skipped already had, $missing missing on device, $excluded excluded (unknown/bad-bird)."
 Write-Output "Dataset: $OutDir"
 Write-Output "Manifest: $Labels"
 Write-Output ""
