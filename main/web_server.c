@@ -233,6 +233,8 @@ static const char INDEX_HTML[] =
 ".detbadge .dot{width:9px;height:9px;border-radius:50%;background:#fff;"
 "animation:detpulse 1s ease-in-out infinite}"
 ".liveWrap.det{outline:3px solid rgba(220,60,60,.9);outline-offset:-3px}"
+".liveWrap.mot{outline:5px solid #ff2f2f;outline-offset:-5px;"   /* 1s per-trigger motion flash */
+"box-shadow:inset 0 0 18px rgba(255,47,47,.6)}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
 ".pausebadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
 "align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
@@ -623,6 +625,17 @@ static const char INDEX_HTML[] =
 "var lm=$g('livemsg');"
 "if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
+/* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
+ * tab is open; a rising trigger count flashes a red frame border for 1s. */
+"var g_motN=-1;"
+"function motTick(){var lp=$g('livep');if(!lp||!lp.classList.contains('on'))return;"
+"fetch('/api/motion').then(r=>r.json()).then(function(m){"
+"if(g_motN<0){g_motN=m.n;return;}"           /* baseline on first poll — don't flash stale */
+"if(m.n>g_motN){g_motN=m.n;motFlash();}"
+"}).catch(function(){});}"
+"function motFlash(){var lw=$g('liveWrap');if(!lw)return;lw.classList.add('mot');"
+"clearTimeout(window._motT);window._motT=setTimeout(function(){lw.classList.remove('mot');},1000);}"
+"setInterval(motTick,500);"
 "function liveOk(){var m=$g('livemsg');if(m)m.classList.remove('on');}"
 "function liveErr(){var lv=$g('live');if(!lv||lv.src.indexOf('/stream')<0)return;"   /* src cleared on tab switch — ignore */
 "var m=$g('livemsg');if(!m)return;m.classList.add('on');m.innerHTML='\\u23F3 connecting\\u2026';"
@@ -2472,6 +2485,23 @@ static esp_err_t h_status(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/motion — tiny, fast-poll signal for the live-view motion border
+ * (FSD §3.3). `n` = motion_trigger_count(): a rising edge means a new detection
+ * fired, which the live tab flashes as a 1 s red frame border. `a` = an event
+ * is capturing right now; `q` = boot-quarantine seconds left. Deliberately
+ * separate from /api/status so the live view can poll it ~2 Hz cheaply. */
+static esp_err_t h_motion(httpd_req_t *req)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"n\":%lu,\"a\":%s,\"q\":%u}",
+             (unsigned long) motion_trigger_count(),
+             motion_active() ? "true" : "false",
+             (unsigned) motion_quarantine_remaining_s());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* Why the chip last rebooted (FSD §5): "panic"/"wdt" point at a firmware
  * fault, "brownout" at power, "software" is OTA/reboot-button — first
  * question to answer when a unit restarts unexpectedly in the field. */
@@ -3034,6 +3064,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
+        { .uri = "/api/motion",  .method = HTTP_GET,  .handler = h_motion     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
         { .uri = "/api/detect",  .method = HTTP_POST, .handler = h_detect     },
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
