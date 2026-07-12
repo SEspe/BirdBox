@@ -12,8 +12,16 @@
 # labels have accumulated. Mechanical only - the species judgment was already
 # made by the human in the relabel UI, so nothing here needs a visual review.
 
+param(
+    # Device base URL. Precedence: -Device arg > $env:BIRDBOX_DEVICE > default.
+    # The reference unit's LAN IP changes when it's relocated, so override
+    # without editing this file, e.g.:
+    #   .\export-labels.ps1 -Device http://192.168.10.236
+    #   $env:BIRDBOX_DEVICE = 'http://192.168.10.236'   # persists for the shell
+    [string]$Device = $(if ($env:BIRDBOX_DEVICE) { $env:BIRDBOX_DEVICE } else { 'http://192.168.1.111' })
+)
+
 $ErrorActionPreference = "Stop"
-$Device  = "http://192.168.10.236"
 $Root    = "D:\SteinsRootMappe\Claude\BirdBox\training-data"
 $OutDir  = "$Root\dataset"
 $Labels  = "$OutDir\labels.csv"

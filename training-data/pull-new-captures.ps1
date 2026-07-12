@@ -2,8 +2,16 @@
 # later visual sorting into lavskrike/candidate or not-lavskrike.
 # Mechanical only - no species judgment here, that needs a look (by eye or
 # by asking Claude to review training-data/lavskrike/review/ in a session).
+param(
+    # Device base URL. Precedence: -Device arg > $env:BIRDBOX_DEVICE > default.
+    # The reference unit's LAN IP changes when it's relocated, so override
+    # without editing this file, e.g.:
+    #   .\pull-new-captures.ps1 -Device http://192.168.10.236
+    #   $env:BIRDBOX_DEVICE = 'http://192.168.10.236'   # persists for the shell
+    [string]$Device = $(if ($env:BIRDBOX_DEVICE) { $env:BIRDBOX_DEVICE } else { 'http://192.168.1.111' })
+)
+
 $ErrorActionPreference = "Stop"
-$Device   = "http://192.168.1.111"
 $Root     = "D:\SteinsRootMappe\Claude\BirdBox\training-data"
 $Manifest = "$Root\manifest.txt"
 $ReviewDir = "$Root\lavskrike\review"
