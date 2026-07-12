@@ -12,6 +12,7 @@ esp_err_t motion_start(void);
 
 bool     motion_active(void);          /* an event is being captured right now */
 uint32_t motion_trigger_count(void);   /* events since boot */
+uint64_t motion_trigger_cells(void);   /* 8x8 mask of the last trigger's cells (§3.1) */
 
 /* Seconds of post-boot detection quarantine still remaining (FSD §3.1/v1.61),
  * 0 once detection is live. Lets the UI explain why nothing triggers at boot. */

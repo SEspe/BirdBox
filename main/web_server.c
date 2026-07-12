@@ -255,6 +255,10 @@ static const char INDEX_HTML[] =
 ".zcell{border:1px solid rgba(255,255,255,.28);cursor:pointer}"
 ".zcell.off{background:rgba(200,40,40,.5)}"
 ".zcell.inz{background:rgba(80,210,110,.10)}"
+".motgrid{position:absolute;inset:0;z-index:2;display:grid;pointer-events:none;"   /* live trigger-cell overlay */
+"grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}"
+".mcell{}"
+".mcell.hit{background:rgba(255,47,47,.38);outline:1.5px solid rgba(255,90,90,.95);outline-offset:-1.5px}"
 ".zbar{margin-top:8px;display:none;flex-wrap:wrap;gap:6px;align-items:center}"
 ".zbar.on{display:flex}"
 ".sts{font-size:.78rem;color:#9ab;margin-top:8px}"
@@ -344,6 +348,7 @@ static const char INDEX_HTML[] =
 " onerror='liveErr()' onload='liveOk()'>"
 "<div class='livemsg' id='livemsg'></div>"
 "<div class='zone' id='zone'></div>"
+"<div class='motgrid' id='motgrid'></div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
@@ -628,13 +633,20 @@ static const char INDEX_HTML[] =
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
 "var g_motN=-1;"
+"function motGrid(){var g=$g('motgrid');if(!g)return null;"
+"if(g.children.length!==64){g.innerHTML='';"
+"for(var c=0;c<64;c++){var d=document.createElement('div');d.className='mcell';g.appendChild(d);}}return g;}"
+"function motClear(){var g=$g('motgrid');if(g)for(var c=0;c<g.children.length;c++)g.children[c].className='mcell';}"
 "function motTick(){var lp=$g('livep');if(!lp||!lp.classList.contains('on'))return;"
 "fetch('/api/motion').then(r=>r.json()).then(function(m){"
 "if(g_motN<0){g_motN=m.n;return;}"           /* baseline on first poll — don't flash stale */
-"if(m.n>g_motN){g_motN=m.n;motFlash();}"
+"if(m.n>g_motN){g_motN=m.n;motFlash(m.c);}"
 "}).catch(function(){});}"
-"function motFlash(){var lw=$g('liveWrap');if(!lw)return;lw.classList.add('mot');"
-"clearTimeout(window._motT);window._motT=setTimeout(function(){lw.classList.remove('mot');},1000);}"
+/* Border flash (whole frame) + highlight the exact 8x8 cells that fired, for 1s. */
+"function motFlash(cells){var lw=$g('liveWrap');if(!lw)return;lw.classList.add('mot');"
+"var g=motGrid();if(g&&cells&&cells.length===64)"
+"for(var c=0;c<64;c++)g.children[c].className=(cells[c]==='1'?'mcell hit':'mcell');"
+"clearTimeout(window._motT);window._motT=setTimeout(function(){lw.classList.remove('mot');motClear();},1000);}"
 "setInterval(motTick,500);"
 "function liveOk(){var m=$g('livemsg');if(m)m.classList.remove('on');}"
 "function liveErr(){var lv=$g('live');if(!lv||lv.src.indexOf('/stream')<0)return;"   /* src cleared on tab switch — ignore */
@@ -2492,11 +2504,19 @@ static esp_err_t h_status(httpd_req_t *req)
  * separate from /api/status so the live view can poll it ~2 Hz cheaply. */
 static esp_err_t h_motion(httpd_req_t *req)
 {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"n\":%lu,\"a\":%s,\"q\":%u}",
+    /* `c` = 8x8 trigger-cell mask as a 64-char '1'/'0' string, bit c = cell
+     * (row c/8, col c%8) — same layout as the settings "zone" mask, so the live
+     * overlay reuses the grid geometry. Marks the winning cluster of the last
+     * detection so the UI can highlight exactly which boxes fired. */
+    uint64_t cells = motion_trigger_cells();
+    char cbuf[65];
+    for (int c = 0; c < 64; c++) cbuf[c] = (cells >> c) & 1ULL ? '1' : '0';
+    cbuf[64] = '\0';
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"n\":%lu,\"a\":%s,\"q\":%u,\"c\":\"%s\"}",
              (unsigned long) motion_trigger_count(),
              motion_active() ? "true" : "false",
-             (unsigned) motion_quarantine_remaining_s());
+             (unsigned) motion_quarantine_remaining_s(), cbuf);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

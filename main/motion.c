@@ -86,6 +86,9 @@ static roi_t    s_roi;                   /* changed-cell bbox of the last trigge
 
 static volatile bool     s_motion_active = false;
 static volatile uint32_t s_trigger_count = 0;
+static volatile uint64_t s_trigger_cells = 0;   /* 8x8 mask of the last trigger's
+                                                   winning cluster, for the live-view
+                                                   overlay (bit c = cell, §3.1) */
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 
 #define GRID_N 8                         /* 8x8 detection grid (FSD §3.1) */
@@ -201,12 +204,14 @@ static bool detect_once(void)
      * diluted bbox — the zoom tracks the dominant object. */
     bool seen[GRID_N * GRID_N] = {false};
     long best_wt = -1;
+    uint64_t best_cells = 0;    /* moved-cell mask of the winning cluster */
     int  minc = 0, minr = 0, maxc = -1, maxr = -1;
     for (int c0 = 0; c0 < GRID_N * GRID_N; c0++) {
         if (!moved[c0] || seen[c0]) continue;
         int  stack[GRID_N * GRID_N], sp = 0;
         long wt  = 0;
         int  cnt = 0;
+        uint64_t this_cells = 0;
         int  lminc = GRID_N, lminr = GRID_N, lmaxc = -1, lmaxr = -1;
         stack[sp++] = c0;
         seen[c0] = true;
@@ -214,6 +219,7 @@ static bool detect_once(void)
             int c  = stack[--sp];
             int cc = c % GRID_N, cr = c / GRID_N;
             wt += cell_changed[c];
+            this_cells |= (1ULL << c);
             cnt++;
             if (cc < lminc) lminc = cc;
             if (cc > lmaxc) lmaxc = cc;
@@ -234,6 +240,7 @@ static bool detect_once(void)
          * rather than the whole frame being rejected outright. */
         if (cnt <= MAX_CLUSTER_CELLS && wt > best_wt) {
             best_wt = wt;
+            best_cells = this_cells;
             minc = lminc; minr = lminr; maxc = lmaxc; maxr = lmaxr;
         }
     }
@@ -273,6 +280,7 @@ static bool detect_once(void)
         return false;
     }
 
+    s_trigger_cells = best_cells;   /* publish which cells fired, for the live overlay */
     ESP_LOGI(TAG, "motion: cluster %d%% / zone %d%% changed (threshold %d%%), roi [%.2f,%.2f]-[%.2f,%.2f]",
              cluster_pct, pct, area_thr, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
     return true;
@@ -367,6 +375,7 @@ esp_err_t motion_start(void)
 
 bool     motion_active(void)        { return s_motion_active; }
 uint32_t motion_trigger_count(void) { return s_trigger_count; }
+uint64_t motion_trigger_cells(void) { return s_trigger_cells; }
 
 uint16_t motion_quarantine_remaining_s(void)
 {
