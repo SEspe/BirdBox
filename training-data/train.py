@@ -75,7 +75,7 @@ LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
 #   2.0  breaking change — class set added/removed (label indices shift) or a
 #        different architecture/input.
 # Bump MODEL_VERSION per retrain and record it in the registry (README).
-MODEL_VERSION = "0.2"
+MODEL_VERSION = "0.3"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
@@ -162,8 +162,62 @@ def _label_line(c) -> str:
     return f"{latin} ({common})"
 
 
+# Visit-grouped split params. A "visit" = a burst of frames close in time (one
+# bird's stay). We split whole visits — never individual frames — so near-dup
+# burst frames can't straddle train/val; that leakage is what inflated v0.2's
+# val_acc to a meaningless ~99% while it failed on genuinely fresh captures.
+# Each visit is also capped so a few long bursts can't dominate a class.
+VISIT_GAP_S   = 90     # gap (s) between consecutive frames that starts a new visit
+MAX_PER_VISIT = 10     # burst de-dup: keep at most this many frames per visit
+
+_TS_RE = None
+def _frame_time(path):
+    """Epoch seconds from a 'YYYY-MM-DD_HH-MM-SS-mmm' basename, or None for names
+    that don't match (e.g. curated external images)."""
+    global _TS_RE
+    import re, datetime
+    if _TS_RE is None:
+        _TS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})-(\d{3})")
+    m = _TS_RE.search(os.path.basename(path))
+    if not m:
+        return None
+    y, mo, d, H, M, S, ms = (int(g) for g in m.groups())
+    return datetime.datetime(y, mo, d, H, M, S, ms * 1000).timestamp()
+
+
+def _group_visits(paths):
+    """Cluster one class's frames into visits by timestamp gap. Un-timestamped
+    frames each become their own singleton visit (never merged)."""
+    stamped = sorted(((_frame_time(p), p) for p in paths),
+                     key=lambda t: (t[0] is None, t[0] or 0.0, t[1]))
+    visits, cur, last = [], [], None
+    for ts, p in stamped:
+        if ts is None:
+            if cur: visits.append(cur); cur = []
+            visits.append([p]); last = None; continue
+        if last is not None and ts - last > VISIT_GAP_S:
+            visits.append(cur); cur = []
+        cur.append(p); last = ts
+    if cur:
+        visits.append(cur)
+    return visits
+
+
+def _dedup_visit(v):
+    """Down-sample a burst to MAX_PER_VISIT evenly-spaced frames."""
+    if len(v) <= MAX_PER_VISIT:
+        return v
+    idx = sorted({round(i * (len(v) - 1) / (MAX_PER_VISIT - 1))
+                  for i in range(MAX_PER_VISIT)})
+    return [v[i] for i in idx]
+
+
 def split(paths, labels, n_classes):
-    """Stratified per-class train/val split (deterministic)."""
+    """Visit-grouped, burst-de-duplicated per-class train/val split (deterministic).
+
+    Whole visits go to train OR val — a burst is never split across both — so the
+    val set measures generalization to *unseen visits*, not memorized near-dups
+    (the v0.2 leakage). Each visit is first capped at MAX_PER_VISIT frames."""
     import random
     rng = random.Random(SEED)
     by_cls = {i: [] for i in range(n_classes)}
@@ -171,12 +225,14 @@ def split(paths, labels, n_classes):
         by_cls[y].append(p)
     tr_p, tr_y, va_p, va_y = [], [], [], []
     for y, ps in by_cls.items():
-        rng.shuffle(ps)
-        k = int(round(len(ps) * VAL_FRAC)) if len(ps) >= 5 else 0
-        for p in ps[:k]:
-            va_p.append(p); va_y.append(y)
-        for p in ps[k:]:
-            tr_p.append(p); tr_y.append(y)
+        visits = [_dedup_visit(v) for v in _group_visits(ps)]
+        rng.shuffle(visits)
+        k = int(round(len(visits) * VAL_FRAC)) if len(visits) >= 5 else 0
+        va = [p for v in visits[:k] for p in v]
+        tr = [p for v in visits[k:] for p in v]
+        va_p += va; va_y += [y] * len(va)
+        tr_p += tr; tr_y += [y] * len(tr)
+        print(f"  class {y}: {len(visits)} visits -> {len(tr)} train / {len(va)} val frames")
     return (tr_p, tr_y), (va_p, va_y)
 
 
@@ -185,13 +241,29 @@ def preprocess(pixel):                  # tf tensor uint8 -> float [-1,1)
     return (tf.cast(pixel, tf.float32) - 128.0) / 128.0   # device contract
 
 
+def center_square(img):
+    """Largest centered square -> IMG_SIZE. This MUST mirror the on-device
+    geometry: classify.cpp decode_to_input center-crops the frame to a square
+    and resizes — it does NOT stretch the whole frame. Training on stretched
+    frames while the device serves center-crops is a train/serve skew that made
+    v0.2 flip Dompap<->Lavskrike on off-aspect frames (a 16:9 vs 4:3 capture
+    squashes differently into 224x224). Center-cropping both sides removes it
+    and makes the model resolution/aspect independent for free."""
+    import tensorflow as tf
+    shp = tf.shape(img)
+    h, w = shp[0], shp[1]
+    s = tf.minimum(h, w)
+    img = tf.image.crop_to_bounding_box(img, (h - s) // 2, (w - s) // 2, s, s)
+    return tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+
+
 def make_ds(paths, labels, training):
     import tensorflow as tf
 
     def load(path, y):
         img = tf.io.decode_image(tf.io.read_file(path), channels=3,
                                  expand_animations=False)
-        img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+        img = center_square(img)          # match the device (center-crop, not stretch)
         return img, y
 
     def augment(img, y):
@@ -263,7 +335,7 @@ def export_tflite(model, rep_paths, out_path):
         for p in rep_paths[:200]:
             raw = tf.io.decode_image(tf.io.read_file(p), channels=3,
                                      expand_animations=False)
-            img = tf.image.resize(raw, (IMG_SIZE, IMG_SIZE))
+            img = center_square(raw)      # same device geometry as training/serving
             yield [tf.expand_dims(preprocess(img), 0)]
 
     conv = tf.lite.TFLiteConverter.from_keras_model(model)
