@@ -13,7 +13,7 @@
 # made by the human in the relabel UI, so nothing here needs a visual review.
 
 $ErrorActionPreference = "Stop"
-$Device  = "http://192.168.1.111"
+$Device  = "http://192.168.10.236"
 $Root    = "D:\SteinsRootMappe\Claude\BirdBox\training-data"
 $OutDir  = "$Root\dataset"
 $Labels  = "$OutDir\labels.csv"

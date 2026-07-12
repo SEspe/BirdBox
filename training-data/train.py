@@ -107,9 +107,14 @@ CLASSES = [
     {"latin": "Perisoreus infaustus", "common": "Siberian Jay",
      "dirs": ["dataset/Perisoreus_infaustus", "dataset/Lavskrike",
               "lavskrike/candidate"]},
-    # Uncomment once you have confirmed-no-bird frames exported (a real
-    # deployment needs this guard; a pipeline proof can omit it):
-    # {"latin": "", "common": "background", "dirs": ["dataset/no_bird"]},
+    # Reject/guard class — the model's "not a target bird" output. Merges the
+    # two human reject buckets (FSD v1.76): no_bird (empty frames) + other
+    # (present but non-bird subjects, e.g. cat/sheep — hard negatives). The
+    # `unknown` bucket is deliberately absent (excluded at export: a bird can't
+    # be a hard negative). A real deployment needs this guard so the classifier
+    # can decline rather than force a species onto every frame.
+    {"latin": "", "common": "background",
+     "dirs": ["dataset/no_bird", "dataset/other"]},
 ]
 
 # The builtins the firmware registers (classify.cpp MicroMutableOpResolver).
