@@ -649,7 +649,9 @@ static void classify_task(void *arg)
             /* winning frame's ROI ("x0-y0-x1-y1", empty = whole frame) + top-3
              * as trailing columns — field-tuning data (§3.4) */
             char roi_s[24] = "";
-            if (g_settings.detect_zoom && !roi_is_empty(win))
+            if (!roi_is_empty(win))   /* log the motion ROI always — it's field
+                                       * data + ROI-crop training input; detect_zoom
+                                       * only controls whether inference USES it */
                 snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
                          win.x0, win.y0, win.x1, win.y1);
             char top3[112];
@@ -912,7 +914,7 @@ static void recheck_task(void *arg)
         bool  have_best = aggregate_frames(paths, rois, nf, &scored, &best, &win_roi);
         if (have_best) {
             char roi_s[24] = "";
-            if (g_settings.detect_zoom && !roi_is_empty(win_roi))
+            if (!roi_is_empty(win_roi))   /* always log the motion ROI (see above) */
                 snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
                          win_roi.x0, win_roi.y0, win_roi.x1, win_roi.y1);
             char top3[112];

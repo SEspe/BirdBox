@@ -18,7 +18,7 @@ typedef struct {
     uint8_t  motion_sensitivity;    /* 0-100 */
     uint8_t  capture_count;         /* follow-up frames per event, default 5 */
     uint16_t capture_interval_ms;
-    uint16_t cooldown_s;            /* default 10 */
+    uint16_t cooldown_s;            /* default 3 */
     uint8_t  confidence_pct;        /* species-ID threshold, default 60 */
     uint8_t  sd_cap_pct;            /* retention cap, default 80 */
     uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
@@ -29,7 +29,7 @@ typedef struct {
                                        default 0 */
     uint8_t  resolution;            /* camera frame-size index into camera.c's
                                        RES table; applied at camera_init, so a
-                                       change needs a reboot. default = SVGA */
+                                       change needs a reboot. default = HD (1280x720) */
     int8_t   contrast;              /* OV2640 contrast -2..+2 (the sensor has no
                                        sharpness control); applied live. default 0 */
     int8_t   ae_level;              /* OV2640 auto-exposure level -2..+2: shifts the

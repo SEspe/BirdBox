@@ -13,15 +13,18 @@ settings_t g_settings = {
     .mode              = MODE_FEEDER,
     .motion_sensitivity = 50,
     .capture_count      = 5,
-    .capture_interval_ms = 1000,
-    .cooldown_s         = 10,
+    .capture_interval_ms = 1500,
+    .cooldown_s         = 3,
     .confidence_pct     = 60,
     .sd_cap_pct         = 80,
     .stream_quality     = 12,
     .ir_led_mode        = 0,
     .rotation           = ROTATE_0,
     .region_filter      = 0,
-    .resolution         = 1,   /* SVGA — matches camera.c RES table index */
+    .resolution         = 3,   /* HD 1280x720 — matches camera.c RES table index.
+                                * ROI-crop makes classification aspect-independent,
+                                * so we lock a high-detail default and never tune
+                                * aspect again (§3.2.3). */
     .contrast           = 0,
     .ae_level           = 0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",

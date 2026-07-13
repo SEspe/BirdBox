@@ -525,6 +525,14 @@ static const char INDEX_HTML[] =
 "<p class='sts'>Settings apply immediately &mdash; no reboot needed.</p>"
 "<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
 "<span class='sts' id='stSts'></span>"
+"<h3 class='sh'>Backup &amp; Restore</h3>"
+"<p class='sts'>Download all settings to a file, or restore them from one after a "
+"reset or NVS wipe &mdash; so your tuning (zone, sensitivity, confidence&hellip;) "
+"survives a re-provision without re-entering it by hand.</p>"
+"<button class='act' style='margin-left:0' onclick='cfgExport()'>&#11015;&#65039; Download settings</button>"
+"<button class='act' onclick='cfgPick()'>&#11014;&#65039; Restore from file</button>"
+"<input type='file' id='cfgFile' accept='.cfg,.txt' style='display:none' onchange='cfgImport(this)'>"
+"<span class='sts' id='cfgSts'></span>"
 "</div>"
 "<div id='dbgp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>System</h3><div id='dSys'></div>"
@@ -1037,6 +1045,17 @@ static const char INDEX_HTML[] =
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
+"function cfgExport(){window.location='/api/settings/export';}"
+"function cfgPick(){$g('cfgFile').click();}"
+"function cfgImport(inp){var f=inp.files[0];if(!f){return;}var rd=new FileReader();"
+"rd.onload=function(){fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:rd.result})"
+".then(r=>r.json()).then(function(o){"
+"$g('cfgSts').textContent=o.ok?'Restored \\u2713':'Restore failed';"
+"if(o.ok){stLoad();}"
+"setTimeout(function(){$g('cfgSts').textContent='';},5000);})"
+".catch(function(){$g('cfgSts').textContent='Restore failed';});};"
+"rd.readAsText(f);inp.value='';}"
 "function drow(k,v,cls){return '<div class=drow><span>'+k+'</span>"
 "<span'+(cls?' class='+cls:'')+'>'+v+'</span></div>';}"
 "function fmtAge(s){if(s<0)return 'never';"
@@ -1797,16 +1816,18 @@ static esp_err_t h_labels_confirmed(httpd_req_t *req)
                 char *first_fr  = gal_next_field(&p);
                 char *corrected = gal_next_field(&p);
                 char *latin     = gal_next_field(&p);
+                char *roi       = gal_next_field(&p);   /* "x0-y0-x1-y1" or empty (whole frame) */
                 if (!corrected[0] || !first_fr[0]) continue;   /* confirmed rows only */
-                char f_e[112], c_e[80], l_e[80], t_e[40];
+                char f_e[112], c_e[80], l_e[80], t_e[40], r_e[48];
                 json_escape(f_e, sizeof(f_e), first_fr);
                 json_escape(c_e, sizeof(c_e), corrected);
                 json_escape(l_e, sizeof(l_e), latin);
                 json_escape(t_e, sizeof(t_e), ts);
-                char item[360];
+                json_escape(r_e, sizeof(r_e), roi);
+                char item[400];
                 int len = snprintf(item, sizeof(item),
-                    "%s{\"f\":\"%s\",\"c\":\"%s\",\"l\":\"%s\",\"ts\":\"%s\"}",
-                    first ? "" : ",", f_e, c_e, l_e, t_e);
+                    "%s{\"f\":\"%s\",\"c\":\"%s\",\"l\":\"%s\",\"ts\":\"%s\",\"roi\":\"%s\"}",
+                    first ? "" : ",", f_e, c_e, l_e, t_e, r_e);
                 httpd_resp_send_chunk(req, item, len);
                 first = false;
             }
@@ -2425,6 +2446,42 @@ static esp_err_t h_settings_post(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* GET /api/settings/export — download every setting as one form-urlencoded
+ * blob, byte-identical to the body POST /api/settings accepts. Restoring is
+ * just POSTing this file back (the UI does it), so the restore path reuses that
+ * handler's full validation/clamping — no second, drift-prone parser. Purpose:
+ * survive an NVS wipe (portal reset / boot-button erase) without hand-re-tuning
+ * (FSD §5). tz/region/ntp are emitted raw; their only special chars (,./-) pass
+ * url_decode untouched. */
+static esp_err_t h_settings_export(httpd_req_t *req)
+{
+    char zone[65];
+    for (int c = 0; c < 64; c++)
+        zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
+    zone[64] = '\0';
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf),
+        "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
+        "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u",
+        g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
+        g_settings.motion_sensitivity, g_settings.capture_count,
+        g_settings.capture_interval_ms, g_settings.cooldown_s,
+        g_settings.confidence_pct, g_settings.sd_cap_pct, g_settings.stream_quality,
+        g_settings.ir_led_mode, (unsigned) g_settings.rotation,
+        (unsigned) g_settings.region_filter, (unsigned) g_settings.resolution,
+        (int) g_settings.contrast, (int) g_settings.ae_level,
+        g_settings.timezone, g_settings.region, g_settings.ntp_server,
+        (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
+        (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
+        (unsigned) g_settings.detect_quarantine_s);
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=birdbox-settings.cfg");
+    httpd_resp_send(req, buf, n);
     return ESP_OK;
 }
 
@@ -3105,6 +3162,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
         { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
+        { .uri = "/api/settings/export", .method = HTTP_GET, .handler = h_settings_export },
         { .uri = "/api/sysinfo",       .method = HTTP_GET,  .handler = h_sysinfo    },
         { .uri = "/api/captures/delete", .method = HTTP_POST, .handler = h_captures_delete_batch },
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
