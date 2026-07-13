@@ -39,7 +39,9 @@ $rows = Invoke-RestMethod -Uri "$Device/api/labels/confirmed" -TimeoutSec 30
 if (-not $rows) { Write-Output "No confirmed labels on the device yet - relabel some captures first."; return }
 
 # (Re)write the manifest header; rows are appended as we go.
-"file,common,latin,timestamp,relpath" | Out-File -FilePath $Labels -Encoding utf8
+# `roi` = the frame's motion box "x0-y0-x1-y1" (fractional, empty = whole frame),
+# used by train.py to crop each image to the bird (matches on-device detect_zoom).
+"file,common,latin,timestamp,relpath,roi" | Out-File -FilePath $Labels -Encoding utf8
 
 $pulled = 0; $skipped = 0; $missing = 0; $excluded = 0
 $counts = @{}
@@ -49,6 +51,7 @@ foreach ($r in $rows) {
     $common  = [string]$r.c
     $latin   = [string]$r.l
     $ts      = [string]$r.ts
+    $roi     = [string]$r.roi        # "x0-y0-x1-y1" or empty
     if ([string]::IsNullOrWhiteSpace($capPath)) { continue }
 
     # "unknown" = a bird IS present but is unidentifiable or too blurry to use
@@ -79,7 +82,7 @@ foreach ($r in $rows) {
     }
 
     # CSV-quote each field (species names are comma-sanitized on-device, but be safe).
-    $line = @($fname, $common, $latin, $ts, $relpath) |
+    $line = @($fname, $common, $latin, $ts, $relpath, $roi) |
             ForEach-Object { '"' + ($_ -replace '"', '""') + '"' }
     ($line -join ",") | Add-Content -Path $Labels -Encoding utf8
 
