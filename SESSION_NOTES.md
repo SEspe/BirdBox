@@ -1,59 +1,71 @@
-# Session Notes — 2026-07-12 ("BirdBox")
+# Session Notes — BirdBox (updated 2026-07-13)
 
-A long session spanning firmware features, a full model-retraining investigation, the ROI-crop pipeline groundwork, and FSD documentation. Firmware went **0.56.0 → 0.60.0**; FSD **v1.75 → v1.79** (+ new §3.2.3).
+Rolling notes for the "BirdBox" work. Firmware is now **0.62.0**, FSD **v1.82**.
+All committed and pushed to `origin/master`; flashed to the reference unit at
+192.168.1.111.
 
-## Firmware shipped (all flashed to the reference unit at 192.168.1.111)
+## Current device state (verified live)
+- **version 0.61.0**, clock `ntp`, SD present, free heap ~854 KB.
+- **Resolution: HD 1280×720 (res=3)** — set live + locked as compiled default.
+- **JPEG quality 8** (`stream_quality=8`, was 12) — trial for crisper stills; live only, NOT baked as default.
+- `detect_zoom = 0` (whole-frame center-crop for ID — see below).
+- User-owned tuning intact in NVS: `detect_zone` (top 2 rows/sky masked, rightmost col rows 4–6 masked), `motion_sensitivity` (~73), `confidence_pct`.
+- OTA preserves NVS, so the live tuning survived the flash.
 
-| ver | FSD | what | committed? |
-|-----|-----|------|-----------|
-| 0.57.0 | v1.76 | Gallery `other` (hard-negative) + `unknown` (excluded) reject states; per-image states 5→7 | ✅ pushed |
-| 0.58.0 | v1.77 | Live view: 1s red **border flash** per motion trigger (`/api/motion`) | ✅ pushed |
-| 0.59.0 | v1.78 | Live view: highlight the **8×8 grid cell(s)** that triggered (winning cluster); `/api/motion` `"c"` mask | ✅ pushed |
-| 0.60.0 | v1.79 | Log motion `roi` **always** (was gated on `detect_zoom`); expose `roi` in `/api/labels/confirmed` | ⚠️ **uncommitted** |
+## What we did this session
 
-Also: **CLAUDE.md** created (build/flash/verify + gotchas); **session renamed "BirdBox"**; disabled the daily `BirdBox-PullCaptures` scheduled task (legacy puller); parameterized `$Device` in the pull/export scripts (`-Device` > `$env:BIRDBOX_DEVICE` > default .111); **FSD §3.2.3 written** (image→model-input preprocessing contract).
+### 1. Parameter-defaults cleanup + Settings backup/restore (0.61.0, FSD v1.80) — committed b01f750, pushed, flashed
+- **Compiled defaults retuned** so an NVS wipe lands on sane values: `resolution` SVGA→**HD (3)**, `capture_interval_ms` 1000→**1500**, `cooldown_s` 10→**3**. `capture_count` stays 5. `detect_zoom` stays **0**.
+- **Deliberately NOT baked as globals:** `detect_zone`, `motion_sensitivity`, `confidence_pct`, `rotation` — per-scene/per-mount, operator-owned. Backup/restore is the durable way to preserve them.
+- **Settings backup/restore feature:**
+  - `GET /api/settings/export` → downloads `birdbox-settings.cfg` (form-urlencoded blob, byte-identical to the `POST /api/settings` body).
+  - Settings-tab **Download settings** / **Restore from file** buttons; restore POSTs the file straight back to `/api/settings`, **reusing that handler's existing validation/clamping** (no second, drift-prone parser).
+  - Built clean; UI JS verified balanced (inline-script gotcha).
 
-## The model-retraining investigation (the session's core)
+### 2. SXGA-vs-HD motion investigation + fix (FSD v1.81) — committed 5871d26, pushed
+- User reported degraded/absent motion detection with an active bird. Diagnosed live:
+  - Detection was **not** dead — events were firing; the "misses" were (a) a still/feeding bird absorbed into the rolling background, and (b) the 60 s post-boot **quarantine** after a reboot. Zone was fine (feeder fully covered).
+  - Root cause of the *degradation*: the box was on **SXGA (res=4)**.
+- **On-device A/B: HD clearly more sensitive AND better-framed than SXGA.** Mechanisms:
+  - *Sensitivity:* SXGA frames are slower to grab+decode → the fixed `DETECT_PERIOD_MS=250` loop samples less often → quick hops missed. SXGA also sits at the *exact* 1/8 decode ceiling (160×128, zero headroom) and costs ~300 KB more PSRAM (**measured ~547 KB free at SXGA vs ~854 KB at HD**) — tied to a spontaneous OOM reboot.
+  - *Framing:* SXGA 5:4 is taller/narrower, mis-aligned to a horizontal feeder; HD 16:9 keeps birds in-view.
+- **No clean fix on the OV2640** (single stream; per-frame res-switch too slow + its FOV change would break the ROI box). HD locked as default; documented in **FSD §3.1 + changelog v1.81** and in memory.
+- **"Better pics" resolved via JPEG quality, not resolution:** set HD + quality 8 live for the user to A/B against SXGA shots. Extra SXGA pixels mostly land on background; ROI-crop maximizes pixels-on-bird from HD anyway.
 
-1. **Exported** 4 days of confirmed Dompap+Lavskrike → `dataset/` (~1285 imgs, `unknown` excluded).
-2. **nordic-v0.2** trained (3-class w/ background reject = no_bird+other). 99% val, PASS — **but failed live**: called a crisp fresh Dompap **Lavskrike 95.7%**.
-3. **Root cause 1 — resolution/aspect:** NVS wipe had reset `res` to SVGA (4:3); training data is HD (16:9). Fixed `res`, but…
-4. **Root cause 2 (the real one) — train/serve preprocessing SKEW:** `train.py` *stretched* the frame to 224²; device *center-crops* (`classify.cpp` decode_to_input). Model trained on one geometry, served another. Confirmed via `skew.py` (opposite calls under stretch vs crop).
-5. **nordic-v0.3** — fixed `train.py`: `center_square()` (matches device) + **visit-grouped leak-free split** + burst de-dup. Honest 98% val. **Still misses** the fresh Dompap (57/43, marginal). De-dup exposed the truth: 603 Dompap imgs = only **~19 visits**. **Verdict: DATA is the wall, not the pipeline.**
-6. **Aspect investigation** → concluded **ROI-crop-to-bird** is the real fix for aspect/position/scale invariance (crop a square around the bird, not the frame). Reuses the motion ROI as a free localizer.
+### 3. Resolution selector trimmed to HD + SXGA (0.62.0, FSD v1.82) — committed 2fcc2fb
+- Settings dropdown now offers only **HD (recommended — best motion)** and **SXGA (+vertical detail, weaker motion)**; sub-HD sizes dropped as not useful for bird photos. UXGA stays off the table (no PSRAM for the classifier).
+- Help text spells out HD/SXGA share the same 1280px width (SXGA only adds vertical rows) and the motion trade-off. Backend unchanged (res clamps 0–4, res_idx SVGA fallback); `stLoad` appends a "Current (n)" option for legacy sub-HD values.
 
-## ROI-crop pipeline — groundwork done, retrain BLOCKED, but data clock now started
-
-- **Done:** firmware logs `roi` unconditionally (0.60.0); `/api/labels/confirmed` emits `roi`; `export-labels.ps1` writes a `roi` column; `decode_to_input` crop math + `roi` format captured (`classify.cpp:285-309`; `"x0-y0-x1-y1"` fractional) for replication in `train.py`.
-- **⚠️ BLOCKER:** `roi` was only logged when `detect_zoom` was ON — and it's been OFF — so **every historical capture has an empty ROI**. The existing 4-day dataset can't be ROI-cropped. `train.py` ROI-crop and the **nordic-v0.4 retrain are NOT done** (no ROI data yet).
-- **✅ LIVE VALIDATION (21:43):** a fresh male Dompap visited at **HD, on the LEFT of frame**. The 0.59.0 grid highlight fired the **correct cells** (left-middle) — localization works. It's the exact hard case (off-center + evening) that center-crop clips and ROI-crop would fix. And being on 0.60.0, **it's the first ROI-tagged HD capture.** Every new visit now accrues ROI training data. (User advised to ✎ confirm it in the gallery → first ROI-tagged training frame + a held-out v0.4 test case.)
+### 4. OTA + housekeeping
+- Rebuilt 0.61.0 clean, OTA-flashed, polled version flip to 0.61.0.
+- Fixed FSD version header (was stuck at 1.79 despite the v1.80 entry) → now 1.81.
+- Updated memory: [[motion-detect-res-coupling]] gained the "SXGA degrades even when it fits" empirical section.
 
 ## Key decisions
+- **HD is the one true resolution** now (live + compiled default + documented). Never tune aspect again — ROI-crop makes classification aspect-independent, so resolution is set-and-forget.
+- **detect_zoom stays a real parameter, default off.** It couples inference preprocessing to *which model is loaded*: off for the whole-frame stock model (now), on for the ROI-trained v0.4 (later). Flipping it on now would degrade the stock iNat model ([[inat-model-zoom-hurts]]).
+- **ROI is logged-not-used:** since 0.60.0 the motion ROI is written to the visit log on every event (banking v0.4 training data), but classification is still whole-frame center-crop until `detect_zoom` goes on with v0.4.
+- Deployment-specific settings belong to the operator; backup/restore, not hardcoded defaults, is how they survive a wipe.
+- quality-8 is a live trial, not committed as a default — decide after the user compares stills.
 
-- Reject taxonomy: **a bird can never be a hard negative** — `no_bird`=empty→negative, `other`=cat/sheep→hard negative, `unknown`=unusable bird→excluded.
-- v0.3 config: background reject class = no_bird + other merged.
-- Motion indicator: keep border flash **and** add per-cell highlight (both).
-- ROI logging decoupled from `detect_zoom` (it's metadata, always useful).
-- Documented the image→model-input contract in **FSD §3.2.3** (byte-for-byte train==serve rule, center-crop-not-stretch, int8 contract, ROI-crop).
-
-## Gotchas discovered
-
-- **Train/serve preprocessing skew** is the #1 model bug class — cost the entire v0.2 generation. FSD §3.2.3 now guards it.
-- **val_acc from a random per-frame split is leakage-inflated** (near-dup burst frames straddle train/val). Use visit-grouped splits.
-- **"Motion very hard to trigger":** (a) cluster-size cap (`MAX_CLUSTER_CELLS=20`) rejects *large* motion — a hand at the lens fills too many cells and reads as wind/foliage; small bird-sized motion triggers fine; (b) 60s boot quarantine after every reboot (we rebooted a lot); (c) `sens=94` is already very sensitive, so sensitivity wasn't it.
-- **NVS wipe (portal test) reset settings** to compiled defaults — `res`, `conf` (60 vs tuned 17), etc. Re-verify after any wipe.
-- Device relocated then returned: reference unit is at **192.168.1.111** again (was temporarily 192.168.10.236). `res` set back to **HD (3)** this session.
-- Aspect ratio affects classification because the input is a fixed 224² square; only ROI-crop / letterbox truly remove it. TFLM can't do variable-input (static arena), so the elegant fully-conv fix is off the table on-device.
+## Gotchas (still live)
+- **Post-boot 60 s quarantine** (`detect_quarantine_s`): right after any reboot/OTA, `n`/`motionTriggers` stay 0 and `quarantineS` counts down — don't mistake it for dead detection.
+- **Still bird ≠ motion:** a perched/feeding bird triggers on arrival, then is absorbed into the rolling background and stops re-firing (plus `cool` cooldown). Expected, not a fault.
+- **SXGA is the max the detector can handle at all** — UXGA's 1/8 (200×150) overruns `DETECT_MAX` (160×128) and silently disables motion.
+- **Resolution changes need a reboot** (applied at camera_init); quality/rotation/contrast/AE apply live.
+- **Whole UI is one inline `<script>`** — a single JS syntax error kills all handlers; the build can't catch it. Verify by bracket/ternary balance + grepping the served page.
+- **Partial settings POST is safe:** absent fields keep current values, zone only applied if 64 chars, strings only if non-empty — so `POST res=3` etc. won't clobber the user's zone/sens.
 
 ## What's left to do
+- [ ] **User to A/B HD-q8 stills vs SXGA.** If detail is insufficient, fall back to Option 2: keep SXGA but lower `DETECT_PERIOD_MS` (~250→150) to claw back motion (small firmware change, testable). Otherwise consider baking quality 8 as the default.
+- [ ] **v0.4 ROI-crop retrain** — still the main open track. Fork: (a) wait for new ROI-tagged HD captures (now accruing from 0.60.0+) then export+train cleanly, vs (b) offline ROI re-derivation for the existing empty-ROI 4-day dataset. Leaning (a).
+- [ ] Then: implement `train.py` ROI-crop (replicate `decode_to_input`), retrain **nordic-v0.4**, and **flip `detect_zoom` on in the same step** the v0.4 model is deployed.
+- [ ] **Data collection is still the real bottleneck** — more diverse Dompap/Lavskrike visits (evening/wide, daytime) regardless of preprocessing.
+- [ ] Confirm/relabel new gallery visits to seed ROI-tagged training data.
+- [ ] Consider restoring `conf` to the user's tuned ~17 if a wipe reset it (user's call).
+- [ ] nordic-v0.2 / v0.3 artifacts remain uncommitted interim (not deployable); stock iNat model still runs on the device.
 
-- [ ] **Commit + push 0.60.0** (motion.c/classify.cpp/web_server.c roi changes, version.h, FSD v1.79 + §3.2.3, export-labels.ps1 roi column, SESSION_NOTES). *Not yet committed.*
-- [ ] **v0.4 data path (FORK):** (a) build **offline ROI re-derivation** for existing frames (motion-diff within bursts, or a small detector) to retrain v0.4 now — won't perfectly match the device ROI; or (b) **wait for new ROI-tagged captures** (now accruing from 0.60.0), then export + train v0.4 cleanly. Leaning (b) now that live visits are logging ROIs.
-- [ ] Then: implement `train.py` ROI-crop (replicate `decode_to_input`), retrain **nordic-v0.4**, test with `detect_zoom` on.
-- [ ] **Data collection remains the real bottleneck** — more diverse visits (evening/wide Dompap, daytime Lavskrike) regardless of preprocessing.
-- [ ] Consider restoring `conf` to the user's tuned ~17 (reset to 60 by the wipe) — user's call.
-- [ ] Confirm/relabel the 21:43 Dompap (and further visits) in the gallery to seed ROI-tagged data.
-- [ ] nordic-v0.2 / v0.3 artifacts left uncommitted (interim, not deployable). Stock model still running on the device.
-
-## Handy scratchpad scripts (this session)
-`infer.py`, `control.py` (harness validation), `contact.py`/`suspects.py` (dataset review), `skew.py` (stretch vs crop), `v3test.py` (v0.2 vs v0.3), `aspect.py` (stretch/crop/letterbox), `livebird.jpg` (the 21:43 HD Dompap).
+## Reference
+- Device: **192.168.1.111** (confirm via `GET /api/status`). OTA: `curl -s -X POST -H "Content-Type: application/octet-stream" --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload`.
+- Build (PowerShell): idf_tools.py env-export then `idf.py build` (export.ps1 is broken on this machine — see CLAUDE.md).
+- Latest commits: `5871d26` (FSD v1.81 SXGA note), `b01f750` (0.61.0 defaults + backup/restore).
