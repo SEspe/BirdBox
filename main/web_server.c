@@ -1142,6 +1142,8 @@ static const char INDEX_HTML[] =
 "$g('dSys').innerHTML="
 "drow('Free heap',Math.round(d.heap/1024)+' KB')+"
 "drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
+"(d.heapInt!=null?drow('Free internal DRAM',Math.round(d.heapInt/1024)+' KB (largest block '+Math.round(d.heapIntBig/1024)+' KB)',d.heapInt<40960?'bad':(d.heapInt<81920?'':'ok'))+"
+"drow('Free PSRAM',Math.round(d.heapPsram/1024)+' KB (largest block '+Math.round(d.heapPsramBig/1024)+' KB)'):'')+"
 "drow('Uptime',fmtAge(d.uptime))+"
 "drow('Last reset',d.resetReason,(d.resetReason==='power-on'||d.resetReason==='software')?'':'bad')+"
 "drow('Device time',(d.time?d.time+' ('+d.clockSrc+')':'not set'),(d.time?(d.clockSrc==='ntp'?'ok':''):'bad'))+"
@@ -2700,9 +2702,11 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[960];
+    char buf[1088];
     int n = snprintf(buf, sizeof(buf),
-        "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,"
+        "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
+        "\"heapInt\":%lu,\"heapIntBig\":%lu,\"heapPsram\":%lu,\"heapPsramBig\":%lu,"
+        "\"uptime\":%lld,"
         "\"resetReason\":\"%s\","
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"apSsid\":\"%s\",\"time\":\"%s\",\"clockSrc\":\"%s\","
@@ -2715,6 +2719,10 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
+        (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned long) heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
         now_us / 1000000,
         reset_reason_str(),
         (unsigned long) g_wifi_disconnect_count,
