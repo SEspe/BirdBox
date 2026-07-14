@@ -23,6 +23,9 @@ idf_component_register(
         esp_http_server
         esp_timer
         app_update
+        esp_https_ota
+        esp_http_client
+        mbedtls
         log
         fatfs
         sdmmc

@@ -37,6 +37,9 @@
 #include "esp_camera.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_https_ota.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "driver/temperature_sensor.h"
 #include "driver/gpio.h"
 #include "illum.h"
@@ -637,6 +640,17 @@ static const char INDEX_HTML[] =
 "<input type='file' id='otaFile' accept='.bin'>"
 "<button class='act' onclick='otaUpload()'>&#11014; Upload &amp; Flash</button>"
 "<div class='sts' id='otaProg'></div>"
+"<h3 class='sh'>Flash from GitHub release</h3>"
+"<p class='sts'>Pull a published release straight from GitHub &mdash; the device "
+"downloads and flashes it itself over HTTPS (no PC needed). Repo-locked to this "
+"project's releases; same dual-partition rollback as a manual upload.</p>"
+"<div class='gbar'><select id='ghRel'><option>Load releases&hellip;</option></select>"
+"<button class='act' style='margin:0' onclick='ghLoad()'>&#8635; Reload</button>"
+"<button class='act' style='margin:0;background:#3f8a4f' onclick='ghFlash()'>&#11015;&#65039; Download &amp; flash</button></div>"
+"<div class='gprog' id='ghProg' style='display:none'>"
+"<div class='gprogbar'><div class='gprogfill' id='ghFill'></div></div>"
+"<span class='gprogtxt' id='ghTxt'></span></div>"
+"<div class='sts' id='ghSts'></div>"
 "</div>"
 "<script>"
 "function show(id,btn){"
@@ -652,7 +666,8 @@ static const char INDEX_HTML[] =
 "if(id==='setp')stLoad();"
 "if(id==='maintp')mtLoad();"
 "if(id==='dbgp')loadDebug();"
-"if(id==='wifip'){ipLoad();wfCfg();}}"
+"if(id==='wifip'){ipLoad();wfCfg();}"
+"if(id==='otap')ghLoad();}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=(s.time?('\\uD83D\\uDD52 '+s.time+' ('+s.clockSrc+')'):'\\uD83D\\uDD52 clock not set')+' | '"
 "+s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
@@ -1191,6 +1206,38 @@ static const char INDEX_HTML[] =
 "'Success \\u2014 rebooting\\u2026':'Error: '+xhr.responseText;};"
 "xhr.onerror=function(){p.textContent='Upload error';};"
 "xhr.send(f);}"
+"var g_fwver='" FIRMWARE_VERSION "';"
+/* List this repo's releases via the GitHub API (CORS-open); the device can't
+ * fetch the asset itself for listing, but the browser can read the JSON. */
+"function ghLoad(){var s=$g('ghRel');s.innerHTML='<option>Loading\\u2026</option>';$g('ghSts').textContent='';"
+"fetch('https://api.github.com/repos/SEspe/BirdBox/releases?per_page=100')"
+".then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(a){s.innerHTML='';var nn=0;"
+"a.forEach(function(rel){var as=(rel.assets||[]).find(function(x){return /\\.bin$/i.test(x.name);});if(!as)return;"
+"var o=document.createElement('option');o.value=as.browser_download_url;"
+"var cur=(rel.tag_name===('v'+g_fwver)||rel.tag_name===g_fwver);"
+"o.textContent=rel.tag_name+(cur?' (running)':'')+' \\u2013 '+Math.round(as.size/1024)+' KB';"
+"s.appendChild(o);nn++;});"
+"if(!nn)s.innerHTML='<option>no releases with a .bin asset</option>';})"
+".catch(function(){s.innerHTML='<option>couldn\\u2019t reach GitHub</option>';"
+"$g('ghSts').textContent='GitHub API unreachable (device/PC offline, or rate-limited \\u2014 60 req/h unauthenticated). Try again later, or use manual upload above.';});}"
+"function ghFlash(){var s=$g('ghRel');var url=s.value;"
+"if(!url||url.indexOf('https://')!==0){alert('Load and pick a release first');return;}"
+"var lbl=s.options[s.selectedIndex].textContent;"
+"if(!confirm('Download and flash '+lbl+'?\\nThe device reboots into it; rollback protects against a bad image.'))return;"
+"$g('ghProg').style.display='';$g('ghFill').style.width='0%';$g('ghTxt').textContent='connecting\\u2026';$g('ghSts').textContent='';"
+"fetch('/ota/from-url',{method:'POST',headers:{'Content-Type':'text/plain'},body:url})"
+".then(function(r){return r.json();}).then(function(o){if(!o.ok){$g('ghTxt').textContent=o.error||'failed to start';return;}ghPoll();})"
+".catch(function(){$g('ghTxt').textContent='could not start update';});}"
+"function ghPoll(){fetch('/ota/from-url').then(function(r){return r.json();}).then(function(o){"
+"if(o.state==='running'){var pct=o.total>0?Math.round(o.read*100/o.total):0;"
+"$g('ghFill').style.width=pct+'%';$g('ghTxt').textContent='downloading '+Math.round(o.read/1024)+' KB'+(o.total>0?(' / '+Math.round(o.total/1024)+' KB ('+pct+'%)'):'');"
+"setTimeout(ghPoll,1000);}"
+"else if(o.state==='done'){$g('ghFill').style.width='100%';$g('ghTxt').textContent=o.msg||'done \\u2014 rebooting';"
+"$g('ghSts').textContent='Flashed \\u2014 the device is rebooting into the new version. Refresh this page in ~20 s.';}"
+"else if(o.state==='failed'){$g('ghTxt').textContent='failed';"
+"$g('ghSts').textContent='Update failed \\u2014 the device kept the current version. '+(o.msg||'');}"
+"else setTimeout(ghPoll,1000);"
+"}).catch(function(){setTimeout(ghPoll,2000);});}"
 "</script></body></html>";
 
 /* ── MJPEG live stream (FSD §3.3) ───────────────────────────────────────────
@@ -2804,6 +2851,131 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── OTA from a GitHub release URL (device-side HTTPS download) ──────────────
+ * The browser can LIST releases (the GitHub API sends CORS *) but cannot
+ * download the .bin (release-assets.githubusercontent.com sends no CORS
+ * header), so the device fetches + flashes it itself over TLS. Repo-locked:
+ * the URL must start with OTAU_URL_PREFIX, so this can only ever flash this
+ * project's own signed releases, never an arbitrary binary. Runs in its own
+ * task (TLS handshake + ~1.3 MB download takes many seconds); progress is
+ * polled via GET. esp_https_ota does begin/write/verify/set-boot and inherits
+ * the same rollback safety as /ota/upload. TLS buffers live in internal DRAM
+ * (measured ~180 KB free, steady under load); dynamic buffers keep the peak
+ * small (sdkconfig.defaults). */
+#define OTAU_URL_PREFIX "https://github.com/SEspe/BirdBox/releases/download/"
+typedef enum { OTAU_IDLE = 0, OTAU_RUNNING, OTAU_DONE, OTAU_FAILED } otau_state_t;
+static volatile otau_state_t s_otau_state = OTAU_IDLE;
+static volatile int s_otau_read = 0, s_otau_total = 0;
+static char s_otau_msg[96] = "";
+static char s_otau_url[300] = "";
+
+static void otau_fail(const char *m)
+{
+    snprintf(s_otau_msg, sizeof(s_otau_msg), "%s", m);
+    s_otau_state = OTAU_FAILED;
+    ESP_LOGE(TAG, "OTA-from-URL failed: %s", m);
+}
+
+static void otau_task(void *arg)
+{
+    esp_http_client_config_t http_cfg = {
+        .url               = s_otau_url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 20000,
+        .keep_alive_enable = true,
+        .buffer_size       = 2048,
+        .buffer_size_tx    = 4096,   /* the signed redirect URL is ~900 chars */
+    };
+    esp_https_ota_config_t ota_cfg = { .http_config = &http_cfg };
+    esp_https_ota_handle_t h = NULL;
+
+    esp_err_t err = esp_https_ota_begin(&ota_cfg, &h);
+    if (err != ESP_OK || h == NULL) { otau_fail("could not connect to GitHub"); vTaskDelete(NULL); return; }
+
+    s_otau_total = esp_https_ota_get_image_size(h);
+    do {
+        err = esp_https_ota_perform(h);
+        s_otau_read = esp_https_ota_get_image_len_read(h);
+    } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
+    if (err == ESP_OK && esp_https_ota_is_complete_data_received(h)) {
+        err = esp_https_ota_finish(h);
+        if (err == ESP_OK) {
+            snprintf(s_otau_msg, sizeof(s_otau_msg), "downloaded %d KB — rebooting", s_otau_read / 1024);
+            s_otau_state = OTAU_DONE;
+            ESP_LOGW(TAG, "OTA-from-URL complete — rebooting into new image");
+            vTaskDelay(pdMS_TO_TICKS(800));
+            esp_restart();
+        } else {
+            otau_fail(err == ESP_ERR_OTA_VALIDATE_FAILED ? "image failed validation" : "flash finalize failed");
+        }
+    } else {
+        esp_https_ota_abort(h);
+        otau_fail("download interrupted");
+    }
+    vTaskDelete(NULL);
+}
+
+static bool otau_url_allowed(const char *u)
+{
+    return strncmp(u, OTAU_URL_PREFIX, strlen(OTAU_URL_PREFIX)) == 0 &&
+           !strstr(u, "..") && !strchr(u, ' ') && strlen(u) < sizeof(s_otau_url);
+}
+
+/* POST /ota/from-url — body is the release asset URL (repo-locked). Starts the
+ * background download+flash; poll GET /ota/from-url for progress. */
+static esp_err_t h_ota_from_url(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    if (s_otau_state == OTAU_RUNNING) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"an update is already running\"}");
+        return ESP_OK;
+    }
+    char url[300] = {0};
+    int rlen = MIN(req->content_len, (int) sizeof(url) - 1);
+    int got = 0;
+    while (got < rlen) {
+        int r = httpd_req_recv(req, url + got, rlen - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    char *u = url;
+    if (strncmp(u, "url=", 4) == 0) { u += 4; url_decode(u); }   /* accept raw url or url=... */
+    for (int i = (int) strlen(u) - 1; i >= 0 && (u[i] == '\n' || u[i] == '\r' || u[i] == ' '); i--)
+        u[i] = 0;
+
+    if (!otau_url_allowed(u)) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"url must be a SEspe/BirdBox release asset\"}");
+        return ESP_OK;
+    }
+    snprintf(s_otau_url, sizeof(s_otau_url), "%s", u);
+    s_otau_read = 0; s_otau_total = 0; s_otau_msg[0] = 0;
+    s_otau_state = OTAU_RUNNING;
+    if (xTaskCreate(otau_task, "otau", 10240, NULL, 5, NULL) != pdPASS) {
+        s_otau_state = OTAU_IDLE;
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no memory for update task\"}");
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "OTA-from-URL started: %s", s_otau_url);
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* GET /ota/from-url — progress of the running/last download. */
+static esp_err_t h_ota_from_url_status(httpd_req_t *req)
+{
+    const char *st = s_otau_state == OTAU_RUNNING ? "running" :
+                     s_otau_state == OTAU_DONE    ? "done" :
+                     s_otau_state == OTAU_FAILED  ? "failed" : "idle";
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"state\":\"%s\",\"read\":%d,\"total\":%d,\"msg\":\"%s\"}",
+        st, s_otau_read, s_otau_total, s_otau_msg);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 /* Localize one raw model label ("Scientific name (Common Name)") to the
  * current display language. The classifier only splits the *winning* label
  * into species/latin; the top-3 arrive as raw English strings, so parse the
@@ -3255,6 +3427,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
         { .uri = "/api/debug/gpio", .method = HTTP_POST, .handler = h_debug_gpio },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
+        { .uri = "/ota/from-url", .method = HTTP_POST, .handler = h_ota_from_url },
+        { .uri = "/ota/from-url", .method = HTTP_GET,  .handler = h_ota_from_url_status },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
