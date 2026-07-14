@@ -932,7 +932,9 @@ static const char INDEX_HTML[] =
 "fetch('/api/captures/delete',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+'&files='+fs.join(',')})"
-".then(r=>r.json()).then(()=>loadDays()).catch(()=>alert('Delete failed'));}"
+".then(r=>r.json()).then(function(o){var n=(o&&o.deleted)||0;"
+"if(n<fs.length)alert('Deleted '+n+' of '+fs.length+' \\u2013 reload and delete the rest');"
+"loadDays();}).catch(()=>alert('Delete failed'));}"
 "function mtLoad(){fetch('/api/days').then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.d.localeCompare(x.d));"
 "var s=$g('mday');var prev=s.value;s.innerHTML='';"
@@ -2074,9 +2076,18 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
     int cap = MIN(req->content_len, 16384);
     char *body = calloc(1, cap + 1);
     if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
-    int rlen = httpd_req_recv(req, body, cap);
-    if (rlen <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_OK; }
-    body[rlen] = '\0';
+    /* Read the whole body, not just the first TCP segment: a large multi-
+     * select list (files=a.jpg,b.jpg,...) easily spans several packets, and a
+     * single httpd_req_recv() would truncate it — silently deleting only the
+     * files that fit in the first ~1.4 KB. Loop like every other batch handler. */
+    int got = 0;
+    while (got < cap) {
+        int r = httpd_req_recv(req, body + got, cap - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    if (got <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_OK; }
+    body[got] = '\0';
 
     char date[36] = {0}, all[4] = {0}, stats[4] = {0};
     form_field(body, "date=", date, sizeof(date));
