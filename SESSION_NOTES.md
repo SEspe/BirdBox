@@ -1,12 +1,12 @@
 # Session Notes — BirdBox (updated 2026-07-14)
 
-Rolling notes for the "BirdBox" work. Firmware is now **0.68.0**, FSD **v1.88**.
-Everything committed and pushed to `origin/master`; **0.68.0 is OTA-flashed and
+Rolling notes for the "BirdBox" work. Firmware is now **0.68.1**, FSD **v1.89**.
+Everything committed and pushed to `origin/master`; **0.68.1 is OTA-flashed and
 live** on the reference unit at **192.168.1.111**. GitHub **Releases v0.64.0
-through v0.68.0** are all published (CI-built binaries attached).
+through v0.68.1** are all published (CI-built binaries attached).
 
 ## Current device state (verified live)
-- **version 0.68.0**, clock `ntp`, SD present.
+- **version 0.68.1**, clock `ntp`, SD present.
 - **Free internal DRAM ~181 KB** (largest block ~102 KB), **free PSRAM ~702 KB**
   (largest block ~704 KB) — steady even under camera+classify load (both run in
   PSRAM). These are the new `/api/sysinfo` fields (v1.87).
@@ -16,7 +16,25 @@ through v0.68.0** are all published (CI-built binaries attached).
 - **Device address: 192.168.1.111** (confirmed live). CLAUDE.md's `192.168.10.236`
   is **stale** — always confirm with `GET /api/status`.
 
-## What we did this session (0.64.0 → 0.68.0)
+## What we did this session (0.64.0 → 0.68.1)
+
+### 6. Fix Gallery multiselect delete truncating large selections — 0.68.1, FSD v1.89 (4aeb7c7), Released
+- **Reported:** selecting all 285 unclassified frames on a day and hitting
+  **Delete selected** didn't delete them all.
+- **Root cause:** `h_captures_delete_batch` (`POST /api/captures/delete`) read the
+  body with a **single** `httpd_req_recv()` — the one batch handler that *didn't*
+  loop. The multiselect list is one `files=a.jpg,b.jpg,...` body (~8 KB for 285
+  names) that TCP splits across segments; the single recv got only the first
+  ~1.4 KB, so ~50 files deleted and the rest were silently dropped (JS ignored the
+  returned `deleted` count).
+- **Fix:** loop `httpd_req_recv` until the whole body is read (up to the 16 KB cap
+  ≈ 560 files), matching the sibling handlers (`/api/relabel`, `/api/confirm`,
+  `/ota/from-url`); `gDelSel()` now compares `deleted` vs requested and alerts
+  *"Deleted N of M — reload and delete the rest"* so a truncation can never pass
+  silently again. Whole-day **Delete all**/**Wipe day** (`all=1`) were never
+  affected (no file list).
+- **Verified:** user re-ran the 285-frame delete on 2026-07-13 — all removed OK.
+
 
 ### 1. Gallery bulk-label ops + Maintenance tab — 0.64.0, FSD v1.84 (a9eed9a), Released
 - **✔ Confirm selected** (loops `/api/confirm`) and **🔖 Set species▾** (inline
@@ -137,6 +155,6 @@ through v0.68.0** are all published (CI-built binaries attached).
 - Build (PowerShell, from repo root): idf_tools.py env-export then `idf.py build`
   (export.ps1 broken — see CLAUDE.md). sdkconfig.defaults change → delete `sdkconfig` first.
 - Release: push tag `vX.Y.Z` → `release.yml` CI builds + publishes with the esp32s3 bin.
-- Latest commits: `b351fed` (0.68.0 OTA-from-URL), `f1fca8b` (0.67.0 heap split),
-  `cba0090` (0.66.0 progress bar), `1a88237` (0.65.0 illum comp), `a9eed9a` (0.64.0
-  bulk ops + Maint tab).
+- Latest commits: `4aeb7c7` (0.68.1 delete recv-loop fix), `b351fed` (0.68.0
+  OTA-from-URL), `f1fca8b` (0.67.0 heap split), `cba0090` (0.66.0 progress bar),
+  `1a88237` (0.65.0 illum comp), `a9eed9a` (0.64.0 bulk ops + Maint tab).
