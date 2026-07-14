@@ -1,70 +1,137 @@
-# Session Notes — BirdBox (updated 2026-07-13)
+# Session Notes — BirdBox (updated 2026-07-14)
 
-Rolling notes for the "BirdBox" work. Firmware is now **0.63.0**, FSD **v1.83**.
-Everything committed and pushed to `origin/master`; **0.63.0 is OTA-flashed and
-live** on the reference unit at 192.168.1.111. A GitHub **Release v0.62.0** is
-published (CI-built binary attached); v0.63.0 not tagged yet.
+Rolling notes for the "BirdBox" work. Firmware is now **0.66.0**, FSD **v1.86**.
+Everything committed and pushed to `origin/master`; **0.66.0 is OTA-flashed and
+live** on the reference unit at **192.168.1.111**. GitHub **Releases v0.64.0,
+v0.65.0, v0.66.0** are all published (CI-built binaries attached).
 
 ## Current device state (verified live)
-- **version 0.63.0**, clock `ntp`, SD present, free heap ~854 KB.
-- **Resolution: HD 1280×720 (res=3)** — live + locked compiled default.
-- **JPEG quality 8** (`stream_quality=8`, was 12) — live trial for crisper stills; NOT baked as default.
-- `detect_zoom = 0` (whole-frame center-crop for ID — see decisions).
-- User-owned NVS tuning intact across all the OTAs: `detect_zone`, `motion_sensitivity` (~73), `confidence_pct`. OTA preserves NVS.
+- **version 0.66.0**, clock `ntp`, SD present, free heap ~855 KB.
+- **Resolution: HD 1280×720 (res=3)** — compiled default + only-offered choice.
+- **JPEG quality 8**, `detect_zoom = 0` (whole-frame center-crop for ID).
+- **motion_sensitivity 76**, boot quarantine `qtn=30 s`, cooldown 3 s, interval 1500, count 5.
+- **`conf` (classify threshold) = 60** — very high (see gotchas). User's call.
+- User-owned NVS tuning (`detect_zone`, `motion_sensitivity`, `conf`) intact across OTAs (OTA preserves NVS).
+- **Device address:** the reference unit answers at **192.168.1.111** (confirmed
+  live this session). CLAUDE.md's `192.168.10.236` is **stale** — always confirm
+  with `GET /api/status` first.
 
 ## What we did this session
 
-### 1. Parameter-defaults cleanup + Settings backup/restore — 0.61.0, FSD v1.80 (b01f750)
-- Retuned compiled defaults so an NVS wipe lands on sane values: `resolution` SVGA→**HD (3)**, `capture_interval_ms` 1000→**1500**, `cooldown_s` 10→**3**. `capture_count` stays 5, `detect_zoom` stays 0.
-- **Deliberately NOT baked as globals:** `detect_zone`, `motion_sensitivity`, `confidence_pct`, `rotation` — per-scene/per-mount, operator-owned.
-- **Settings backup/restore:** `GET /api/settings/export` → `birdbox-settings.cfg` (form-urlencoded, byte-identical to the `POST /api/settings` body); Settings-tab **Download/Restore** buttons; restore POSTs the file back, **reusing the existing handler's validation** (no second parser). Durable way to preserve tuning across a wipe.
+### 1. Gallery bulk-label ops + Maintenance tab — 0.64.0, FSD v1.84 (a9eed9a), Released v0.64.0
+- **Two selection-scoped bulk actions** added to the Gallery bar:
+  **✔ Confirm selected** (accepts each tile's model guess as ground truth — loops
+  `/api/confirm`; tiles with nothing to confirm are skipped) and
+  **🔖 Set species▾** (inline datalist picker, applies one chosen species to all
+  selected — loops `/api/relabel`, seeds `g_lastSp` for the 📋 copy-last path).
+  Both write the visit-log `corrected` column → feed the retrain export.
+- **Sequential runner `gSeq`** — requests issued strictly one-at-a-time, never a
+  fan-out, because the ESP32 httpd has only a handful of worker sockets.
+- **No new firmware routes** — reuses the existing per-image handlers (stays
+  within the `max_uri_handlers` cap).
+- **New Maintenance ("Maint") tab** — moved the whole-day destructive ops
+  (**Delete all photos**, **Wipe day (photos+stats)**) out of the Gallery bar
+  (where they sat next to the labelling controls and could be mis-clicked) into a
+  dedicated tab with its own day selector. Same `POST /api/captures/delete` calls;
+  UI-only, client-side pane (no route change).
 
-### 2. SXGA-vs-HD motion investigation + doc — FSD v1.81 (5871d26), no fw change
-- User saw degraded motion with an active bird. Diagnosed live: detection wasn't dead — misses were (a) a still/feeding bird absorbed into the rolling background, (b) the 60 s post-boot quarantine. The real degradation was the box being on **SXGA (res=4)**.
-- **On-device A/B: HD clearly beats SXGA** — more sensitive AND better-framed. Causes: SXGA's larger frames slow the fixed-period detect loop (misses quick hops), it sits at the exact 1/8 decode ceiling (160×128, zero headroom), and costs ~300 KB more PSRAM (**measured ~547 KB free at SXGA vs ~854 KB at HD** — tied to a spontaneous OOM reboot); plus SXGA's 5:4 FOV is mis-aligned to a horizontal feeder.
-- No clean fix on the OV2640 (single stream; res-switch too slow + breaks the ROI box). Documented in **FSD §3.1 + v1.81** and memory ([[motion-detect-res-coupling]]).
-- **"Better pics" resolved via JPEG quality, not resolution** — set HD + quality 8 live.
+### 2. Motion false-positive investigation → global-illumination fix — 0.65.0, FSD v1.85 (1a88237), Released v0.65.0
+- **Reported live:** motion firing on the empty feeder, several **exactly when the
+  live view was opened**. Pulled the flagged frames — no bird, just a whole-frame
+  **brightness swing** (one frame was blown-out/over-exposed).
+- **Root cause (code-level):** motion runs on the *same single sensor stream* as
+  the live view. Opening Live starts `/stream`; the OV2640 re-converges its
+  auto-exposure/gain → a sudden brightness step. `motion.c` used a **fixed
+  absolute** per-pixel threshold (`PIX_DIFF_THR=25`) with no global-illumination
+  compensation. The dual-EMA background + 20-cell cluster cap only stop *gradual*
+  drift and *uniform* whole-frame changes; a **sudden, non-uniform** AE swing
+  (bright stump clips while dark shed barely moves) forms a bird-sized cluster on
+  the bright region that slips past both → false trigger.
+- **Fix:** subtract each background's **frame-mean brightness delta** before
+  thresholding (`abs((cur-bg) - shift) > THR`) — a uniform step cancels to ~0
+  everywhere, a real *local* mover still stands proud (a bird shifts the frame
+  mean only ~1–3 levels). Plus a guard: a frame whose mean shift exceeds
+  **`GLOBAL_STEP_THR = 12`** gray levels is deemed a lighting event and cannot
+  trigger; the quiet-frame EMA roll re-seeds the background so detection recovers
+  within ~1 s. Zone mask + sensitivity untouched (operator-owned).
+- **Verification:** built/flashed; detection still functions; the reproduction
+  (opening `/stream` repeatedly to force the AE re-converge) produced **0 new
+  captures over 4 open/close cycles** and the trigger count didn't climb. Short
+  window — real proof is the evening false-positive rate.
 
-### 3. Resolution selector trimmed to HD + SXGA — 0.62.0, FSD v1.82 (2fcc2fb); Released v0.62.0
-- Settings dropdown now offers only **HD (recommended — best motion)** and **SXGA (+vertical detail, weaker motion)**; sub-HD sizes dropped. UXGA stays off the table (no PSRAM for the classifier — verified, `camera.c` comment).
-- Help text: HD/SXGA share the same 1280 px width (SXGA only adds vertical rows); HD keeps motion most responsive. Backend unchanged (res clamps 0–4, `res_idx` SVGA fallback); `stLoad` appends a "Current (n)" option for legacy sub-HD values.
-- **GitHub Release v0.62.0** created via the repo's CI (`release.yml`): push tag `v*` → CI builds ESP32-S3 with ESP-IDF v6.0.1 → auto-creates "Release v<tag>" with `BirdBox_esp32s3_v<VER>.bin` attached.
-
-### 4. Bug fix — Gallery "Select all" respects the active filter — 0.63.0, FSD v1.83 (dd07e80)
-- From `bugreport.txt` bug 1: with a Show filter applied, **Select all** selected *every* image for the day (not the filtered subset) and the count showed the full day, so a follow-up Delete/Recheck could hit hidden images. Cause: `gSelAll()`/counter iterated `gChecks()` (all `.gchk`) ignoring visibility.
-- Fix: scope selection to the visible subset — `gSelAll()` toggles only shown tiles (new `gVisChecks()`), and `applyFilter()` **deselects any tile it hides** + refreshes the count. Now **Select all → count == filtered subset**, and Delete/Recheck-selected can only touch visible tiles.
-- Verified on the served page (gVisChecks + deselect-on-hide tokens present). Marked `[FIXED in 0.63.0]` in `bugreport.txt` (untracked, not committed).
+### 3. Progress bar for the bulk-label ops — 0.66.0, FSD v1.86 (cba0090), Released v0.66.0
+- The sequential bulk ops (item 1) take real time on a large selection (a busy day
+  can be hundreds of frames) and the only feedback was a tiny `i/N` in the status
+  line. Added a determinate **progress bar** below the gallery toolbar: `gSeq`
+  shows a filling bar with a `"<label> – done / total (pct%)"` readout
+  ("Confirming" / "Setting species"), updated per image, auto-hiding ~0.5 s after
+  the batch finishes. UI-only (`.gprog*` CSS + `gProg()` helper); no change to the
+  sequential pattern, endpoints, or write path.
 
 ## Key decisions
-- **HD is the one true resolution** (live + compiled default + only-offered choice + documented). Aspect is set-and-forget — ROI-crop makes classification aspect-independent, so we never tune resolution/aspect for the model again.
-- **detect_zoom stays a real parameter, default off** — it couples inference preprocessing to *which model is loaded*: off for the whole-frame stock iNat model (now), on for the ROI-trained v0.4 (later). On now would degrade the stock model ([[inat-model-zoom-hurts]]).
-- **ROI is logged-not-used:** since 0.60.0 the motion ROI is written to the visit log on every event (banking v0.4 training data), but classification is still whole-frame center-crop until `detect_zoom` flips on with v0.4.
-- **UXGA is off the table by design** — two PSRAM walls (motion detect buffer + classifier decode buffer), both verified live. Sacrificing stream smoothness doesn't recover PSRAM. UXGA would only be possible by giving up on-device species ID.
-- Deployment-specific settings live in NVS + backup/restore, never hardcoded defaults.
-- quality-8 is a live trial, not a committed default — decide after comparing stills.
+- **Bulk-label ops reuse existing endpoints, issued sequentially** — never fan out
+  N parallel fetches at the tiny httpd; the progress bar makes the wait tolerable.
+- **Destructive day-ops live in their own Maintenance tab** — separated from the
+  labelling controls so Delete-all / Wipe-day can't be hit by accident.
+- **Global-illumination compensation is an algorithmic robustness fix**, distinct
+  from zone/sensitivity tuning (which stay operator-owned and were left untouched).
+  A zone change wouldn't fix an AE swing anyway — it hits every cell.
+- **`GLOBAL_STEP_THR = 12` set conservatively** to protect bird sensitivity;
+  tighten it (lower) only with live evidence that localized highlight-clip swings
+  still sneak through.
+- **HD remains the one true resolution**; `detect_zoom` stays OFF until a
+  ROI-trained model ships; UXGA off the table (PSRAM). (Unchanged this session.)
 
 ## Gotchas (still live)
-- **Post-boot 60 s quarantine** (`detect_quarantine_s`): right after any reboot/OTA, `n`/`motionTriggers` stay 0 and `quarantineS` counts down — not dead detection.
-- **Still bird ≠ motion:** a perched bird triggers on arrival then is absorbed into the rolling background (+ cooldown). Expected.
-- **SXGA is the detector's absolute ceiling** — UXGA's 1/8 (200×150) overruns `DETECT_MAX` (160×128) and silently disables motion.
-- **Resolution changes need a reboot** (applied at camera_init); quality/rotation/contrast/AE apply live.
-- **Whole UI is one inline `<script>`** — one JS syntax error kills all handlers; the C build can't catch it. Verify by grepping the served page (done for every UI change this session).
-- **Partial settings POST is safe** — absent fields keep current, zone only applied if 64 chars, strings only if non-empty. So `POST res=3` / `qual=8` don't clobber the user's zone/sens.
-- **Build must run from the project root**, not `main/` — running idf.py from `main/` fails ("No project() command") and leaves a stray `main/build`. The build command now pins `Set-Location` to the root.
+- **Motion shares the single sensor stream** — opening the live view perturbs
+  auto-exposure; that's what the 0.65.0 fix addresses. Watch for residual
+  localized-clip false positives.
+- **`conf` threshold is 60** — very high. Real birds scoring under 60% log as
+  *unclassified* (e.g. the 14%/19% near-misses this session). Doesn't affect motion,
+  but suppresses genuine IDs. Likely an NVS-wipe reset from the tuned ~17; restoring
+  it is the user's call (backup/restore or Settings).
+- **Detection zone is fairly permissive** — bottom row (foreground grass) and the
+  right-side tree line are active; both are wind-driven false-positive sources.
+  Tightening to just the stump top would help the *wind* triggers (not the AE ones).
+  **User owns the zone** — explain, don't apply uninvited.
+- **Whole UI is one inline `<script>`** — one JS syntax error kills all handlers;
+  the C build can't catch it. Verify by grepping the served page (done for every UI
+  change this session) + a bracket/ternary balance pass.
+- **Build must run from the repo root**, not `main/` — the build command pins
+  `Set-Location` to the root and deletes any stray `main/build`.
+- **Partial settings POST is safe** — absent fields keep current; zone only applied
+  if 64 chars; strings only if non-empty.
+- **Boot quarantine (30 s)** and **still-bird-absorbed-into-background** both look
+  like "dead detection" but aren't.
 
 ## What's left to do
-- [ ] **User to A/B HD-q8 stills vs SXGA.** If detail is insufficient: Option 2 = keep SXGA but lower `DETECT_PERIOD_MS` (~250→150) to claw back motion (small fw change, testable). Otherwise consider baking quality 8 as the default.
-- [ ] **(Optional) Release v0.63.0** — not tagged yet; push tag `v0.63.0` to trigger CI build+release if wanted.
-- [ ] **v0.4 ROI-crop retrain** — the main open track. Fork: (a) wait for new ROI-tagged HD captures (accruing since 0.60.0) then export+train cleanly, vs (b) offline ROI re-derivation for the empty-ROI 4-day dataset. Leaning (a).
-- [ ] Then: implement `train.py` ROI-crop (replicate `decode_to_input`), retrain **nordic-v0.4**, and **flip `detect_zoom` on in the same step** the v0.4 model deploys.
-- [ ] **Data collection is still the real bottleneck** — more diverse Dompap/Lavskrike visits (evening/wide, daytime).
-- [ ] Confirm/relabel new gallery visits to seed ROI-tagged training data.
-- [ ] Consider restoring `conf` to the user's tuned ~17 if a wipe reset it (user's call).
-- [ ] nordic-v0.2 / v0.3 artifacts remain uncommitted interim (not deployable); stock iNat model still runs on the device.
-- [ ] `bugreport.txt` is the running bug tracker (untracked) — bug 1 fixed; add new ones there.
+- [ ] **Watch the motion false-positive rate this evening.** If a localized
+  highlight-clip AE swing still triggers (mean shift < 12 but a strong local
+  cluster), lower `GLOBAL_STEP_THR` from 12 — but only with live evidence, to avoid
+  eroding bird sensitivity. Small fw change.
+- [ ] **(Optional) Tighten the detection zone** to the stump top to cut the wind/
+  grass false positives — user's call; paint it in Live → zone editor, or ask me to
+  push a mask.
+- [ ] **Consider restoring `conf` 60 → ~17** (user's tuned value) if the high
+  threshold was an accidental wipe reset.
+- [ ] **Confirm the bulk-op progress bar** fills smoothly to 100% and clears with a
+  real large selection in the browser (server-side only the JS presence/balance was
+  verified).
+- [ ] **v0.4 ROI-crop retrain** — the main open track. ROI has been logged on every
+  event since 0.60.0; collect ROI-tagged HD captures → export → implement `train.py`
+  ROI-crop → retrain nordic-v0.4 → flip `detect_zoom` ON in the same deploy step.
+- [ ] **Data collection is still the real bottleneck** — more diverse Dompap/
+  Lavskrike visits. Use the new bulk Confirm/Set-species to label runs faster.
+- [ ] `bugreport.txt` is the running bug tracker (untracked). Bug 1 (gallery
+  Select-all filter) fixed in 0.63.0; add new ones there.
 
 ## Reference
-- Device: **192.168.1.111** (confirm via `GET /api/status`). OTA: `curl -s -X POST -H "Content-Type: application/octet-stream" --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload`.
-- Build (PowerShell, from repo root): idf_tools.py env-export then `idf.py build` (export.ps1 is broken on this machine — see CLAUDE.md).
-- Release: push tag `vX.Y.Z` → `release.yml` CI builds + publishes "Release vX.Y.Z" with the esp32s3 bin.
-- Latest commits: `dd07e80` (0.63.0 gallery fix), `2fcc2fb` (0.62.0 res selector), `5871d26` (FSD v1.81 SXGA), `b01f750` (0.61.0 defaults + backup/restore).
+- Device: **192.168.1.111** (confirm via `GET /api/status`; CLAUDE.md's `.10.236`
+  is stale). OTA: `curl -s -X POST -H "Content-Type: application/octet-stream"
+  --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload`.
+- Build (PowerShell, from repo root): idf_tools.py env-export then `idf.py build`
+  (export.ps1 is broken on this machine — see CLAUDE.md).
+- Release: push tag `vX.Y.Z` → `release.yml` CI builds + publishes "Release vX.Y.Z"
+  with the esp32s3 bin.
+- Latest commits: `cba0090` (0.66.0 progress bar), `1a88237` (0.65.0 illum
+  compensation), `a9eed9a` (0.64.0 bulk ops + Maint tab), `7536759` (0.63.0 notes).
