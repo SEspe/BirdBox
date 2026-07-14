@@ -54,6 +54,9 @@ static const char *TAG = "motion";
 #define DETECT_MAX_PX     (DETECT_MAX_W * DETECT_MAX_H)
 #define DETECT_PERIOD_MS  250
 #define PIX_DIFF_THR      25             /* per-pixel gray delta that counts as changed */
+#define GLOBAL_STEP_THR   12             /* frame-mean gray shift above this = a global
+                                            light/AE step, not local motion: compensate,
+                                            and suppress the trigger for that frame */
 
 /* Ambient-dark detection (FSD v1.36/v1.38): reuses the grayscale detect
  * frame already decoded every DETECT_PERIOD_MS, no extra sampling, to drive
@@ -157,6 +160,24 @@ static bool detect_once(void)
         return false;
     }
 
+    /* Global-illumination compensation: a sudden auto-exposure/gain swing (e.g.
+     * the moment the live stream opens and the OV2640 re-converges) shifts the
+     * WHOLE frame's brightness in one step, faster than the EMA backgrounds
+     * follow. Clipping highlights non-uniformly, so the change forms a bird-
+     * sized cluster that slips past the 20-cell whole-frame cap and fires a
+     * false trigger. Subtract each background's frame-mean delta before
+     * thresholding, so a uniform step cancels out while a real (local) mover
+     * still stands proud; a large residual mean shift is treated as a lighting
+     * event and suppresses the trigger for that frame (see global_step). */
+    long dsum_fast = 0, dsum_slow = 0;
+    for (int i = 0; i < px; i++) {
+        dsum_fast += (int) s_cur[i] - (int) s_bg[i];
+        dsum_slow += (int) s_cur[i] - (int) s_bg_slow[i];
+    }
+    int  shift_fast  = (int) (dsum_fast / px);
+    int  shift_slow  = (int) (dsum_slow / px);
+    bool global_step = abs(shift_fast) >= GLOBAL_STEP_THR;
+
     /* Per-cell changed-pixel tallies over the 8x8 grid. The zone mask (§3.1)
      * decides which cells count toward motion; changed cells inside the zone
      * form the ROI handed to species ID for zoom (§3.2). */
@@ -170,12 +191,13 @@ static bool detect_once(void)
             int idx  = y * W + x;
             int cell = rowbase + (x * GRID_N / W);
             cell_total[cell]++;
-            /* Changed if it diverges from EITHER background — the fast one
-             * (adapts in ~1 s) catches a normal arrival, the slow one (~11 s
-             * half-life) still shows a bird that hopped in gradually and got
-             * partly absorbed by the fast EMA before ever crossing threshold. */
-            if (abs((int) s_cur[idx] - (int) s_bg[idx])      > PIX_DIFF_THR ||
-                abs((int) s_cur[idx] - (int) s_bg_slow[idx]) > PIX_DIFF_THR)
+            /* Changed if it diverges from EITHER background AFTER removing that
+             * background's global brightness shift — the fast one (adapts in
+             * ~1 s) catches a normal arrival, the slow one (~11 s half-life)
+             * still shows a bird that hopped in gradually and got partly
+             * absorbed by the fast EMA before ever crossing threshold. */
+            if (abs(((int) s_cur[idx] - (int) s_bg[idx])      - shift_fast) > PIX_DIFF_THR ||
+                abs(((int) s_cur[idx] - (int) s_bg_slow[idx]) - shift_slow) > PIX_DIFF_THR)
                 cell_changed[cell]++;
         }
     }
@@ -265,7 +287,13 @@ static bool detect_once(void)
      * zone-mask exclusion for every wind-prone patch of grass. */
     int  pct         = (int) (zone_changed * 100 / zone_px);
     int  cluster_pct = best_wt > 0 ? (int) (best_wt * 100 / zone_px) : 0;
-    bool motion      = cluster_pct >= area_thr;
+    /* A frame dominated by a global light step never triggers, even if the
+     * clipping residual still forms a cluster — the EMA rolls below re-seed
+     * the background so detection recovers cleanly within ~1 s. */
+    bool motion      = cluster_pct >= area_thr && !global_step;
+
+    if (global_step && cluster_pct >= area_thr)
+        ESP_LOGI(TAG, "motion suppressed: global light step (frame-mean shift %d)", shift_fast);
 
     if (!motion) {
         /* roll both backgrounds on quiet frames — whole frame, so masked-out
