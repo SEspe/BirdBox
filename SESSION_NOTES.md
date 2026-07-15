@@ -1,12 +1,12 @@
 # Session Notes — BirdBox (updated 2026-07-14)
 
-Rolling notes for the "BirdBox" work. Firmware is now **0.68.1**, FSD **v1.89**.
-Everything committed and pushed to `origin/master`; **0.68.1 is OTA-flashed and
-live** on the reference unit at **192.168.1.111**. GitHub **Releases v0.64.0
-through v0.68.1** are all published (CI-built binaries attached).
+Rolling notes for the "BirdBox" work. Firmware is now **0.68.3**, FSD **v1.91**.
+Everything committed and pushed to `origin/master`; **0.68.3 is live** on the
+reference unit at **192.168.1.111**. GitHub **Releases v0.64.0 through v0.68.3**
+are all published (CI-built binaries attached).
 
 ## Current device state (verified live)
-- **version 0.68.1**, clock `ntp`, SD present.
+- **version 0.68.3**, clock `ntp`, SD present.
 - **Free internal DRAM ~181 KB** (largest block ~102 KB), **free PSRAM ~702 KB**
   (largest block ~704 KB) — steady even under camera+classify load (both run in
   PSRAM). These are the new `/api/sysinfo` fields (v1.87).
@@ -15,6 +15,33 @@ through v0.68.1** are all published (CI-built binaries attached).
 - **`conf` (classify threshold) = 60** — very high (see gotchas). User's call.
 - **Device address: 192.168.1.111** (confirmed live). CLAUDE.md's `192.168.10.236`
   is **stale** — always confirm with `GET /api/status`.
+
+## What we did this session (0.64.0 → 0.68.3)
+
+### 8. Gallery thumbnails match the 16:9 capture aspect — 0.68.3, FSD v1.91 (5707e97), Released
+- **Reported (user):** thumbnails cropped in width — 16:9 captures forced into 4:3 tiles.
+- **Cause:** `.gitem img{aspect-ratio:4/3;object-fit:cover}` — stale default from
+  before HD 16:9 was locked (v1.80). A 16:9 frame covering a 4:3 box loses its
+  left/right edges.
+- **Fix:** tile box → `aspect-ratio:16/9`, so `cover` has nothing to crop; full
+  frame width shows. One-line CSS. (Legacy 4:3/SXGA-5:4 now crop slightly
+  top/bottom instead — fine, HD 16:9 is the shipped default.)
+- **Note:** flashed 0.68.3 to the device *before* the user said "no OTA" (the
+  upload had already returned OK) — verified live, then held commit/push/release
+  until the user asked. No second OTA performed.
+
+### 7. Gallery toolbar + tally layout cleanup — 0.68.2, FSD v1.90 (b550652), Released
+- **Reported (user):** toolbar/tally confusing; buttons different sizes; tally
+  wrapped one word per line ("961 / captures / · 504 / confirmed / …").
+- **Cause:** the toolbar was one non-wrapping flex row holding day-select + 7
+  buttons + filter + the counts span; on a narrow window buttons shrank to their
+  text (unequal) and the counts span got squeezed into a one-word column.
+- **Fix (UI-only):** action buttons moved to a responsive grid (`.gacts`,
+  `repeat(auto-fill,minmax(160px,1fr))`) so all are **equal size** and wrap into
+  tidy rows; counts render as an **aligned label/value table** (`renderTally()`
+  → `.gtallytab`, right-aligned tabular-nums) instead of a `·`-joined
+  sentence; filter hints (double-click, near-threshold band) drop to a caption
+  line. Two Recheck labels shortened to keep the grid compact.
 
 ## What we did this session (0.64.0 → 0.68.1)
 
@@ -155,6 +182,7 @@ through v0.68.1** are all published (CI-built binaries attached).
 - Build (PowerShell, from repo root): idf_tools.py env-export then `idf.py build`
   (export.ps1 broken — see CLAUDE.md). sdkconfig.defaults change → delete `sdkconfig` first.
 - Release: push tag `vX.Y.Z` → `release.yml` CI builds + publishes with the esp32s3 bin.
-- Latest commits: `4aeb7c7` (0.68.1 delete recv-loop fix), `b351fed` (0.68.0
+- Latest commits: `5707e97` (0.68.3 16:9 thumbnails), `b550652` (0.68.2 toolbar
+  + tally layout), `4aeb7c7` (0.68.1 delete recv-loop fix), `b351fed` (0.68.0
   OTA-from-URL), `f1fca8b` (0.67.0 heap split), `cba0090` (0.66.0 progress bar),
   `1a88237` (0.65.0 illum comp), `a9eed9a` (0.64.0 bulk ops + Maint tab).
