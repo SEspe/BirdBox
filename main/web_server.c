@@ -1780,14 +1780,21 @@ static esp_err_t h_days(httpd_req_t *req)
  * + species, so join that to the day's image files to badge event thumbnails
  * with their identification. Only first frames match (one log row per event);
  * follow-up frames stay unlabeled. */
-/* Max visit-log rows loaded per gallery day. A busy feeder day at the reference
- * unit runs 600+ captures (and relabel/copy-last APPENDS a row per no-row frame,
- * landing past the old 300 cap), so labels beyond the cap were silently dropped
- * and their images reverted to "unclassified" in the gallery though the label
- * was saved and in the export. Raised well over a realistic day's row count;
- * the array is PSRAM-backed (~150 KB at 1200) since it's too big for internal
- * heap. Match is O(files×labels) but only on an occasional gallery load. */
-#define GAL_MAX_LABELS 1200
+/* Max visit-log rows loaded per gallery day. Every row past the cap is silently
+ * dropped, and since the month's log is read front-to-back the dropped rows are
+ * always the day's NEWEST — so a just-set label on a recent image reverted to
+ * "unclassified" in the gallery even though it was saved and in the export
+ * (v1.95; the 1200 cap was hit dead-on by a 2527-capture day). Relabel/copy-last
+ * APPEND a row per no-row frame, so the row count reaches one per capture: the
+ * cap must exceed a whole day's captures, not its events. Sized well past that.
+ * Match is O(files×labels) but only on an occasional gallery load. */
+#define GAL_MAX_LABELS  6000
+/* Distinct localized species names per day — a handful in practice. Interning
+ * them keeps a label at 35 bytes instead of ~104, which is what buys the cap
+ * above at ~210 KB of PSRAM (too big for internal heap; largest free PSRAM
+ * block is ~550 KB). GAL_SPI_NONE = no name (pool full): state still stands. */
+#define GAL_MAX_SPECIES 96
+#define GAL_SPI_NONE    0xFF
 /* base holds the capture filename ("YYYY-MM-DD_HH-MM-SS-mmm.jpg", 27 chars);
  * it was [16] — sized for the pre-v1.30 "HHMMSS.jpg" names — so every
  * millisecond-era basename truncated to 15 chars and never matched its file,
@@ -1796,7 +1803,28 @@ static esp_err_t h_days(httpd_req_t *req)
  * row, or no row at all), 1 = classified by the model (a real species, latin
  * non-empty, not yet human-confirmed), 2 = human-confirmed (corrected set —
  * whether the user accepted the model's guess or typed their own). §3.4/v1.59 */
-typedef struct { char base[48]; char sp[72]; uint8_t pct; bool confirmed; uint8_t state; } gal_label_t;
+typedef struct { char base[32]; uint8_t spi; uint8_t pct; uint8_t state; } gal_label_t;
+typedef struct {
+    int n, nsp;
+    char sp[GAL_MAX_SPECIES][72];
+    gal_label_t l[GAL_MAX_LABELS];
+} gal_tab_t;
+
+/* corrected(5) non-empty is exactly states 2/4/5/6 (see gal_build_labels). */
+static inline bool gal_confirmed(uint8_t state)
+{
+    return state == 2 || state >= 4;
+}
+
+/* Species-name pool: returns the index of `sp`, adding it if new. */
+static uint8_t gal_intern(gal_tab_t *t, const char *sp)
+{
+    for (int i = 0; i < t->nsp; i++)
+        if (strcmp(t->sp[i], sp) == 0) return (uint8_t) i;
+    if (t->nsp >= GAL_MAX_SPECIES) return GAL_SPI_NONE;
+    strlcpy(t->sp[t->nsp], sp, sizeof(t->sp[0]));
+    return (uint8_t) t->nsp++;
+}
 
 /* One CSV field, in place; advances *p past the comma (or to the line end). */
 static char *gal_next_field(char **p)
@@ -1808,9 +1836,9 @@ static char *gal_next_field(char **p)
     return start;
 }
 
-/* Fills labels[] (up to GAL_MAX_LABELS) with basename -> localized species for
+/* Fills t->l[] (up to GAL_MAX_LABELS) with basename -> localized species for
  * the given capture date, read from that month's visit log; returns the count. */
-static int gal_build_labels(const char *date, gal_label_t *labels)
+static int gal_build_labels(const char *date, gal_tab_t *t)
 {
     if (!storage_sd_present()) return 0;
     char logpath[64];
@@ -1844,7 +1872,6 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
         if (!base) continue;
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
-        labels[count].confirmed = corrected[0] != '\0';
         /* State before corrected-wins swap. Seven per-image states (§3.4/v1.76):
          *   4 confirmed no-bird — human verified the frame is empty (corrected ==
          *     "no bird"); a ground-truth negative for the retrain.
@@ -1859,21 +1886,26 @@ static int gal_build_labels(const char *date, gal_label_t *labels)
          *   3 no-bird — model's confident "no bird" call, not yet reviewed (often a
          *     missed bird on this domain-mismatched model, so its own review bucket).
          *   0 unclassified — "Unidentified bird"/no-row frames. */
-        labels[count].state = (corrected[0] && strcmp(corrected, "no bird") == 0) ? 4
-                            : (corrected[0] && strcmp(corrected, "other")   == 0) ? 5
-                            : (corrected[0] && strcmp(corrected, "unknown") == 0) ? 6
-                            : corrected[0] ? 2
-                            : latin[0]      ? 1
-                            : strcmp(species, "no bird") == 0 ? 3 : 0;
+        t->l[count].state = (corrected[0] && strcmp(corrected, "no bird") == 0) ? 4
+                          : (corrected[0] && strcmp(corrected, "other")   == 0) ? 5
+                          : (corrected[0] && strcmp(corrected, "unknown") == 0) ? 6
+                          : corrected[0] ? 2
+                          : latin[0]      ? 1
+                          : strcmp(species, "no bird") == 0 ? 3 : 0;
         if (corrected[0]) species = corrected;   /* user label wins; latin column
                                                     holds its binomial since v1.51 */
-        strlcpy(labels[count].base, base, sizeof(labels[count].base));
-        species_localize(species, latin, g_settings.lang,
-                         labels[count].sp, sizeof(labels[count].sp));
-        labels[count].pct = (uint8_t) atoi(conf);
+        strlcpy(t->l[count].base, base, sizeof(t->l[count].base));
+        char loc[72];
+        species_localize(species, latin, g_settings.lang, loc, sizeof(loc));
+        t->l[count].spi = gal_intern(t, loc);
+        t->l[count].pct = (uint8_t) atoi(conf);
         count++;
     }
+    if (count >= GAL_MAX_LABELS)
+        ESP_LOGW(TAG, "gallery %s: label cap %d hit — newest labels dropped",
+                 date, GAL_MAX_LABELS);
     fclose(fp);
+    t->n = count;
     return count;
 }
 
@@ -1900,9 +1932,9 @@ static esp_err_t h_events(httpd_req_t *req)
         return ESP_OK;
     }
 
-    gal_label_t *labels = heap_caps_calloc(GAL_MAX_LABELS, sizeof(gal_label_t),
-                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int nlabels = labels ? gal_build_labels(date, labels) : 0;
+    gal_tab_t *tab = heap_caps_calloc(1, sizeof(gal_tab_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int nlabels = tab ? gal_build_labels(date, tab) : 0;
 
     httpd_resp_send_chunk(req, "[", 1);
     struct dirent *e;
@@ -1913,18 +1945,22 @@ static esp_err_t h_events(httpd_req_t *req)
         snprintf(fpath, sizeof(fpath), "%s/%.48s", dir, e->d_name);
         struct stat st = {0};
         stat(fpath, &st);
-        const char *sp = NULL;
+        const char *sp = "";
         int pct = 0;
         bool confirmed = false;
         int state = 0;
+        bool labelled = false;
         for (int i = 0; i < nlabels; i++)
-            if (strcmp(labels[i].base, e->d_name) == 0) {
-                sp = labels[i].sp; pct = labels[i].pct;
-                confirmed = labels[i].confirmed; state = labels[i].state; break;
+            if (strcmp(tab->l[i].base, e->d_name) == 0) {
+                if (tab->l[i].spi != GAL_SPI_NONE) sp = tab->sp[tab->l[i].spi];
+                pct = tab->l[i].pct;
+                state = tab->l[i].state;
+                confirmed = gal_confirmed(tab->l[i].state);
+                labelled = true; break;
             }
         char item[256];
         int len;
-        if (sp)
+        if (labelled)
             len = snprintf(item, sizeof(item),
                            "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d}",
                            first ? "" : ",", e->d_name, (long) st.st_size, sp, pct,
@@ -1936,7 +1972,7 @@ static esp_err_t h_events(httpd_req_t *req)
         first = false;
     }
     closedir(d);
-    free(labels);
+    free(tab);
     httpd_resp_send_chunk(req, "]", 1);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
