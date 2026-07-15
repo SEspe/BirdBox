@@ -401,6 +401,9 @@ static const char INDEX_HTML[] =
 "<option value='unk'>Unknown / bad bird</option>"
 "<option value='unc'>Unclassified</option>"
 "<option value='near'>Near threshold</option></select>"
+/* Species sub-filter: appears only in Confirmed-bird mode, lists the distinct
+ * confirmed species present on the loaded day so you can narrow to just one. */
+"<select id='gspecf' class='gflt' style='display:none;margin-left:6px' onchange='applyFilter()'></select>"
 "<span class='sts' id='gselc' style='margin:0;color:#7fc98b'></span></div>"
 "<div class='gacts'>"
 "<button class='act' onclick='gSelAll()'>&#9745; Select all</button>"
@@ -815,7 +818,7 @@ static const char INDEX_HTML[] =
 "<button class=\"gidbtn gcpl\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" "
 "onclick=\"copyLast(this)\"'+(g_lastSp?' title=\"copy last: '+esc(g_lastSp.d)+'\"':' title=\"copy last species (label one first)\" disabled')+'>&#128203;</button>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
-"g.appendChild(div);});gSelSync();applyFilter();});}"
+"g.appendChild(div);});gSelSync();fillSpecFilter();applyFilter();});}"
 "var g_gfilter='all',g_tally=null,g_nbBound=false,g_conf=17,g_lastSp=null;"
 /* Aligned label/value table + optional hint line, instead of a run-on sentence
  * that wrapped one word per line in the toolbar column. */
@@ -832,11 +835,23 @@ static const char INDEX_HTML[] =
 "g_gfilter==='near'?('top guess '+(g_conf-5)+'\\u2013'+(g_conf-1)+'% \\u2013 just under the '+g_conf+'% threshold \\u00b7 double-click = no bird'):'';"
 "if(hint)h+='<div class=\"gthint\">'+hint+'</div>';"
 "el.innerHTML=h;}"
-"function setFilter(v){g_gfilter=v;$g('grid').classList.toggle('nbmode',v==='unc'||v==='near');applyFilter();}"
+/* Populate the confirmed-species sub-filter from the confirmed (st===2) tiles
+ * on the loaded day; keep the current pick if it's still present. */
+"function fillSpecFilter(){var sf=$g('gspecf');var cur=sf.value;var set={};"
+"[...document.querySelectorAll('#grid .gitem')].forEach(function(it){"
+"if(+(it.dataset.st||0)===2){var s=it.dataset.sp||'';if(s)set[s]=1;}});"
+"var names=Object.keys(set).sort(function(a,b){return a.localeCompare(b);});"
+"sf.innerHTML='<option value=\"\">All species</option>';"
+"names.forEach(function(s){var o=document.createElement('option');o.value=s;o.textContent=s;sf.appendChild(o);});"
+"sf.value=(cur&&names.indexOf(cur)>=0)?cur:'';}"
+"function setFilter(v){g_gfilter=v;$g('grid').classList.toggle('nbmode',v==='unc'||v==='near');"
+"var sf=$g('gspecf');if(v==='conf'){fillSpecFilter();sf.style.display='';}else{sf.style.display='none';sf.value='';}"
+"applyFilter();}"
 "function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0,lo=g_conf-5;"
+"var spv=g_gfilter==='conf'?$g('gspecf').value:'';"
 "items.forEach(function(it){var st=+(it.dataset.st||0),p=+(it.dataset.pct);"
 "var near=st===0&&p>=lo&&p<g_conf;"   /* top-1 within 5% below the ID threshold */
-"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2)||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='oth'&&st===5)||(g_gfilter==='unk'&&st===6)||(g_gfilter==='unc'&&st===0)||(g_gfilter==='near'&&near);"
+"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2&&(spv===''||it.dataset.sp===spv))||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='oth'&&st===5)||(g_gfilter==='unk'&&st===6)||(g_gfilter==='unc'&&st===0)||(g_gfilter==='near'&&near);"
 "it.style.display=show?'':'none';"
 "if(show){vis++;}else{var cb=it.querySelector('.gchk');if(cb&&cb.checked){cb.checked=false;it.classList.remove('sel');}}});"
 "renderTally(vis);gSelSync();}"
