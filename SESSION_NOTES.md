@@ -1,12 +1,16 @@
-# Session Notes — BirdBox (updated 2026-07-14)
+# Session Notes — BirdBox (updated 2026-07-15)
 
-Rolling notes for the "BirdBox" work. Firmware is now **0.68.3**, FSD **v1.91**.
-Everything committed and pushed to `origin/master`; **0.68.3 is live** on the
+Rolling notes for the "BirdBox" work. Firmware is now **0.70.0**, FSD **v1.94**.
+Everything committed and pushed to `origin/master`; **0.70.0 is live** on the
 reference unit at **192.168.1.111**. GitHub **Releases v0.64.0 through v0.68.3**
-are all published (CI-built binaries attached).
+are published (CI-built binaries attached) — **0.69.0 and 0.70.0 are not yet
+released**, only pushed to master.
 
 ## Current device state (verified live)
-- **version 0.68.3**, clock `ntp`, SD present.
+- **version 0.70.0**, clock `ntp`, SD present.
+- **Cloud identification (0.70.0) is installed but idle** — no API key stored
+  (`ckey_set:false`, `cld:0`). The user will add Anthropic API credit and test
+  later. Until a key is pasted in, nothing about the classify path changes.
 - **Free internal DRAM ~181 KB** (largest block ~102 KB), **free PSRAM ~702 KB**
   (largest block ~704 KB) — steady even under camera+classify load (both run in
   PSRAM). These are the new `/api/sysinfo` fields (v1.87).
@@ -16,7 +20,48 @@ are all published (CI-built binaries attached).
 - **Device address: 192.168.1.111** (confirmed live). CLAUDE.md's `192.168.10.236`
   is **stale** — always confirm with `GET /api/status`.
 
-## What we did this session (0.64.0 → 0.68.3)
+## What we did this session (0.64.0 → 0.70.0)
+
+### 10. Cloud species ID via the Anthropic Claude API + TLS fix — 0.70.0, FSD v1.93/v1.94 (f0692b2), **not released**
+- **Asked for:** identify birds with a cloud AI, on/off in Settings, to speed up
+  labelling training images. Started on Google Gemini; the user switched vendors
+  mid-build ("drop gemini, replace with claude.ai — same story, different AI
+  vendor"), so the whole thing was ported to Anthropic (`claude-opus-4-8`).
+- **Shape:** two independent gates. Settings toggle → each new motion event goes
+  to Claude *instead of* the on-device model (one call per **event**, not per
+  frame — best-of-N only exists to cover TFLM's pose sensitivity, which Claude
+  doesn't share). Gallery **✨** button → one photo on demand, gated on a
+  **stored key alone**, not the toggle, so you can label training images without
+  turning on live billing. A failed call degrades to TFLM, never to a dropped
+  event (§3.2).
+- **Training-set safety:** the live path writes `species` (state 1), **not**
+  `corrected` — an unattended cloud label can never reach `dataset/`. The ✨
+  button *does* write `corrected` (mirrors 🔍 identify). Flagged to the user as
+  a live design question; they kept it.
+- **Model choice — settled:** user asked, decision was **keep Opus, don't
+  downgrade to Haiku for cost.** Reason: the live label is what the human clicks
+  ✓ on, so live errors *do* reach the training set laundered through a confirm
+  click — and the errors that survive a glance are exactly the hard ones (Willow
+  vs Marsh Tit). The cost lever is **call frequency** (toggle off, use ✨), not
+  model quality.
+- **Cost, and the subscription question:** ~1–2 US cents/event. A Claude Code
+  subscription does **not** cover the API — `api.anthropic.com` needs separate
+  pay-as-you-go credit from console.anthropic.com. User is adding credit later.
+- **Opus 4.8 API constraints (bit me, will bite again):** `temperature`/`top_p`/
+  `top_k`/`thinking.budget_tokens` are **removed → hard 400 if sent**. The ported
+  Gemini body had `temperature:0` and would have failed every call. Determinism
+  comes from the JSON output schema (`output_config.format`), not temperature.
+  `thinking` omitted = no extended thinking, which is right for a single-image ID.
+- **Verified on hardware:** build clean, served JS balanced, all handlers present,
+  key absent from `/api/settings` and the export. End-to-end, ✨ read a real SD
+  JPEG, streamed it to Anthropic, and parsed the reply — **401 only because the
+  key was a placeholder.** Every layer works; only a real key is missing.
+
+### 9. Gallery: filter confirmed birds by a single species — 0.69.0, FSD v1.92 (25bc84d), **not released**
+- (Prior session; recorded here because SESSION_NOTES was never updated for it.)
+- Species sub-filter (`#gspecf`) appears when Show = Confirmed (bird), populated
+  from the distinct confirmed species on the loaded day; narrows grid + tally.
+  Pure client-side, no new route or API field.
 
 ### 8. Gallery thumbnails match the 16:9 capture aspect — 0.68.3, FSD v1.91 (5707e97), Released
 - **Reported (user):** thumbnails cropped in width — 16:9 captures forced into 4:3 tiles.
@@ -119,6 +164,15 @@ are all published (CI-built binaries attached).
   100%, ~21 s) through the redirect + cert-bundle validation, rebooted healthy on
   0.68.0. Repo-lock rejected `evil.example.com` and a wrong-repo URL. Internal DRAM
   unchanged post-flash (~181 KB) — cert bundle is flash, not heap.
+- **Still true after the 0.70.0 TLS work** — this record is what disproved a claim I
+  drafted in FSD v1.93 that outbound HTTPS "never worked against any host" and that
+  this path was broken. It wasn't: its chain terminated at a root the bundle holds
+  directly, so it never needed the cross-signed hop. Only chains that *need* that hop
+  failed. **Caveat for later:** as of 2026-07-15 `github.com` (Sectigo Root E46
+  cross-signed by USERTrust ECC) and `release-assets.githubusercontent.com` (ISRG Root
+  YR cross-signed by ISRG Root X1) now serve cross-signed roots too, so §8 continuing
+  to work depends on which roots the bundle holds as CAs rotate. `CROSS_SIGNED_VERIFY=y`
+  makes it robust rather than lucky — worth an OTA-from-URL re-test next session.
 
 ## Memory evaluation (settled this session — see v1.87/v1.88)
 - **Camera + classifier run entirely in PSRAM**, so internal DRAM sits at ~180 KB
@@ -141,9 +195,28 @@ are all published (CI-built binaries attached).
   bird sensitivity.
 - OTA-from-URL is **repo-locked** (can only flash SEspe/BirdBox signed releases) and
   reuses rollback — a bad image reverts on next boot.
-- Route table now 43/48 — still headroom, but watch it.
+- Route table now **44/56** (cap raised from 48 in 0.70.0 for the two `/api/claude-*`
+  routes) — registrations past the cap are **silently dropped** and the endpoint 404s
+  while the handler code looks fine.
+- **Keep Opus for cloud ID; don't downgrade for cost** — see §10. Cost is controlled
+  by *how often you call*, not by model quality.
 
 ## Gotchas (still live)
+- **`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY` must stay `y`** (0.70.0).
+  It defaults to **n**, and without it `esp_crt_bundle` cannot validate a chain whose
+  trust path runs through a **cross-signed root** — `api.anthropic.com` serves a GTS
+  Root R4 cross-signed by GlobalSign. Don't "clean it up" when changing API vendors:
+  anything behind Google Trust Services has the same shape.
+- **`certflags 0x00000000` does NOT mean the certificate verified cleanly.** The
+  cross-signed failure returns `MBEDTLS_ERR_X509_FATAL_ERROR` (**-0x3000**) *without
+  setting any verify flag*, so it reads exactly like a clean chain and sends you
+  hunting the network instead of the trust store. This misread cost a whole debugging
+  pass. Also: esp-tls stores the mbedTLS code **negated** — print it raw, or you get
+  `0xFFFFD000` and think it's garbage.
+- **Don't bother writing a "retry with TLS verification off" A/B probe** — one was
+  written and removed. `CONFIG_ESP_TLS_INSECURE=n` makes esp-tls refuse TLS setup with
+  no CA at all, so the probe fails at *setup*, proves nothing, and its "fails both
+  ways" verdict is actively misleading.
 - **`conf` threshold is 60** — very high; real birds under 60% log as *unclassified*.
   Likely an NVS-wipe reset from the tuned ~17. Restoring it is the user's call.
 - **Detection zone is permissive** — bottom row (foreground grass) + right-side tree
@@ -160,6 +233,14 @@ are all published (CI-built binaries attached).
   like dead detection but aren't.
 
 ## What's left to do
+- [ ] **Add Anthropic API credit, then test cloud ID** (user, deferred) —
+  console.anthropic.com → load credit → set a spend cap → Settings → API Keys →
+  create a `birdbox` key. Paste into Settings → Cloud Identification → **🔌 Test
+  connection** (free, validates against `/v1/models`, spends no tokens). Then try
+  **✨** on one Gallery photo — that's the first billed call. Leave the live toggle
+  **off** unless actively gathering labels.
+- [ ] **Release 0.69.0 + 0.70.0** — both are on master but no tag/CI release yet.
+- [ ] **Re-test OTA-from-URL** on 0.70.0 — see the cross-signed caveat under §5.
 - [ ] **New/enhanced model (tomorrow's plan)** — user will clear classified images
   then try a new model. Use the new PSRAM/`heapPsramBig` readout to confirm the arena
   fits; the OTA-from-URL feature lets firmware roll fwd/back easily while iterating.
@@ -182,7 +263,8 @@ are all published (CI-built binaries attached).
 - Build (PowerShell, from repo root): idf_tools.py env-export then `idf.py build`
   (export.ps1 broken — see CLAUDE.md). sdkconfig.defaults change → delete `sdkconfig` first.
 - Release: push tag `vX.Y.Z` → `release.yml` CI builds + publishes with the esp32s3 bin.
-- Latest commits: `5707e97` (0.68.3 16:9 thumbnails), `b550652` (0.68.2 toolbar
+- Latest commits: `f0692b2` (0.70.0 Claude cloud ID + TLS cross-signed fix),
+  `25bc84d` (0.69.0 gallery species sub-filter), `5707e97` (0.68.3 16:9 thumbnails), `b550652` (0.68.2 toolbar
   + tally layout), `4aeb7c7` (0.68.1 delete recv-loop fix), `b351fed` (0.68.0
   OTA-from-URL), `f1fca8b` (0.67.0 heap split), `cba0090` (0.66.0 progress bar),
   `1a88237` (0.65.0 illum comp), `a9eed9a` (0.64.0 bulk ops + Maint tab).
