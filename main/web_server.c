@@ -288,7 +288,7 @@ static const char INDEX_HTML[] =
 ".gprogtxt{font-size:.82rem;color:#7fc98b;white-space:nowrap}"
 ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}"
 ".gitem{background:#1e3826;border-radius:8px;overflow:hidden;position:relative}"
-".gitem img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover;background:#000}"
+".gitem img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}"
 ".gitem.sel{outline:3px solid #7fc98b;outline-offset:-3px}"
 ".glabel{position:absolute;top:6px;left:6px;background:rgba(20,40,28,.82);color:#7fc98b;"
 "font-size:.66rem;padding:2px 6px;border-radius:4px;max-width:82%;white-space:nowrap;"
