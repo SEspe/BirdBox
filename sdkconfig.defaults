@@ -31,3 +31,18 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_ESP_TLS_INSECURE=n
+# Required, not optional, for api.anthropic.com (FSD §3.2.3) — and it defaults
+# to n, so this line is the whole reason outbound HTTPS works at all.
+#
+# api.anthropic.com serves leaf -> GTS WE1 -> GTS Root R4, where the R4 it
+# sends is CROSS-SIGNED by GlobalSign Root CA. Without this option the bundle
+# cannot walk a chain whose root is cross-signed and its callback returns
+# MBEDTLS_ERR_X509_FATAL_ERROR (-0x3000) *without setting any cert-verify
+# flag* — so the failure surfaces as ESP_ERR_HTTP_CONNECT with certflags
+# 0x00000000, which reads exactly like "the certificate was fine" and sends
+# you hunting the network instead. Costs ~700 B of heap.
+#
+# Not Anthropic-specific: anything behind Google Trust Services (i.e. a large
+# share of the internet) presents the same cross-signed shape, so don't
+# "clean this up" when swapping API vendors.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y

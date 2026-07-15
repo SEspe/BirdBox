@@ -13,6 +13,7 @@
 #include "stats.h"
 #include "settings.h"
 #include "classify.h"
+#include "claude.h"
 #include "species_i18n.h"
 #include "board_config.h"
 
@@ -483,6 +484,27 @@ static const char INDEX_HTML[] =
 "<p class='sts' style='margin-top:2px'>Classifies each frame together with its mirror image and "
 "averages the result, giving the model a second look that lifts confidence on hard poses "
 "(head-on, backlit). Roughly doubles identification time per frame; saved photos are unaffected.</p>"
+"<h3 class='sh'>Cloud Identification (Anthropic Claude)</h3>"
+"<label class='wl'><input type='checkbox' id='stCld'> Identify new birds with Claude</label>"
+"<p class='sts' style='margin-top:2px'>Sends the best photo of each new motion event to the "
+"Anthropic Claude API and uses its answer instead of the on-device model &mdash; considerably "
+"more accurate, and the quickest way to build up confirmed labels for a retrained local model. "
+"If a call fails (no internet, bad key, no credit), the on-device model labels the event instead, "
+"so nothing is ever left unidentified. Needs your own API key below, and each event costs roughly "
+"one to two US cents against it &mdash; a busy feeder can run to a few dollars a day, so leave "
+"this off unless you are actively gathering labels. <b>Photos leave the device only while this is "
+"on.</b> Regardless of this toggle, the Gallery's &#10024; button asks Claude about a single "
+"photo whenever a key is set.</p>"
+"<label class='wl'>Anthropic API key</label>"
+"<input class='wi' type='password' id='stCkey' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'>Create one at console.anthropic.com/settings/keys. Stored "
+"on the device and sent only to api.anthropic.com; it is never shown again once saved, and is "
+"left out of the settings export/backup file. Leave blank to keep the current key.</p>"
+"<button class='act' style='margin-left:0' id='stCldTest' "
+"onclick='cldTest()'>&#128268; Test connection</button>"
+"<button class='act' style='display:none' id='stCkeyClr' "
+"onclick='ckeyClear()'>&#128465; Forget stored key</button>"
+"<div class='sts' id='stCldSts' style='margin-top:4px'></div>"
 "<label class='wl'>Species name language</label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
@@ -811,8 +833,10 @@ static const char INDEX_HTML[] =
 "<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
-"<button class=\"gidbtn\" title=\"identify bird\" "
-"onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>'+cfb+'"
+"<button class=\"gidbtn\" title=\"identify bird (on-device model)\" "
+"onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
+"<button class=\"gidbtn\" title=\"identify bird with Anthropic Claude\" "
+"onclick=\"cldBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#10024;</button>'+cfb+'"
 "<button class=\"gidbtn\" title=\"set/correct species\" data-d=\"'+d+'\" "
 "data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(nm)+'\" onclick=\"reLabel(this)\">&#9998;</button>"
 "<button class=\"gidbtn gcpl\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" "
@@ -875,11 +899,15 @@ static const char INDEX_HTML[] =
 "if(e.target.closest('button,input,.grl'))return;"
 "var it=e.target.closest('.gitem');if(!it||it.dataset.st!=='0')return;"
 "e.preventDefault();markNoBird($g('day').value,it.dataset.f,it,null);}"
-"function idBird(btn,d,f){var it=btn.closest('.gitem');"
+/* Both identify buttons render identically — same reply shape, same
+ * confirmed-badge flip on save — so they differ only by endpoint. */
+"function idBird(btn,d,f){idRun(btn,d,f,'/api/classify-file');}"
+"function cldBird(btn,d,f){idRun(btn,d,f,'/api/claude-file');}"
+"function idRun(btn,d,f,url){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
 "if(!out){out=document.createElement('div');out.className='gid';it.appendChild(out);}"
 "out.textContent='\\u2026 identifying';btn.disabled=true;"
-"fetch('/api/classify-file?date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f))"
+"fetch(url+'?date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f))"
 ".then(r=>r.json()).then(o=>{btn.disabled=false;"
 "if(o.error){out.textContent=o.error;return;}"
 "var t=(o.top3||[]).filter(x=>x.pct>0).map(x=>esc(x.label)+' '+x.pct+'%').join(', ');"
@@ -1119,6 +1147,10 @@ static const char INDEX_HTML[] =
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
 "$g('stFshut').checked=c.fshut==1;"
 "$g('stTta').checked=c.tta==1;"
+"$g('stCld').checked=c.cld==1;"
+"$g('stCkey').value='';"
+"$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
+"$g('stCkeyClr').style.display=c.ckey_set?'':'none';"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
@@ -1169,17 +1201,42 @@ static const char INDEX_HTML[] =
 "+'&lang='+$g('stLang').value"
 "+'&dzoom='+($g('stZoom').checked?1:0)"
 "+'&fshut='+($g('stFshut').checked?1:0)"
-"+'&tta='+($g('stTta').checked?1:0);"
+"+'&tta='+($g('stTta').checked?1:0)"
+"+'&cld='+($g('stCld').checked?1:0)"
+/* An empty key field means "keep the stored key" — the handler treats an
+ * absent ckey as unchanged, so never send an empty one. */
+"+($g('stCkey').value?'&ckey='+encodeURIComponent($g('stCkey').value):'');"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
 "$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
+"if(o.ok&&$g('stCkey').value){$g('stCkey').value='';"
+"$g('stCkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
 "if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
+/* Save any typed key first, so "paste key, press Test" does what it looks like
+ * it does rather than testing the previous key. */
+"function cldTest(){var s=$g('stCldSts');s.textContent='\\u2026 testing';"
+"var pre=$g('stCkey').value?fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'ckey='+encodeURIComponent($g('stCkey').value)}).then(function(){stLoad();}):Promise.resolve();"
+"pre.then(function(){return fetch('/api/claude-test');}).then(r=>r.json()).then(function(o){"
+"s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';})"
+".catch(function(){s.textContent='\\u2717 test failed';s.style.color='#e66';});}"
+/* An empty key box means "keep the stored key", so deleting one needs its own
+ * action — otherwise a billable secret could never be removed from the device. */
+"function ckeyClear(){if(!confirm('Forget the stored Claude API key? Cloud "
+"identification stops until you paste a new one.'))return;"
+"fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'ckeyclear=1&cld=0'})"
+".then(r=>r.json()).then(function(o){$g('stSts').textContent=o.ok?'Key forgotten \\u2713':'Failed';"
+"stLoad();setTimeout(function(){$g('stSts').textContent='';},4000);})"
+".catch(function(){$g('stSts').textContent='Failed';});}"
 "function cfgExport(){window.location='/api/settings/export';}"
 "function cfgPick(){$g('cfgFile').click();}"
 "function cfgImport(inp){var f=inp.files[0];if(!f){return;}var rd=new FileReader();"
@@ -2497,13 +2554,17 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[600];
+    char buf[700];
+    /* ckey_set, never the key itself: this reply is world-readable on the LAN,
+     * and the same posture as /api/wificfg (which reports configured SSIDs but
+     * never the passwords). */
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
-        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,\"models\":[",
+        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
+        "\"cld\":%u,\"ckey_set\":%s,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -2514,7 +2575,9 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
-        (unsigned) g_settings.detect_quarantine_s);
+        (unsigned) g_settings.detect_quarantine_s,
+        (unsigned) g_settings.claude_enabled,
+        g_settings.claude_key[0] ? "true" : "false");
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -2551,7 +2614,11 @@ static long field_num(const char *body, const char *key, long lo, long hi, long 
 
 static esp_err_t h_settings_post(httpd_req_t *req)
 {
-    char body[640] = {0};
+    /* Sized with headroom: a body that overruns this is silently truncated,
+     * which drops whichever fields land past the cut with no error anywhere.
+     * A full save is ~330 B (~460 with the zone mask and a Claude key — those
+     * keys are ~108 chars, which is most of the difference). */
+    char body[896] = {0};
     int  len = MIN(req->content_len, (int) sizeof(body) - 1);
     httpd_req_recv(req, body, len);
 
@@ -2606,6 +2673,23 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.tta = field_num(body, "tta=", 0, 1, g_settings.tta);
     g_settings.detect_quarantine_s = field_num(body, "qtn=", 0, 3600, g_settings.detect_quarantine_s);
 
+    /* Claude (§3.2.3). An absent/empty ckey keeps the stored key — the UI sends
+     * the field only when the user actually typed a new one, so saving any
+     * other setting (or restoring a backup, which carries no key) can't wipe
+     * it. Deleting a key is therefore an explicit act: ckeyclear=1, the
+     * Settings tab's "Forget stored key" button. */
+    g_settings.claude_enabled = field_num(body, "cld=", 0, 1, g_settings.claude_enabled);
+    if (field_num(body, "ckeyclear=", 0, 1, 0) == 1) {
+        g_settings.claude_key[0] = '\0';
+        g_settings.claude_enabled = 0;   /* no key => nothing to enable */
+    } else {
+        char ckey[160];   /* must exceed settings.claude_key so a real
+                           * ~108-char sk-ant- key is never clipped here */
+        form_field(body, "ckey=", ckey, sizeof(ckey));
+        if (ckey[0] && !strchr(ckey, '"') && !strchr(ckey, '\\'))
+            strlcpy(g_settings.claude_key, ckey, sizeof(g_settings.claude_key));
+    }
+
     settings_save();
 
     /* Apply live — no reboot (FSD §5) */
@@ -2640,11 +2724,15 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[640];
+    /* The Claude API key is deliberately NOT exported: it is a billable secret
+     * and this file gets mailed around and dropped into cloud folders. Omitting
+     * ckey reads as "keep current" on restore (see h_settings_post), so the only
+     * cost is re-pasting the key after an NVS wipe. */
+    char buf[700];
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u",
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&cld=%u",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -2655,7 +2743,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
-        (unsigned) g_settings.detect_quarantine_s);
+        (unsigned) g_settings.detect_quarantine_s,
+        (unsigned) g_settings.claude_enabled);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
@@ -3128,6 +3217,101 @@ static esp_err_t h_classify_run(httpd_req_t *req)
     return classify_send_json(req, &r, false);   /* posted image → no row to save into */
 }
 
+/* Query parse + path validation shared by the Gallery's two identify
+ * endpoints. Rejects anything that could escape /captures/<day>/. */
+static bool idfile_params(httpd_req_t *req, char *date, size_t dsz,
+                          char *file, size_t fsz)
+{
+    char query[128] = {0};
+    date[0] = file[0] = '\0';
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "date", date, dsz);
+    httpd_query_key_value(query, "f", file, fsz);
+    url_decode(date);
+    url_decode(file);
+    return date[0] && file[0] &&
+           !strstr(date, "..") && !strchr(date, '/') && !strchr(date, '\\') &&
+           !strstr(file, "..") && !strchr(file, '/') && !strchr(file, '\\');
+}
+
+/* Persist an identify result as the row's confirmed label (§3.4/v1.58), the
+ * same write the ✎ relabel button makes, so it feeds the retrain export
+ * (v1.57). A non-empty latin means a real species was decided above the
+ * threshold; an under-threshold "Unidentified"/"no bird" answer has an empty
+ * latin and writes nothing, so an inconclusive identify never wipes a good
+ * row. Shared by the on-device and Claude identify endpoints. */
+static bool idfile_save(const char *date, const char *file,
+                        const classify_result_t *r, const char *who)
+{
+    if (!r->latin[0]) return false;
+    if (storage_relabel(date, file, r->species, r->latin) != ESP_OK) return false;
+    ESP_LOGI(TAG, "%s identify saved %s/%s -> %s", who, date, file, r->species);
+    return true;
+}
+
+/* GET /api/claude-test — check reachability + the stored key without spending
+ * tokens (FSD §3.2.3/§6). A deployed box has no serial console, so this is the
+ * only way to tell a rejected key from a blocked network. Blocks ~1-3 s. */
+static esp_err_t h_claude_test(httpd_req_t *req)
+{
+    /* Roomy: the TLS verdicts carry an mbedTLS code, the cert-verify flags and
+     * the with/without-verification comparison, and a clipped one loses exactly
+     * the part that says which failure it was. */
+    char verdict[288] = "";
+    esp_err_t err = claude_test(verdict, sizeof(verdict));
+    char msg[384], buf[440];
+    json_escape(msg, sizeof(msg), verdict);
+    snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
+             err == ESP_OK ? "true" : "false", msg);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* GET /api/claude-file?date=<day>&f=<file> — identify one saved photo with
+ * Anthropic Claude (FSD §3.2.3/§6). The Gallery's ✨ button: the point is the
+ * §3.2.2 retrain loop, where confirming a strong cloud label with one click
+ * beats typing a species name per image. Independent of the Settings toggle
+ * (which only governs the live path) — a stored key is enough.
+ *
+ * Blocks this httpd thread for the round-trip (~1-5 s), like the on-device
+ * sibling above blocks for inference. */
+static esp_err_t h_claude_file(httpd_req_t *req)
+{
+    if (!claude_have_key()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req,
+            "{\"error\":\"no Claude API key (Settings \\u2192 Cloud Identification)\"}");
+        return ESP_OK;
+    }
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
+        return ESP_OK;
+    }
+    char date[24] = {0}, file[80] = {0};
+    if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+
+    char path[160];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s", date, file);
+    classify_result_t r;
+    if (claude_classify_file(path, &r) != ESP_OK) {
+        /* Surface Claude's own words (bad key, quota, safety block) — the
+         * Gallery prints this straight into the tile. */
+        char e[128], msg[96];
+        json_escape(msg, sizeof(msg), claude_last_error());
+        snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, e);
+        return ESP_OK;
+    }
+    return classify_send_json(req, &r, idfile_save(date, file, &r, "claude"));
+}
+
 /* GET /api/classify-file?date=<day>&f=<file> — classify a JPEG already on the
  * SD card (FSD §3.2/§6). Lets the Gallery re-run species ID on a saved photo
  * without re-uploading it over WiFi: the device reads the file itself. Blocks
@@ -3144,15 +3328,8 @@ static esp_err_t h_classify_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
         return ESP_OK;
     }
-    char query[128] = {0}, date[24] = {0}, file[80] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    httpd_query_key_value(query, "date", date, sizeof(date));
-    httpd_query_key_value(query, "f", file, sizeof(file));
-    url_decode(date);
-    url_decode(file);
-    if (!date[0] || !file[0] ||
-        strstr(date, "..") || strchr(date, '/') || strchr(date, '\\') ||
-        strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+    char date[24] = {0}, file[80] = {0};
+    if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
@@ -3193,18 +3370,7 @@ static esp_err_t h_classify_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
         return ESP_OK;
     }
-    /* Gallery identify persists its result as the row's confirmed label
-     * (§3.4/v1.58): a non-empty latin means a real species was decided (above
-     * threshold) — write it via the same path the ✎ relabel button uses, so
-     * the record changes and it feeds the retrain export (v1.57). An
-     * under-threshold "Unidentified"/"no bird" result writes nothing (latin is
-     * empty), so an inconclusive identify never wipes a good row. */
-    bool saved = false;
-    if (r.latin[0] && storage_relabel(date, file, r.species, r.latin) == ESP_OK) {
-        saved = true;
-        ESP_LOGI(TAG, "identify saved %s/%s -> %s", date, file, r.species);
-    }
-    return classify_send_json(req, &r, saved);
+    return classify_send_json(req, &r, idfile_save(date, file, &r, "model"));
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
@@ -3427,7 +3593,7 @@ esp_err_t web_server_start(void)
     if (server) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 48;     /* headroom above route count (35 as of v1.51) — an
+    cfg.max_uri_handlers = 56;     /* headroom above route count (44 as of v1.93) — an
                                       exact-fit cap silently drops later registrations,
                                       404ing whichever routes land last (RemoteStart v1.27;
                                       hit again at v1.51 when the count crossed 32) */
@@ -3483,6 +3649,8 @@ esp_err_t web_server_start(void)
         { .uri = "/ota/from-url", .method = HTTP_GET,  .handler = h_ota_from_url_status },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
+        { .uri = "/api/claude-file", .method = HTTP_GET, .handler = h_claude_file },
+        { .uri = "/api/claude-test", .method = HTTP_GET, .handler = h_claude_test },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
