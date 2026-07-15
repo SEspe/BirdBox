@@ -17,6 +17,7 @@
  * Everything heavyweight (model ~3.5 MB, tensor arena 3 MB, decode buffer)
  * lives in PSRAM; internal RAM is untouched beyond the task stack. */
 #include "classify.h"
+#include "claude.h"         /* has its own extern "C" guard */
 #include "species_i18n.h"   /* has its own extern "C" guard */
 extern "C" {          /* C headers without their own __cplusplus guards */
 #include "settings.h"
@@ -626,6 +627,34 @@ static bool aggregate_frames(const char (*paths)[96], const roi_t *rois, int nf,
     return have_best;
 }
 
+/* Identify one event with Claude instead of the local model (§3.2.3).
+ *
+ * One call per EVENT, not per frame: best-of-N exists to paper over the local
+ * model's pose sensitivity, which Claude does not share, so scoring all three
+ * frames would triple the bill for a marginal gain. The event's first frame is
+ * the one motion.c already judged best.
+ *
+ * The whole frame goes up regardless of detect_zoom — Claude reasons about
+ * context (perch, feeder, other birds) and a tight crop throws that away, the
+ * same effect that made zoom hurt the iNat model (§3.2.1/v1.87).
+ *
+ * Returns false on any failure — no key, WiFi down, API error — and the caller
+ * falls back to the on-device model rather than dropping the event. */
+static bool claude_event(const cls_job_t *job, classify_result_t *out, roi_t *win)
+{
+    if (!claude_enabled()) return false;
+
+    char full[128];
+    snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[0]);
+    if (claude_classify_file(full, out) != ESP_OK) {
+        ESP_LOGW(TAG, "Claude failed (%s) — falling back to the on-device model",
+                 claude_last_error());
+        return false;
+    }
+    *win = job->rois[0];   /* logged as field data either way (§3.4) */
+    return true;
+}
+
 /* ── Event task: aggregate frames, then write the visit-log row (async) ── */
 static void classify_task(void *arg)
 {
@@ -636,8 +665,16 @@ static void classify_task(void *arg)
         classify_result_t best;
         roi_t win = roi_none();
         int   scored = 0;
-        bool  have_best = aggregate_frames(job.paths, job.rois, job.path_count,
-                                           &scored, &best, &win);
+
+        /* Claude replaces the local model when on; a failed call degrades to
+         * TFLM, and only if THAT is unavailable too does the row fall through
+         * to "unclassified" (§3.2 — never drop work). */
+        bool have_best = claude_event(&job, &best, &win);
+        if (have_best)
+            scored = 1;
+        else if (s_available)
+            have_best = aggregate_frames(job.paths, job.rois, job.path_count,
+                                         &scored, &best, &win);
 
         char line[400];
         if (have_best) {
@@ -942,20 +979,21 @@ static void recheck_task(void *arg)
 #endif /* CONFIG_IDF_TARGET_ESP32S3 */
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
-esp_err_t classify_init(void)
+#if CONFIG_IDF_TARGET_ESP32S3
+/* Bring up the on-device model. Split out of classify_init so the event task
+ * can exist without it: with Claude on (§3.2.3) a card may carry no .tflite at
+ * all, and the toggle is live-settable, so the queue/task must be there either
+ * way. Returns false (degraded, never fatal) on any missing/bad-model path. */
+static bool model_init(void)
 {
-#if !CONFIG_IDF_TARGET_ESP32S3
-    ESP_LOGW(TAG, "species ID unavailable on this target (FSD §3.2) — captures stay 'unclassified'");
-    return ESP_OK;
-#else
     if (!storage_sd_present()) {
         ESP_LOGW(TAG, "no SD card — species ID disabled (model lives on SD, §3.2)");
-        return ESP_OK;
+        return false;
     }
     if (!pick_model_file(s_model_name, sizeof(s_model_name))) {
         ESP_LOGW(TAG, "no .tflite model in /sd/model — species ID disabled "
                       "(see docs/MODEL.md, or POST /model/upload)");
-        return ESP_OK;
+        return false;
     }
 
     char p[96];
@@ -964,27 +1002,27 @@ esp_err_t classify_init(void)
     s_model_buf = load_file_psram(p, &model_len);
     if (!s_model_buf) {
         ESP_LOGE(TAG, "failed to load %s", p);
-        return ESP_OK;   /* degrade, don't brick (same posture as camera/SD) */
+        return false;   /* degrade, don't brick (same posture as camera/SD) */
     }
     if (!load_labels(s_model_name)) {
         ESP_LOGE(TAG, "no labels file for %s (expected same name .txt) — disabled",
                  s_model_name);
         free(s_model_buf); s_model_buf = NULL;
-        return ESP_OK;
+        return false;
     }
 
     const tflite::Model *model = tflite::GetModel(s_model_buf);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         ESP_LOGE(TAG, "model schema v%lu != supported v%d — disabled",
                  (unsigned long) model->version(), TFLITE_SCHEMA_VERSION);
-        return ESP_OK;
+        return false;
     }
 
     s_arena = (uint8_t *) heap_caps_malloc(CLS_ARENA_BYTES,
                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_arena) {
         ESP_LOGE(TAG, "no PSRAM for tensor arena — disabled");
-        return ESP_OK;
+        return false;
     }
 
     /* Ops verified against the reference model (mobilenet_v2 iNat-birds) plus
@@ -1005,38 +1043,66 @@ esp_err_t classify_init(void)
     if (s_interp->AllocateTensors() != kTfLiteOk) {
         ESP_LOGE(TAG, "AllocateTensors failed (arena %d KB, unsupported op, or bad model) — disabled",
                  CLS_ARENA_BYTES / 1024);
-        return ESP_OK;
+        return false;
     }
     TfLiteTensor *in = s_interp->input(0);
     if (in->type != kTfLiteInt8 || in->dims->size != 4 ||
         in->dims->data[1] != CLS_INPUT_SIDE || in->dims->data[2] != CLS_INPUT_SIDE ||
         in->dims->data[3] != 3) {
         ESP_LOGE(TAG, "unexpected input tensor (want int8 1x224x224x3) — disabled");
-        return ESP_OK;
+        return false;
     }
 
     s_run_mtx = xSemaphoreCreateMutex();
-    /* 16 deep (~7.5 KB): a best-of-3 job runs ~13 s (3 x ~4 s inference)
+    if (!s_run_mtx) {
+        ESP_LOGE(TAG, "mutex create failed — disabled");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "classifier ready: %s (%u KB, %d labels, arena used %u KB)",
+             s_model_name, (unsigned) (model_len / 1024), s_label_count,
+             (unsigned) (s_interp->arena_used_bytes() / 1024));
+    return true;
+}
+#endif
+
+esp_err_t classify_init(void)
+{
+#if !CONFIG_IDF_TARGET_ESP32S3
+    ESP_LOGW(TAG, "species ID unavailable on this target (FSD §3.2) — captures stay 'unclassified'");
+    return ESP_OK;
+#else
+    s_available = model_init();
+
+    /* The event task/queue come up even with no usable model: Claude (§3.2.3)
+     * is a live-settable toggle, so a card with no .tflite must still be able
+     * to queue and label events the moment the user turns it on — no reboot.
+     * With neither classifier, classify_submit_event() declines and capture.c
+     * writes its "unclassified" row exactly as before, so the task simply
+     * never receives a job.
+     *
+     * 16 deep (~7.5 KB): a best-of-3 job runs ~13 s (3 x ~4 s inference)
      * while a busy visit produces an event every ~5 s — at 2 deep most of
      * those overflowed to the "unclassified" fallback row. Classification is
      * async and a minutes-deep backlog is acceptable (rows are timestamped
      * with the event time, not the write time), so buffer a whole busy visit
      * rather than dropping events. */
-    s_jobq    = xQueueCreate(16, sizeof(cls_job_t));
-    if (!s_run_mtx || !s_jobq ||
-        xTaskCreatePinnedToCore(classify_task, "classify", 12288, NULL, 3, NULL, 1) != pdPASS) {
-        ESP_LOGE(TAG, "task/queue create failed — disabled");
+    s_jobq = xQueueCreate(16, sizeof(cls_job_t));
+    /* 16 KB stack: TFLM itself fits in 12 KB, but a Claude job runs an mbedTLS
+     * handshake on this same task and that alone wants ~5 KB. */
+    if (!s_jobq ||
+        xTaskCreatePinnedToCore(classify_task, "classify", 16384, NULL, 3, NULL, 1) != pdPASS) {
+        ESP_LOGE(TAG, "task/queue create failed — species ID disabled");
+        s_available = false;
         return ESP_OK;
     }
-
-    s_available = true;
-    ESP_LOGI(TAG, "classifier ready: %s (%u KB, %d labels, arena used %u KB)",
-             s_model_name, (unsigned) (model_len / 1024), s_label_count,
-             (unsigned) (s_interp->arena_used_bytes() / 1024));
     return ESP_OK;
 #endif
 }
 
+/* On-device model only — /api/classify and /api/classify-file run TFLM
+ * synchronously and are unrelated to the Claude path, which has its own
+ * claude_enabled() gate and its own endpoint. */
 bool classify_available(void) { return s_available; }
 
 bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
@@ -1044,7 +1110,10 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
                            const char *first_path)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
-    if (!s_available || path_count <= 0) return false;
+    /* Either classifier will do — with Claude on, events are labelled with no
+     * model on the card at all (§3.2.3). Only when neither is available does
+     * this decline, leaving capture.c to write the "unclassified" row. */
+    if ((!s_available && !claude_enabled()) || path_count <= 0 || !s_jobq) return false;
     cls_job_t job = {};
     job.frames = frames;
     strlcpy(job.ts, ts, sizeof(job.ts));

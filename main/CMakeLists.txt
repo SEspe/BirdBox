@@ -8,6 +8,7 @@ idf_component_register(
         "capture.c"
         "illum.c"
         "classify.cpp"
+        "claude.c"
         "settings.c"
         "storage.c"
         "stats.c"

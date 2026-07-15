@@ -38,6 +38,9 @@ settings_t g_settings = {
     .fast_shutter       = 0,
     .detect_quarantine_s = 60,
     .tta                = 0,
+    .claude_enabled     = 0,   /* opt-in: needs the user's own API key and
+                                * bills them per event (§3.2.3) */
+    .claude_key         = "",
 };
 
 esp_err_t settings_load(void)
@@ -78,6 +81,9 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_fshut",&u8)  == ESP_OK) g_settings.fast_shutter = u8;
     if (nvs_get_u8 (h, "s_tta",  &u8)  == ESP_OK) g_settings.tta = u8;
     if (nvs_get_u16(h, "s_qtn",  &u16) == ESP_OK) g_settings.detect_quarantine_s = u16;
+    if (nvs_get_u8 (h, "s_cld",  &u8)  == ESP_OK) g_settings.claude_enabled = u8;
+    l = sizeof(g_settings.claude_key);
+    nvs_get_str(h, "s_ckey", g_settings.claude_key, &l);
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -116,6 +122,8 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_fshut", g_settings.fast_shutter);
     nvs_set_u8 (h, "s_tta",   g_settings.tta);
     nvs_set_u16(h, "s_qtn",   g_settings.detect_quarantine_s);
+    nvs_set_u8 (h, "s_cld",   g_settings.claude_enabled);
+    nvs_set_str(h, "s_ckey",  g_settings.claude_key);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
