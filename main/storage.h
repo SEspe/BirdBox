@@ -73,6 +73,14 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
                                 int nfiles, const char *common, const char *latin,
                                 int *applied);
 
+/* Backfill the motion ROI on one visit row (§3.4/v1.99): set the "roi" column
+ * (field 7, "x0-y0-x1-y1" fractional) on the row whose first_frame basename is
+ * `file`, keeping every other column. For the click-to-place ROI backfill of
+ * older captures that predate always-on ROI logging. Returns ESP_ERR_NOT_FOUND
+ * when no row matches (never adds one — there's nothing to backfill without a
+ * row). `roi` must already be a validated "x0-y0-x1-y1" string. */
+esp_err_t storage_set_roi(const char *date, const char *file, const char *roi);
+
 /* Accept the model's current classification as human-confirmed (§3.4/v1.59):
  * copies the row's species into its "corrected" column. Returns ESP_ERR_NOT_FOUND
  * when there's nothing confirmable (no row, a sentinel/no-latin row, or already

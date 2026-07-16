@@ -676,6 +676,22 @@ static void classify_task(void *arg)
             have_best = aggregate_frames(job.paths, job.rois, job.path_count,
                                          &scored, &best, &win);
 
+        /* Motion ROI on EVERY row (v1.99). `win` is the winning frame's crop
+         * when best-of-N won, but empty when the multi-frame POOLED result won
+         * (aggregate_frames) and on unclassified events — precisely the rows
+         * that were left ROI-less, including the rescue birds (model-missed
+         * species land unclassified, then a human relabel preserves whatever
+         * roi is here). Fall back to job.rois[0], the trigger frame's motion box
+         * (always set for a real motion event), so the bird's location is
+         * recorded regardless of which aggregator won or whether the model
+         * identified it. This is ROI-crop training input + the backfill baseline;
+         * detect_zoom only governs whether INFERENCE crops to it. */
+        roi_t log_roi = roi_is_empty(win) ? job.rois[0] : win;
+        char roi_s[24] = "";
+        if (!roi_is_empty(log_roi))
+            snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
+                     log_roi.x0, log_roi.y0, log_roi.x1, log_roi.y1);
+
         char line[400];
         if (have_best) {
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
@@ -683,22 +699,14 @@ static void classify_task(void *arg)
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);
-            /* winning frame's ROI ("x0-y0-x1-y1", empty = whole frame) + top-3
-             * as trailing columns — field-tuning data (§3.4) */
-            char roi_s[24] = "";
-            if (!roi_is_empty(win))   /* log the motion ROI always — it's field
-                                       * data + ROI-crop training input; detect_zoom
-                                       * only controls whether inference USES it */
-                snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
-                         win.x0, win.y0, win.x1, win.y1);
             char top3[112];
             top3_field(&best, top3, sizeof(top3));
             snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s",
                      job.ts, best.species, best.confidence_pct, job.frames,
                      job.first_path, best.latin, roi_s, top3);
         } else {
-            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,,",
-                     job.ts, job.frames, job.first_path);
+            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,%s,",
+                     job.ts, job.frames, job.first_path, roi_s);
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");

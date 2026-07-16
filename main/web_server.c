@@ -607,6 +607,26 @@ static const char INDEX_HTML[] =
 "<p class='sts'><b>Delete all photos</b> removes every image for the day but leaves "
 "the statistics/visit log intact. <b>Wipe day</b> also removes that day&#8217;s rows "
 "from the statistics/visit log. To clear all statistics, use the Stats tab.</p>"
+"<h3 class='sh'>Backfill ROI (bird box)</h3>"
+"<p class='sts'>Confirmed birds captured before always-on ROI logging have no motion "
+"box, so ROI-crop training can&#8217;t use them. Pick a day, load the birds still missing "
+"a box, then <b>click the bird&#8217;s centre</b> on each image (adjust the box with the "
+"size slider) and Save. Newer captures record the box automatically.</p>"
+"<div class='gbar'><span class='sts' style='margin:0'>Day</span>"
+"<select id='rbday'></select>"
+"<button class='act' style='margin:0' onclick='rbLoad()'>Load missing-ROI birds</button>"
+"<span class='sts' id='rbSts' style='margin:0'></span></div>"
+"<div id='rbEdit' style='display:none;margin-top:8px'>"
+"<div id='rbWrap' onclick='rbClick(event)' style='position:relative;display:inline-block;"
+"max-width:100%;cursor:crosshair;line-height:0'>"
+"<img id='rbImg' onload='rbDraw()' style='max-width:100%;display:block'>"
+"<div id='rbBox' style='position:absolute;border:2px solid #7fc98b;"
+"box-shadow:0 0 0 9999px rgba(0,0,0,.4);display:none;pointer-events:none'></div></div>"
+"<div class='gbar' style='margin-top:6px'><span class='sts' style='margin:0'>Box size</span>"
+"<input type='range' id='rbSize' min='15' max='90' value='55' oninput='rbDraw()'>"
+"<button class='act' style='margin:0' onclick='rbSkip()'>Skip</button>"
+"<button class='act' style='margin:0;background:#3f7a4a' onclick='rbSave()'>Save &amp; next</button>"
+"<span class='sts' id='rbProg' style='margin:0'></span></div></div>"
 "</div>"
 "<div id='dbgp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>System</h3><div id='dSys'></div>"
@@ -1016,11 +1036,42 @@ static const char INDEX_HTML[] =
 "loadDays();}).catch(()=>alert('Delete failed'));}"
 "function mtLoad(){fetch('/api/days').then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.d.localeCompare(x.d));"
-"var s=$g('mday');var prev=s.value;s.innerHTML='';"
+"['mday','rbday'].forEach(function(id){var s=$g(id);if(!s)return;var prev=s.value;s.innerHTML='';"
 "a.forEach(o=>{var op=document.createElement('option');op.value=o.d;"
 "op.textContent=o.d+' ('+o.n+')';s.appendChild(op);});"
-"if(prev&&[...s.options].some(o=>o.value===prev))s.value=prev;"
+"if(prev&&[...s.options].some(o=>o.value===prev))s.value=prev;});"
 "$g('mtSts').textContent=a.length?'':'no captures yet';}).catch(()=>{});}"
+/* ── Backfill ROI editor: click the bird's centre on each confirmed image that
+ * still lacks a motion box; the box (click centre + slider size) is written to
+ * the row's roi column via POST /api/set-roi so ROI-crop training can use it. */
+"var g_rb=null,g_rbc=null,g_rbbox=null;"
+"function rbSts(m){$g('rbSts').textContent=m;}"
+"function rbLoad(){var d=$g('rbday').value;if(!d){rbSts('pick a day');return;}rbSts('loading\\u2026');"
+"fetch('/api/roi-todo?date='+encodeURIComponent(d)).then(r=>r.json()).then(function(a){"
+"if(!a.length){$g('rbEdit').style.display='none';rbSts('No confirmed birds missing a box on '+d+'.');return;}"
+"g_rb={d:d,list:a,i:0};$g('rbEdit').style.display='';rbSts(a.length+' bird(s) need a box.');rbShow();})"
+".catch(()=>rbSts('load failed'));}"
+"function rbShow(){var g=g_rb;if(!g)return;"
+"if(g.i>=g.list.length){$g('rbEdit').style.display='none';rbSts('Done \\u2013 finished '+g.list.length+' image(s) for '+g.d+'. Reload to re-check.');return;}"
+"var it=g.list[g.i];$g('rbImg').src='/captures/'+g.d+'/'+encodeURIComponent(it.f);"
+"$g('rbProg').textContent=(g.i+1)+' / '+g.list.length+'  ('+it.sp+')';"
+"g_rbc=[0.5,0.5];g_rbbox=null;$g('rbBox').style.display='none';}"
+"function rbClick(e){var im=$g('rbImg');var r=im.getBoundingClientRect();"
+"var cx=(e.clientX-r.left)/r.width,cy=(e.clientY-r.top)/r.height;"
+"g_rbc=[Math.max(0,Math.min(1,cx)),Math.max(0,Math.min(1,cy))];rbDraw();}"
+"function rbDraw(){if(!g_rbc)return;var im=$g('rbImg');var W=im.clientWidth,H=im.clientHeight;if(!W||!H)return;"
+"var s=(+$g('rbSize').value)/100;var side=s*Math.min(W,H);"
+"var l=g_rbc[0]*W-side/2,t=g_rbc[1]*H-side/2;"
+"l=Math.max(0,Math.min(W-side,l));t=Math.max(0,Math.min(H-side,t));"
+"var b=$g('rbBox');b.style.display='';b.style.left=l+'px';b.style.top=t+'px';b.style.width=side+'px';b.style.height=side+'px';"
+"g_rbbox=[l/W,t/H,(l+side)/W,(t+side)/H];}"
+"function rbSkip(){if(!g_rb)return;g_rb.i++;rbShow();}"
+"function rbSave(){if(!g_rb||!g_rbbox){rbSts('click the bird first');return;}"
+"var roi=g_rbbox.map(v=>Math.max(0,Math.min(1,v)).toFixed(2)).join('-');var it=g_rb.list[g_rb.i];"
+"fetch('/api/set-roi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'date='+encodeURIComponent(g_rb.d)+'&f='+encodeURIComponent(it.f)+'&roi='+encodeURIComponent(roi)})"
+".then(r=>r.json()).then(function(o){if(o&&o.ok){g_rb.i++;rbShow();}else rbSts((o&&o.error)||'save failed');})"
+".catch(()=>rbSts('save failed'));}"
 "function mtDelAll(){var d=$g('mday').value;if(!d)return;"
 "if(!confirm('Delete ALL photos in '+d+'? Every image for that day is removed "
 "and this cannot be undone. Statistics are separate \\u2014 use the Stats tab\\u2019s "
@@ -2250,6 +2301,111 @@ static esp_err_t h_relabel_batch(httpd_req_t *req)
     char buf[64];
     snprintf(buf, sizeof(buf), "{\"ok\":true,\"applied\":%d,\"requested\":%d}", applied, n);
     httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* GET /api/roi-todo?date=YYYY-MM-DD — confirmed real-bird rows of one day that
+ * still lack a motion ROI (§3.4/v1.99). The backfill worklist: images the human
+ * confirmed to a species before always-on ROI logging, so they have no bird box
+ * for ROI-crop training. Streams [{"f":"NAME.jpg","sp":"Dompap"}, ...]; the Maint
+ * ROI editor walks it, and a click writes the box via POST /api/set-roi. Sentinel
+ * corrections (no bird / other / unknown) are excluded — those aren't birds. */
+static esp_err_t h_roi_todo(httpd_req_t *req)
+{
+    char query[64] = {0}, date[16] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "date", date, sizeof(date));
+    httpd_resp_set_type(req, "application/json");
+    if (strlen(date) != 10) { httpd_resp_sendstr(req, "[]"); return ESP_OK; }
+    for (const char *c = date; *c; c++)
+        if (!isalnum((unsigned char) *c) && *c != '-') { httpd_resp_sendstr(req, "[]"); return ESP_OK; }
+
+    char logpath[64], match[48];
+    snprintf(logpath, sizeof(logpath), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    snprintf(match, sizeof(match), "/captures/%.10s/", date);
+    FILE *fp = storage_sd_present() ? fopen(logpath, "r") : NULL;
+    if (!fp) { httpd_resp_sendstr(req, "[]"); return ESP_OK; }
+
+    httpd_resp_send_chunk(req, "[", 1);
+    bool first = true;
+    char line[400];
+    bool header = true;
+    while (fgets(line, sizeof(line), fp)) {
+        if (header) { header = false; continue; }
+        if (line[0] == '\0' || line[0] == '\n') continue;
+        char *p = line;
+        gal_next_field(&p);                        /* timestamp */
+        gal_next_field(&p);                        /* species (model) */
+        gal_next_field(&p);                        /* confidence */
+        gal_next_field(&p);                        /* frames */
+        char *first_fr  = gal_next_field(&p);
+        char *corrected = gal_next_field(&p);
+        gal_next_field(&p);                        /* latin */
+        char *roi       = gal_next_field(&p);
+        if (!corrected[0] || roi[0]) continue;     /* confirmed rows still missing a roi */
+        if (!strcmp(corrected, "no bird") || !strcmp(corrected, "other") ||
+            !strcmp(corrected, "unknown")) continue;                 /* birds only */
+        char *base = strstr(first_fr, match);
+        if (!base) continue;
+        base += strlen(match);
+        if (!base[0] || strchr(base, '/')) continue;
+        char f_e[64], s_e[80];
+        json_escape(f_e, sizeof(f_e), base);
+        json_escape(s_e, sizeof(s_e), corrected);
+        char item[176];
+        int len = snprintf(item, sizeof(item), "%s{\"f\":\"%s\",\"sp\":\"%s\"}",
+                           first ? "" : ",", f_e, s_e);
+        httpd_resp_send_chunk(req, item, len);
+        first = false;
+    }
+    fclose(fp);
+    httpd_resp_send_chunk(req, "]", 1);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* POST /api/set-roi (date, f, roi) — backfill one row's motion ROI (§3.4/v1.99).
+ * `roi` is "x0-y0-x1-y1", each a fraction in [0,1] with x0<x1, y0<y1: the box the
+ * Maint editor built from the click center + size. Written verbatim to the roi
+ * column so ROI-crop training (and detect_zoom inference) can use it. */
+static esp_err_t h_set_roi(httpd_req_t *req)
+{
+    char body[128] = {0};
+    int rlen = MIN(req->content_len, (int) sizeof(body) - 1);
+    int got = 0;
+    while (got < rlen) {
+        int r = httpd_req_recv(req, body + got, rlen - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    char date[16] = {0}, file[80] = {0}, roi[32] = {0};
+    httpd_query_key_value(body, "date", date, sizeof(date));
+    httpd_query_key_value(body, "f",    file, sizeof(file));
+    httpd_query_key_value(body, "roi",  roi,  sizeof(roi));
+    url_decode(date); url_decode(file); url_decode(roi);
+
+    httpd_resp_set_type(req, "application/json");
+    float x0, y0, x1, y1;
+    bool shape_ok = sscanf(roi, "%f-%f-%f-%f", &x0, &y0, &x1, &y1) == 4 &&
+                    x0 >= 0.f && y0 >= 0.f && x1 <= 1.f && y1 <= 1.f &&
+                    x1 > x0 && y1 > y0;
+    if (strlen(date) != 10 || !file[0] || !shape_ok ||
+        strstr(file, "..") || strchr(file, '/') || strchr(file, '\\')) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad params");
+        return ESP_OK;
+    }
+    esp_err_t err = storage_set_roi(date, file, roi);
+    if (err == ESP_ERR_NOT_FOUND) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_sendstr(req, "{\"error\":\"no row for that image\"}");
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"set roi failed\"}");
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, "{\"ok\":true}");
     return ESP_OK;
 }
 
@@ -3894,6 +4050,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/labels/confirmed", .method = HTTP_GET, .handler = h_labels_confirmed },
         { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
         { .uri = "/api/relabel-batch", .method = HTTP_POST, .handler = h_relabel_batch },
+        { .uri = "/api/roi-todo", .method = HTTP_GET,  .handler = h_roi_todo },
+        { .uri = "/api/set-roi",  .method = HTTP_POST, .handler = h_set_roi  },
         { .uri = "/api/confirm", .method = HTTP_POST, .handler = h_confirm    },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
