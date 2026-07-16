@@ -4,8 +4,8 @@ locally collected, human-confirmed captures and export a device-ready int8
 TFLite model + index-aligned label file (FSD §3.2.1 / §3.2.2, Phase B).
 
 This is the off-device half of the closed loop. It reads the images you have
-hand-labeled on the BirdBox (exported by `export-labels.ps1` into `dataset/`,
-plus any curated folders like `lavskrike/candidate/`), fine-tunes a small
+hand-labeled on the BirdBox (exported by `export-labels.ps1` into `dataset/`
+with a per-row `roi` column in `dataset/labels.csv`), fine-tunes a small
 classifier, and emits:
 
     <OUT_NAME>.tflite   full-int8, 1x224x224x3, MobileNetV2 op-set
@@ -14,6 +14,18 @@ classifier, and emits:
 then drops onto the SD `/model` dir or `POST /model/upload` — no reflash
 (docs/MODEL.md). Nothing here runs on the device; a Colab GPU or a plain CPU
 is enough for a small class set.
+
+ROI-crop training (v0.4+):
+  The classifier is trained on the SAME square crop the device feeds at
+  inference when `detect_zoom` is on — the motion ROI (bird box), expanded to a
+  square and resized to 224 with NO stretch. Each image's box is read from the
+  `roi` column of `dataset/labels.csv` ("x0-y0-x1-y1", fractions of the frame),
+  and `roi_square()` here mirrors `classify.cpp decode_to_input` exactly
+  (side = max(box_w, box_h), capped at min(frame_w, frame_h), centred on the box
+  centre, clamped in-frame). Only rows that HAVE an roi are used — the operator
+  chose tight-crop training, and an image with no logged box can't be cropped to
+  one. Consequence: **the device must serve this model with `detect_zoom` ON**,
+  or it would feed whole frames to a crop-trained model (train/serve skew).
 
 Device contract this script MUST satisfy (verified against main/classify.cpp):
   * Input: the firmware feeds `pixel ^ 0x80` (== pixel-128) straight into the
@@ -41,7 +53,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
-import glob
+import csv
 import os
 import sys
 
@@ -63,19 +75,21 @@ for _stream in (sys.stdout, sys.stderr):
 
 # ── Config ──────────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))            # training-data/
+DATASET = os.path.join(ROOT, "dataset")
+LABELS_CSV = os.path.join(DATASET, "labels.csv")
 IMG_SIZE = 224
 LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
 
 # Model version scheme (MAJOR.MINOR), keyed on DATA PROVENANCE, not accuracy:
 #   0.x  pre-baseline experiments — include local BirdBox captures, prove the
-#        pipeline (this data-thin Dompap+Lavskrike proof is 0.1).
+#        pipeline. 0.4 is the first ROI-crop, 4-species+background build.
 #   1.0  first proper baseline trained PURELY from external data (iNaturalist/
 #        GBIF stock) — the reference, no device images.
 #   1.x  1.0 + x rounds of local BirdBox captures mixed in (domain adaptation).
 #   2.0  breaking change — class set added/removed (label indices shift) or a
 #        different architecture/input.
 # Bump MODEL_VERSION per retrain and record it in the registry (README).
-MODEL_VERSION = "0.3"
+MODEL_VERSION = "0.4"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
@@ -96,17 +110,19 @@ HEAD_LR = 1e-3
 FT_LR = 1e-5
 
 # Each class = one output index (order here == order in the .txt). `dirs` are
-# image sources relative to this script; several dirs merge into one class,
-# which is how the pre-0.48.0 free-typed "Lavskrike/" folder and the new
-# binomial-keyed "Perisoreus_infaustus/" folder (and the 126 curated real
-# captures in lavskrike/candidate/) collapse into a single Siberian Jay class.
-# Set latin="" and common="background" for the no-bird guard class.
+# the top-level `dataset/<dir>/` folders (as written in the labels.csv relpath)
+# that merge into this class. Set latin="" and common="background" for the
+# no-bird guard class. The v0.48.0 free-typed "Lavskrike/" folder still folds
+# into the binomial-keyed Siberian Jay class.
 CLASSES = [
     {"latin": "Pyrrhula pyrrhula", "common": "Eurasian Bullfinch",
-     "dirs": ["dataset/Pyrrhula_pyrrhula"]},
+     "dirs": ["Pyrrhula_pyrrhula"]},
     {"latin": "Perisoreus infaustus", "common": "Siberian Jay",
-     "dirs": ["dataset/Perisoreus_infaustus", "dataset/Lavskrike",
-              "lavskrike/candidate"]},
+     "dirs": ["Perisoreus_infaustus", "Lavskrike"]},
+    {"latin": "Fringilla coelebs", "common": "Common Chaffinch",
+     "dirs": ["Fringilla_coelebs"]},
+    {"latin": "Pica pica", "common": "Eurasian Magpie",
+     "dirs": ["Pica_pica"]},
     # Reject/guard class — the model's "not a target bird" output. Merges the
     # two human reject buckets (FSD v1.76): no_bird (empty frames) + other
     # (present but non-bird subjects, e.g. cat/sheep — hard negatives). The
@@ -114,7 +130,7 @@ CLASSES = [
     # be a hard negative). A real deployment needs this guard so the classifier
     # can decline rather than force a species onto every frame.
     {"latin": "", "common": "background",
-     "dirs": ["dataset/no_bird", "dataset/other"]},
+     "dirs": ["no_bird", "other"]},
 ]
 
 # The builtins the firmware registers (classify.cpp MicroMutableOpResolver).
@@ -123,35 +139,23 @@ CLASSES = [
 # though this script's conv head doesn't use it.
 ALLOWED_OPS = {"CONV_2D", "DEPTHWISE_CONV_2D", "ADD", "AVERAGE_POOL_2D",
                "FULLY_CONNECTED", "SOFTMAX", "PAD"}
-IMG_EXTS = (".jpg", ".jpeg", ".png")
 
 
 # ── Data ────────────────────────────────────────────────────────────────────
-def list_images():
-    """Return (paths, labels, class_names) from the CLASSES config."""
-    paths, labels, names = [], [], []
-    for idx, c in enumerate(CLASSES):
-        names.append(_label_line(c))
-        seen = set()
-        n = 0
-        for d in c["dirs"]:
-            base = os.path.join(ROOT, d)
-            if not os.path.isdir(base):
-                continue
-            for f in glob.glob(os.path.join(base, "**", "*"), recursive=True):
-                if not f.lower().endswith(IMG_EXTS):
-                    continue
-                ap = os.path.abspath(f)
-                if ap in seen:
-                    continue
-                seen.add(ap)
-                paths.append(ap)
-                labels.append(idx)
-                n += 1
-        print(f"  [{idx}] {names[-1]:<38} {n} images")
-        if n == 0:
-            print(f"      !! no images for this class — check its `dirs`")
-    return paths, labels, names
+def parse_roi(s):
+    """'x0-y0-x1-y1' (fractions) -> (x0,y0,x1,y1) floats, or None if malformed.
+    Same shape the device writes/validates (web_server h_set_roi): each in
+    [0,1], x1>x0, y1>y0. A row failing this is skipped, not crashed on."""
+    parts = s.split("-")
+    if len(parts) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(p) for p in parts)
+    except ValueError:
+        return None
+    if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+        return None
+    return (x0, y0, x1, y1)
 
 
 def _label_line(c) -> str:
@@ -160,6 +164,61 @@ def _label_line(c) -> str:
     if not latin:                       # no-bird guard class
         return "background"
     return f"{latin} ({common})"
+
+
+def list_roi_images():
+    """Read dataset/labels.csv and return (paths, labels, rois, names, counts)
+    for the rows that (a) carry a valid roi and (b) map to a configured class.
+    ROI-only: rows without a logged box are skipped — this build trains on tight
+    crops, and there's nothing to crop to without a box."""
+    names, dir2idx = [], {}
+    for idx, c in enumerate(CLASSES):
+        names.append(_label_line(c))
+        for d in c["dirs"]:
+            dir2idx[d] = idx
+
+    if not os.path.isfile(LABELS_CSV):
+        sys.exit(f"labels.csv not found at {LABELS_CSV} — run export-labels.ps1 first.")
+
+    paths, labels, rois = [], [], []
+    counts = [0] * len(CLASSES)
+    n_total = n_noroi = n_badroi = n_nomap = n_missing = 0
+    with open(LABELS_CSV, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            n_total += 1
+            rel = (row.get("relpath") or "").strip().replace("\\", "/")
+            roi_s = (row.get("roi") or "").strip()
+            if not rel:
+                continue
+            if not roi_s:
+                n_noroi += 1
+                continue
+            topdir = rel.split("/")[0]
+            idx = dir2idx.get(topdir)
+            if idx is None:
+                n_nomap += 1
+                continue
+            roi = parse_roi(roi_s)
+            if roi is None:
+                n_badroi += 1
+                continue
+            ap = os.path.join(DATASET, *rel.split("/"))
+            if not os.path.isfile(ap):
+                n_missing += 1
+                continue
+            paths.append(os.path.abspath(ap))
+            labels.append(idx)
+            rois.append(roi)
+            counts[idx] += 1
+
+    print(f"labels.csv: {n_total} rows -> {len(paths)} usable (with roi + mapped class)")
+    print(f"  skipped: {n_noroi} no-roi, {n_badroi} bad-roi, "
+          f"{n_nomap} unmapped-class, {n_missing} missing-file")
+    for idx, c in enumerate(CLASSES):
+        print(f"  [{idx}] {names[idx]:<38} {counts[idx]} images")
+        if counts[idx] == 0:
+            print(f"      !! no ROI images for this class — check its `dirs`")
+    return paths, labels, rois, names, counts
 
 
 # Visit-grouped split params. A "visit" = a burst of frames close in time (one
@@ -217,7 +276,8 @@ def split(paths, labels, n_classes):
 
     Whole visits go to train OR val — a burst is never split across both — so the
     val set measures generalization to *unseen visits*, not memorized near-dups
-    (the v0.2 leakage). Each visit is first capped at MAX_PER_VISIT frames."""
+    (the v0.2 leakage). Each visit is first capped at MAX_PER_VISIT frames.
+    Returns path lists only; ROIs are re-attached by the caller via path."""
     import random
     rng = random.Random(SEED)
     by_cls = {i: [] for i in range(n_classes)}
@@ -241,47 +301,63 @@ def preprocess(pixel):                  # tf tensor uint8 -> float [-1,1)
     return (tf.cast(pixel, tf.float32) - 128.0) / 128.0   # device contract
 
 
-def center_square(img):
-    """Largest centered square -> IMG_SIZE. This MUST mirror the on-device
-    geometry: classify.cpp decode_to_input center-crops the frame to a square
-    and resizes — it does NOT stretch the whole frame. Training on stretched
-    frames while the device serves center-crops is a train/serve skew that made
-    v0.2 flip Dompap<->Lavskrike on off-aspect frames (a 16:9 vs 4:3 capture
-    squashes differently into 224x224). Center-cropping both sides removes it
-    and makes the model resolution/aspect independent for free."""
+def roi_square(img, roi):
+    """Square-expand crop of `img` around the motion ROI, then resize to
+    IMG_SIZE. This MUST mirror classify.cpp decode_to_input's geometry: take the
+    box (roi = x0,y0,x1,y1 fractions), expand the shorter side so the crop is a
+    SQUARE (side = max(box_w, box_h)), cap it at the frame's short dimension,
+    centre it on the box centre, clamp it fully in-frame, and resize with NO
+    stretch. Training on this exact crop is why the device must serve this model
+    with detect_zoom ON — otherwise it feeds whole frames to a crop model."""
     import tensorflow as tf
     shp = tf.shape(img)
-    h, w = shp[0], shp[1]
-    s = tf.minimum(h, w)
-    img = tf.image.crop_to_bounding_box(img, (h - s) // 2, (w - s) // 2, s, s)
+    H = tf.cast(shp[0], tf.float32)
+    W = tf.cast(shp[1], tf.float32)
+    x0, y0, x1, y1 = roi[0], roi[1], roi[2], roi[3]
+    rw = (x1 - x0) * W
+    rh = (y1 - y0) * H
+    cx = (x0 + x1) * 0.5 * W
+    cy = (y0 + y1) * 0.5 * H
+    side = tf.minimum(tf.maximum(rw, rh), tf.minimum(W, H))    # square, capped
+    left = tf.clip_by_value(cx - side * 0.5, 0.0, W - side)
+    top  = tf.clip_by_value(cy - side * 0.5, 0.0, H - side)
+    # Integerize and guarantee the window stays in-bounds after rounding.
+    li = tf.cast(tf.round(left), tf.int32)
+    ti = tf.cast(tf.round(top), tf.int32)
+    si = tf.cast(tf.round(side), tf.int32)
+    si = tf.minimum(si, tf.minimum(shp[1] - li, shp[0] - ti))
+    si = tf.maximum(si, 1)
+    img = tf.image.crop_to_bounding_box(img, ti, li, si, si)
     return tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
 
 
-def make_ds(paths, labels, training):
+def make_ds(paths, labels, rois, training):
     import tensorflow as tf
 
-    def load(path, y):
+    roi_t = tf.constant(rois, dtype=tf.float32)     # [N,4], aligned with paths
+
+    def load(path, y, roi):
         img = tf.io.decode_image(tf.io.read_file(path), channels=3,
                                  expand_animations=False)
-        img = center_square(img)          # match the device (center-crop, not stretch)
+        img = roi_square(img, roi)        # match the device (ROI square-expand)
         return img, y
 
     def augment(img, y):
         # Cheap, dependency-free approximations of this camera's real capture
-        # conditions (FSD §3.2.1 step 3). Motion blur is left as a TODO — it
-        # needs a small depthwise-conv kernel; add once stock images arrive.
+        # conditions (FSD §3.2.1 step 3). The crop is already tight to the bird,
+        # so keep the random-resized crop mild (0.85-1.0) — an aggressive crop
+        # would slice the subject out of a box that's already the subject.
         img = tf.image.random_flip_left_right(img)
         img = tf.image.random_brightness(img, 0.15)
         img = tf.image.random_contrast(img, 0.85, 1.15)
         img = tf.image.random_saturation(img, 0.85, 1.15)
-        # Random-resized crop ~ edge-clipping / distance variation:
-        scale = tf.random.uniform([], 0.75, 1.0)
+        scale = tf.random.uniform([], 0.85, 1.0)
         crop = tf.cast(scale * IMG_SIZE, tf.int32)
         img = tf.image.random_crop(img, (crop, crop, 3))
         img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
         return img, y
 
-    ds = tf.data.Dataset.from_tensor_slices((paths, labels))
+    ds = tf.data.Dataset.from_tensor_slices((paths, labels, roi_t))
     if training:
         ds = ds.shuffle(max(len(paths), 1), seed=SEED, reshuffle_each_iteration=True)
     ds = ds.map(load, num_parallel_calls=tf.data.AUTOTUNE)
@@ -325,17 +401,47 @@ def compile_fit(model, tr, va, class_weight, epochs, lr):
                      epochs=epochs, class_weight=class_weight, verbose=2)
 
 
+def confusion(model, va_p, va_y, va_rois, names):
+    """Human-truth vs model-pred confusion matrix on the held-out val visits —
+    this is the 'check the new model against my human classification' step. The
+    val ds is unshuffled, so predictions align 1:1 with va_y."""
+    import numpy as np
+    ds = make_ds(va_p, va_y, va_rois, training=False)
+    probs = model.predict(ds, verbose=0)
+    pred = probs.reshape(len(va_y), -1).argmax(1)
+    n = len(names)
+    cm = np.zeros((n, n), dtype=int)
+    for t, p in zip(va_y, pred):
+        cm[t][p] += 1
+    print("\nConfusion matrix — rows = human truth, cols = model prediction (val set):")
+    print(f"{'':<30}" + "".join(f"{i:>7}" for i in range(n)) + "   recall")
+    for i in range(n):
+        tot = cm[i].sum()
+        rec = cm[i][i] / tot if tot else 0.0
+        cells = "".join(f"{v:>7}" for v in cm[i])
+        print(f"[{i}] {names[i][:26]:<26}{cells}  {rec*100:5.1f}%")
+    # Per-class precision (how trustworthy a given predicted label is).
+    print("precision:" + " " * 20 +
+          "".join(f"{(cm[:,j][j]/cm[:,j].sum()*100 if cm[:,j].sum() else 0):>6.0f}%"
+                  for j in range(n)))
+    overall = np.trace(cm) / cm.sum() if cm.sum() else 0.0
+    print(f"Overall val accuracy: {overall*100:.1f}%  (n={int(cm.sum())})")
+    return {"matrix": cm.tolist(),
+            "overall_acc": float(overall),
+            "val_n": int(cm.sum())}
+
+
 # ── Export ──────────────────────────────────────────────────────────────────
-def export_tflite(model, rep_paths, out_path):
+def export_tflite(model, rep_paths, rep_rois, out_path):
     import tensorflow as tf
 
     def rep_gen():
         # Representative set drives activation ranges; reuse training images in
         # the exact device preprocessing so the input quant matches the contract.
-        for p in rep_paths[:200]:
+        for p, r in list(zip(rep_paths, rep_rois))[:200]:
             raw = tf.io.decode_image(tf.io.read_file(p), channels=3,
                                      expand_animations=False)
-            img = center_square(raw)      # same device geometry as training/serving
+            img = roi_square(raw, tf.constant(r, tf.float32))   # same device geometry
             yield [tf.expand_dims(preprocess(img), 0)]
 
     conv = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -413,7 +519,7 @@ def verify(tflite_path):
     return ok, info
 
 
-def write_manifest(out_path, names, counts, split_sizes, verify_info):
+def write_manifest(out_path, names, counts, split_sizes, verify_info, eval_info):
     """Sidecar JSON recording a model's identity + provenance, so a .tflite on
     an SD card is never an anonymous blob. The device ignores it; it's the
     PC-side registry record (see the versioning scheme in the config)."""
@@ -428,6 +534,7 @@ def write_manifest(out_path, names, counts, split_sizes, verify_info):
         "lineage": LINEAGE,
         "version": MODEL_VERSION,
         "data_provenance": DATA_PROVENANCE,
+        "crop": "roi-square-expand (detect_zoom ON required on device)",
         "built": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "tensorflow": tf_ver,
         "input_size": IMG_SIZE,
@@ -441,6 +548,7 @@ def write_manifest(out_path, names, counts, split_sizes, verify_info):
                     "head_lr": HEAD_LR, "ft_lr": FT_LR, "val_frac": VAL_FRAC,
                     "seed": SEED},
         "verify": verify_info,
+        "eval": eval_info,
     }
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
@@ -485,25 +593,28 @@ def main():
 
     import tensorflow as tf
     print(f"TensorFlow {tf.__version__}")
-    print(f"Building {LINEAGE}-v{MODEL_VERSION}  (provenance: {DATA_PROVENANCE})")
-    print("Classes / image counts:")
-    paths, labels, names = list_images()
+    print(f"Building {LINEAGE}-v{MODEL_VERSION}  (provenance: {DATA_PROVENANCE}, ROI-crop)")
+    print("Classes / ROI image counts:")
+    paths, labels, rois, names, counts = list_roi_images()
     n_classes = len(CLASSES)
     if len(paths) < n_classes * 2:
-        sys.exit("Not enough images to train — collect/confirm more first.")
+        sys.exit("Not enough ROI images to train — backfill/confirm more first.")
 
+    roi_by_path = dict(zip(paths, rois))
     (tr_p, tr_y), (va_p, va_y) = split(paths, labels, n_classes)
+    tr_rois = [roi_by_path[p] for p in tr_p]
+    va_rois = [roi_by_path[p] for p in va_p]
     print(f"\nSplit: {len(tr_p)} train / {len(va_p)} val")
 
     # Balanced class weights (few-shot classes are heavily outnumbered).
-    counts = [tr_y.count(i) for i in range(n_classes)]
-    total = sum(counts)
+    tr_counts = [tr_y.count(i) for i in range(n_classes)]
+    total = sum(tr_counts)
     class_weight = {i: (total / (n_classes * c)) if c else 0.0
-                    for i, c in enumerate(counts)}
+                    for i, c in enumerate(tr_counts)}
     print("class_weight:", {i: round(w, 2) for i, w in class_weight.items()})
 
-    tr = make_ds(tr_p, tr_y, training=True)
-    va = make_ds(va_p, va_y, training=False) if va_p else None
+    tr = make_ds(tr_p, tr_y, tr_rois, training=True)
+    va = make_ds(va_p, va_y, va_rois, training=False) if va_p else None
 
     model, backbone = build_model(n_classes)
     print("\nPhase 1: training head (backbone frozen)")
@@ -516,24 +627,28 @@ def main():
             layer.trainable = False
         compile_fit(model, tr, va, class_weight, FT_EPOCHS, FT_LR)
 
+    eval_info = None
+    if va_p:
+        eval_info = confusion(model, va_p, va_y, va_rois, names)
+
     tflite_path = os.path.join(ROOT, args.out + ".tflite")
     txt_path = os.path.join(ROOT, args.out + ".txt")
     json_path = os.path.join(ROOT, args.out + ".json")
     print(f"\nExporting int8 TFLite -> {tflite_path}")
-    export_tflite(model, tr_p, tflite_path)
+    export_tflite(model, tr_p, tr_rois, tflite_path)
     write_labels(names, txt_path)
     print(f"Wrote labels -> {txt_path}")
     print(f"Model size: {os.path.getsize(tflite_path) / 1e6:.2f} MB")
 
     ok, info = verify(tflite_path)
-    write_manifest(json_path, names, counts, (len(tr_p), len(va_p)), info)
+    write_manifest(json_path, names, counts, (len(tr_p), len(va_p)), info, eval_info)
     print(f"Wrote manifest -> {json_path}")
     print("\nNext: upload to the device (see docs/MODEL.md):")
     print(f'  curl -X POST --data-binary @{args.out}.tflite '
           f'"http://192.168.1.111/model/upload?name={args.out}.tflite"')
     print(f'  curl -X POST --data-binary @{args.out}.txt '
           f'"http://192.168.1.111/model/upload?name={args.out}.txt"')
-    print("  then Settings -> Region / species model -> select it, and reboot.")
+    print("  then Settings -> Region / species model -> select it, enable detect_zoom, reboot.")
     sys.exit(0 if ok else 1)
 
 
