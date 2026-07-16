@@ -41,6 +41,11 @@ typedef struct {
                                        /sd/model (FSD §3.2), "" = auto */
     char     ntp_server[64];        /* SNTP hostname (FSD §3.4), default
                                        "pool.ntp.org" */
+    char     stats_reset_ts[20];    /* "YYYY-MM-DDTHH:MM:SS" epoch of the last
+                                       stats reset; stats count only rows at/after
+                                       it (FSD §3.4). "" = count all. Non-
+                                       destructive: the visit log is never deleted,
+                                       so labels/ROIs (gallery + training) persist */
     species_lang_t lang;            /* species display language (FSD §3.2),
                                        default LANG_EN; scientific name is
                                        always shown alongside it */

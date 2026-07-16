@@ -308,6 +308,7 @@ static const char INDEX_HTML[] =
 ".glabel.gnbc{background:rgba(40,58,50,.9);color:#a6cbb6;font-weight:600}"  /* confirmed no-bird */
 ".glabel.goth{background:rgba(58,42,64,.9);color:#c6a6d6;font-weight:600}"  /* other/not-a-bird (hard negative) */
 ".glabel.gunk{background:rgba(58,52,40,.9);color:#d6c69a;font-weight:600}"  /* unknown/bad-bird (excluded) */
+".glabel.gprop{background:rgba(44,46,52,.7);color:#8a9aa6;font-style:italic}"  /* propagated: inherits its visit's label, not independently classified */
 "#grid.nbmode .gitem>a{pointer-events:none;cursor:default}"   /* dbl-click marks no-bird */
 "#grid.nbmode .gitem{cursor:pointer}"
 ".gflt{background:#24402c;color:#cfe;border:1px solid #3a5a42;border-radius:5px;"
@@ -837,14 +838,28 @@ static const char INDEX_HTML[] =
 "function loadDay(){var d=$g('day').value;if(!d)return;"
 "fetch('/api/events?date='+d).then(r=>r.json()).then(a=>{"
 "a.sort((x,y)=>y.f.localeCompare(x.f));"
+/* Display-propagation: a motion event labels only its trigger frame, so a
+ * visit's follow-up frames land 'unclassified'. For DISPLAY only, carry the
+ * visit's label forward onto consecutive unclassified frames within GPGAP
+ * seconds, so a bird's burst reads as the bird instead of a wall of
+ * 'unclassified'. The real st (and the visit log / stats) is never changed;
+ * o.prop just marks a tile whose label is inherited, not independently found. */
+"(function(){var GPGAP=15;function gts(f){var m=f.match(/(\\d{4})-(\\d\\d)-(\\d\\d)_(\\d\\d)-(\\d\\d)-(\\d\\d)-(\\d{3})/);return m?Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])/1000+ +m[7]/1000:null;}"
+"var an=0,asp='',apc=0,at=null;a.slice().reverse().forEach(function(o){var t=gts(o.f),st=o.st||0;"
+"if(st>=1&&st<=4){an=st;asp=o.sp||'';apc=o.pct;at=t;}"
+"else if(st===0){if(an&&at!=null&&t!=null&&(t-at)<=GPGAP){o.prop=1;o.pst=an;o.psp=asp;o.ppct=apc;at=t;}else{an=0;at=null;}}"
+"else{an=0;at=null;}});})();"
 "var nC=a.filter(o=>o.st===1).length,nF=a.filter(o=>o.st===2).length,nB=a.filter(o=>o.st===3).length,nX=a.filter(o=>o.st===4).length,nO=a.filter(o=>o.st===5).length,nU=a.filter(o=>o.st===6).length;"
 "g_tally={n:a.length,nF:nF,nC:nC,nB:nB,nX:nX,nO:nO,nU:nU};"
 "var g=$g('grid');g.innerHTML='';"
 "a.forEach(o=>{var p='/captures/'+d+'/'+o.f;var st=o.st||0;var nm=o.sp||'';var pc=' '+(o.pct||0)+'%';"
+"var prop=(st===0&&!!o.prop);var pnm=o.psp||'';"
 "var div=document.createElement('div');div.className='gitem';div.dataset.st=st;div.dataset.sp=nm;div.dataset.f=o.f;div.dataset.pct=(o.pct==null?-1:o.pct);"
+"div.dataset.prop=prop?'1':'';div.dataset.psp=pnm;div.dataset.pst=(o.pst||0);"
 "var bcl=st===2?'gconf':st===1?'gcls':st===3?'gnb':st===4?'gnbc':st===5?'goth':st===6?'gunk':'gunc';"
 "var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===5?'\\u2713 not a bird':st===6?'\\u2713 unknown bird':st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
 "var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===5?'other / not a bird \\u2013 hard negative':st===6?'unknown / bad bird \\u2013 excluded from training':st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
+"if(prop){bcl='gprop';btxt='\\u2248 '+esc(pnm);bttl=esc(pnm)+' \\u2013 same visit (inherited label, not independently classified)';}"
 "var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+'</div>';"
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
 ":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
@@ -895,8 +910,9 @@ static const char INDEX_HTML[] =
 "function applyFilter(){var items=[...document.querySelectorAll('#grid .gitem')],vis=0,lo=g_conf-5;"
 "var spv=g_gfilter==='conf'?$g('gspecf').value:'';"
 "items.forEach(function(it){var st=+(it.dataset.st||0),p=+(it.dataset.pct);"
-"var near=st===0&&p>=lo&&p<g_conf;"   /* top-1 within 5% below the ID threshold */
-"var show=g_gfilter==='all'||(g_gfilter==='cls'&&st===1)||(g_gfilter==='conf'&&st===2&&(spv===''||it.dataset.sp===spv))||(g_gfilter==='nb'&&st===3)||(g_gfilter==='cnb'&&st===4)||(g_gfilter==='oth'&&st===5)||(g_gfilter==='unk'&&st===6)||(g_gfilter==='unc'&&st===0)||(g_gfilter==='near'&&near);"
+"var prop=it.dataset.prop==='1',pst=+(it.dataset.pst||0),esp=prop?(it.dataset.psp||''):it.dataset.sp;"
+"var near=st===0&&!prop&&p>=lo&&p<g_conf;"   /* top-1 within 5% below the ID threshold */
+"var show=g_gfilter==='all'||(g_gfilter==='cls'&&(st===1||(prop&&pst===1)))||(g_gfilter==='conf'&&(st===2||(prop&&pst===2))&&(spv===''||esp===spv))||(g_gfilter==='nb'&&(st===3||(prop&&pst===3)))||(g_gfilter==='cnb'&&(st===4||(prop&&pst===4)))||(g_gfilter==='oth'&&st===5)||(g_gfilter==='unk'&&st===6)||(g_gfilter==='unc'&&st===0&&!prop)||(g_gfilter==='near'&&near);"
 "it.style.display=show?'':'none';"
 "if(show){vis++;}else{var cb=it.querySelector('.gchk');if(cb&&cb.checked){cb.checked=false;it.classList.remove('sel');}}});"
 "renderTally(vis);gSelSync();}"
@@ -1143,7 +1159,7 @@ static const char INDEX_HTML[] =
 "'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
 "'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
 "var birds=sp.filter(o=>!o.fp).reduce((a,o)=>a+o.n,0);"
-"document.getElementById('sTotal').textContent=birds+' bird visit(s) total'"
+"document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(spo.since?(' since '+spo.since.replace('T',' ')):' total')"
 "+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
 "$g('sImgs').innerHTML='';"
 "});}"
@@ -1157,13 +1173,13 @@ static const char INDEX_HTML[] =
 "<div class=gmeta><span>'+esc((o.t||'').replace('T',' '))+'</span></div></div>').join('')+'</div>';"
 "}).catch(()=>{el.innerHTML='<span class=sts>Failed to load images</span>';});}"
 "function statsReset(){"
-"if(!confirm('Reset all statistics? This permanently deletes the visit-log "
-"history (daily/species/hourly charts). Saved photos on SD are not affected. "
-"This cannot be undone.'))return;"
+"if(!confirm('Start a new statistics window from now? The daily/species/hourly "
+"charts will count only visits from this point on. Nothing is deleted \\u2014 your "
+"saved photos, confirmed species and ROIs are all kept.'))return;"
 "fetch('/api/stats/reset',{method:'POST'}).then(r=>r.json()).then(function(o){"
-"$g('sResetSts').textContent=o.ok?'Statistics reset \\u2713':'Reset failed';"
+"$g('sResetSts').textContent=o.ok?('New window from '+(o.since||'now').replace('T',' ')+' \\u2713'):(o.error||'Reset failed');"
 "loadStats();"
-"setTimeout(function(){$g('sResetSts').textContent='';},4000);})"
+"setTimeout(function(){$g('sResetSts').textContent='';},6000);})"
 ".catch(function(){$g('sResetSts').textContent='Reset failed';});}"
 "var g_liveIp='',g_liveMask='',g_liveGw='';"
 "function ipLoad(){fetch('/api/ipconfig').then(r=>r.json()).then(c=>{"
@@ -2590,9 +2606,10 @@ static esp_err_t h_stats_species(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     /* Object, not a bare array (v1.46): confirmed false positives ("no bird"
      * rows, §3.4) ride alongside the species rows instead of polluting them. */
-    char head[48];
-    int hl = snprintf(head, sizeof(head), "{\"falsePos\":%lu,\"rows\":[",
-                      (unsigned long) st->false_pos);
+    char head[96], since_e[28];
+    json_escape(since_e, sizeof(since_e), g_settings.stats_reset_ts);
+    int hl = snprintf(head, sizeof(head), "{\"falsePos\":%lu,\"since\":\"%s\",\"rows\":[",
+                      (unsigned long) st->false_pos, since_e);
     httpd_resp_send_chunk(req, head, hl);
     for (int i = 0; i < st->sp_count; i++) {
         char species[80];
@@ -2753,14 +2770,29 @@ static esp_err_t h_recheck_get(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/stats/reset — deletes the visit-log CSVs (FSD §3.4), clearing
- * historic species recognition; saved photos on SD are untouched. */
+/* POST /api/stats/reset — start a fresh statistics window (FSD §3.4). NON-
+ * DESTRUCTIVE (v2.02): records `now` as the stats-reset epoch, so stats count
+ * only visits at/after it. The visit-log CSVs are NOT deleted, so every
+ * confirmed label + ROI (the gallery and the retrain export) survives a reset —
+ * statistics are decoupled from the ground-truth data. Requires an NTP-synced
+ * clock; otherwise `now` is ~1970 and the epoch would filter nothing. */
 static esp_err_t h_stats_reset(httpd_req_t *req)
 {
-    int deleted = storage_reset_stats();
-    char buf[48];
-    snprintf(buf, sizeof(buf), "{\"ok\":true,\"deleted\":%d}", deleted);
     httpd_resp_set_type(req, "application/json");
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    if (tm.tm_year + 1900 < 2020) {
+        httpd_resp_sendstr(req,
+            "{\"ok\":false,\"error\":\"clock not synced yet \\u2014 wait for NTP time, then reset\"}");
+        return ESP_OK;
+    }
+    strftime(g_settings.stats_reset_ts, sizeof(g_settings.stats_reset_ts),
+             "%Y-%m-%dT%H:%M:%S", &tm);
+    settings_save();
+    ESP_LOGI(TAG, "stats reset epoch set to %s (log preserved)", g_settings.stats_reset_ts);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"since\":\"%s\"}", g_settings.stats_reset_ts);
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
