@@ -3228,10 +3228,24 @@ static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r
     return ESP_OK;
 }
 
-/* POST /api/classify — classify a posted JPEG right now (FSD §3.2/§6).
- * Lets users sanity-check their model without waiting for a bird, and is
- * how the classifier is verified end-to-end. Blocks this httpd thread for
- * the full decode + inference (~seconds) — acceptable for a manual op. */
+/* Species-ID requests are offloaded to a worker task (see ident_dispatch, just
+ * below the shared identify helpers) so a slow on-device inference or Claude
+ * round-trip can never freeze the single httpd task (FSD v1.97). */
+typedef enum {
+    IDENT_MODEL_POST,    /* POST /api/classify      — inference on a posted JPEG */
+    IDENT_MODEL_FILE,    /* GET  /api/classify-file — inference on an SD JPEG */
+    IDENT_CLAUDE_FILE,   /* GET  /api/claude-file   — Claude round-trip on an SD JPEG */
+    IDENT_CLAUDE_TEST,   /* GET  /api/claude-test   — reachability/key probe */
+} ident_kind_t;
+static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
+                                const char *date, const char *file,
+                                uint8_t *body, size_t body_len);
+
+/* POST /api/classify — classify a posted JPEG right now (FSD §3.2/§6). Lets
+ * users sanity-check their model without waiting for a bird, and is how the
+ * classifier is verified end-to-end. The body is received here (network-bound,
+ * ~1 s) then handed to the identify worker for the slow decode + inference, so
+ * the httpd task isn't held for the inference. */
 #define CLASSIFY_MAX_BODY (300 * 1024)
 static esp_err_t h_classify_run(httpd_req_t *req)
 {
@@ -3245,17 +3259,16 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized JPEG");
         return ESP_OK;
     }
-    uint8_t *body = heap_caps_malloc(req->content_len,
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int total = req->content_len;
+    uint8_t *body = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
         return ESP_OK;
     }
-    int remaining = req->content_len, timeout_retries = 0;
+    int remaining = total, timeout_retries = 0;
     bool ok = true;
     while (remaining > 0) {
-        int got = httpd_req_recv(req, (char *) body + (req->content_len - remaining),
-                                 remaining);
+        int got = httpd_req_recv(req, (char *) body + (total - remaining), remaining);
         if (got <= 0) {
             if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
             ok = false;
@@ -3264,15 +3277,12 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         timeout_retries = 0;
         remaining -= got;
     }
-
-    classify_result_t r;
-    esp_err_t err = ok ? classify_run_sync(body, req->content_len, &r) : ESP_FAIL;
-    free(body);
-    if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
+    if (!ok) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv failed");
         return ESP_OK;
     }
-    return classify_send_json(req, &r, false);   /* posted image → no row to save into */
+    return ident_dispatch(req, IDENT_MODEL_POST, NULL, NULL, body, total);
 }
 
 /* Query parse + path validation shared by the Gallery's two identify
@@ -3307,23 +3317,172 @@ static bool idfile_save(const char *date, const char *file,
     return true;
 }
 
+/* ── Async species-ID offload (FSD v1.97) ──────────────────────────────────
+ * esp_http_server serves every socket from ONE task, so a handler that ran an
+ * on-device inference (~11-20 s) or a Claude round-trip (~1-5 s) inline froze
+ * the entire UI for that whole time — a 639-byte /api/status stalled exactly as
+ * long as the identify ran (measured). Mirror the /stream fix: duplicate the
+ * request, hand it to a worker task, and return so the httpd task goes straight
+ * back to serving other sockets.
+ *
+ * The worker runs BELOW httpd's priority (identify=4 < httpd=5), so even a
+ * CPU-bound TFLM inference can't starve request handling. Single-flight: one
+ * identify at a time — TFLM callers already serialize on classify.c's run
+ * mutex, and the Gallery's per-tile buttons disable themselves in flight and
+ * fire one image at a time, so a second concurrent identify is never the fast
+ * path. A collision gets 503 {"error":...} (the tile prints it) rather than
+ * oversubscribing PSRAM (JPEG buffer + 5.5 MB arena + TLS) and stalling worse. */
+typedef struct {
+    httpd_req_t *req;         /* async copy — owns the socket until complete */
+    ident_kind_t kind;
+    char     date[24];
+    char     file[80];
+    uint8_t *body;            /* IDENT_MODEL_POST: received JPEG (PSRAM); else NULL */
+    size_t   body_len;
+} ident_job_t;
+
+static volatile bool s_ident_busy = false;
+
+static void ident_task(void *arg)
+{
+    ident_job_t *j = (ident_job_t *) arg;
+    httpd_req_t *req = j->req;
+    classify_result_t r;
+
+    switch (j->kind) {
+    case IDENT_MODEL_POST:
+        if (classify_run_sync(j->body, j->body_len, &r) != ESP_OK)
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
+        else
+            classify_send_json(req, &r, false);   /* posted image → no row to save */
+        break;
+
+    case IDENT_MODEL_FILE: {
+        char path[160];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
+                 j->date, j->file);
+        FILE *f = fopen(path, "rb");
+        long sz = 0;
+        if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET); }
+        if (!f) {
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
+        } else if (sz <= 0 || sz > CLASSIFY_MAX_BODY) {
+            fclose(f);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized JPEG");
+        } else {
+            uint8_t *body = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            size_t rd = body ? fread(body, 1, sz, f) : 0;
+            fclose(f);
+            if (!body)
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+            else if (rd != (size_t) sz)
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+            else if (classify_run_sync(body, sz, &r) != ESP_OK)
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
+            else
+                classify_send_json(req, &r, idfile_save(j->date, j->file, &r, "model"));
+            free(body);
+        }
+        break;
+    }
+
+    case IDENT_CLAUDE_FILE: {
+        char path[160];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
+                 j->date, j->file);
+        if (claude_classify_file(path, &r) != ESP_OK) {
+            /* Surface Claude's own words (bad key, quota, safety block) — the
+             * Gallery prints this straight into the tile. */
+            char e[128], msg[96];
+            json_escape(msg, sizeof(msg), claude_last_error());
+            snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
+            httpd_resp_set_status(req, "502 Bad Gateway");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, e);
+        } else {
+            classify_send_json(req, &r, idfile_save(j->date, j->file, &r, "claude"));
+        }
+        break;
+    }
+
+    case IDENT_CLAUDE_TEST: {
+        /* Roomy: the TLS verdict carries an mbedTLS code, the cert-verify flags
+         * and the with/without-verification comparison; a clipped one loses
+         * exactly the part that says which failure it was. */
+        char verdict[288] = "";
+        esp_err_t err = claude_test(verdict, sizeof(verdict));
+        char msg[384], buf[440];
+        json_escape(msg, sizeof(msg), verdict);
+        snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
+                 err == ESP_OK ? "true" : "false", msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, buf);
+        break;
+    }
+    }
+
+    httpd_req_async_handler_complete(req);   /* release the socket */
+    free(j->body);
+    free(j);
+    s_ident_busy = false;
+    vTaskDelete(NULL);
+}
+
+/* Validate-then-offload front end shared by all four species-ID endpoints.
+ * Takes ownership of `body` (freed here on any early bail, else by the worker).
+ * Only the single httpd task ever calls this, so the s_ident_busy check/set is
+ * race-free against itself; the worker is the only other writer and only ever
+ * clears it. */
+static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
+                                const char *date, const char *file,
+                                uint8_t *body, size_t body_len)
+{
+    if (s_ident_busy) {
+        free(body);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"identify busy \\u2014 one at a time\"}");
+        return ESP_OK;
+    }
+    ident_job_t *j = calloc(1, sizeof(*j));
+    if (!j) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        return ESP_OK;
+    }
+    j->kind = kind;
+    j->body = body;
+    j->body_len = body_len;
+    if (date) strlcpy(j->date, date, sizeof(j->date));
+    if (file) strlcpy(j->file, file, sizeof(j->file));
+
+    httpd_req_t *copy = NULL;
+    if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) {
+        free(body);
+        free(j);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "async begin failed");
+        return ESP_OK;
+    }
+    j->req = copy;
+    s_ident_busy = true;
+    if (xTaskCreate(ident_task, "identify", 16384, j, 4, NULL) != pdPASS) {
+        s_ident_busy = false;
+        httpd_req_async_handler_complete(copy);
+        free(body);
+        free(j);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory for identify task");
+        return ESP_OK;
+    }
+    return ESP_OK;
+}
+
 /* GET /api/claude-test — check reachability + the stored key without spending
  * tokens (FSD §3.2.3/§6). A deployed box has no serial console, so this is the
- * only way to tell a rejected key from a blocked network. Blocks ~1-3 s. */
+ * only way to tell a rejected key from a blocked network. Runs in the identify
+ * worker (~1-3 s), so it doesn't hold the httpd task. */
 static esp_err_t h_claude_test(httpd_req_t *req)
 {
-    /* Roomy: the TLS verdicts carry an mbedTLS code, the cert-verify flags and
-     * the with/without-verification comparison, and a clipped one loses exactly
-     * the part that says which failure it was. */
-    char verdict[288] = "";
-    esp_err_t err = claude_test(verdict, sizeof(verdict));
-    char msg[384], buf[440];
-    json_escape(msg, sizeof(msg), verdict);
-    snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
-             err == ESP_OK ? "true" : "false", msg);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, buf);
-    return ESP_OK;
+    return ident_dispatch(req, IDENT_CLAUDE_TEST, NULL, NULL, NULL, 0);
 }
 
 /* GET /api/claude-file?date=<day>&f=<file> — identify one saved photo with
@@ -3332,8 +3491,8 @@ static esp_err_t h_claude_test(httpd_req_t *req)
  * beats typing a species name per image. Independent of the Settings toggle
  * (which only governs the live path) — a stored key is enough.
  *
- * Blocks this httpd thread for the round-trip (~1-5 s), like the on-device
- * sibling above blocks for inference. */
+ * Offloaded to the identify worker for the round-trip (~1-5 s) so the httpd
+ * task isn't held — see ident_dispatch. */
 static esp_err_t h_claude_file(httpd_req_t *req)
 {
     if (!claude_have_key()) {
@@ -3352,28 +3511,14 @@ static esp_err_t h_claude_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-
-    char path[160];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s", date, file);
-    classify_result_t r;
-    if (claude_classify_file(path, &r) != ESP_OK) {
-        /* Surface Claude's own words (bad key, quota, safety block) — the
-         * Gallery prints this straight into the tile. */
-        char e[128], msg[96];
-        json_escape(msg, sizeof(msg), claude_last_error());
-        snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
-        httpd_resp_set_status(req, "502 Bad Gateway");
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, e);
-        return ESP_OK;
-    }
-    return classify_send_json(req, &r, idfile_save(date, file, &r, "claude"));
+    return ident_dispatch(req, IDENT_CLAUDE_FILE, date, file, NULL, 0);
 }
 
 /* GET /api/classify-file?date=<day>&f=<file> — classify a JPEG already on the
  * SD card (FSD §3.2/§6). Lets the Gallery re-run species ID on a saved photo
- * without re-uploading it over WiFi: the device reads the file itself. Blocks
- * this httpd thread for the full decode + inference (~seconds) like /api/classify. */
+ * without re-uploading it over WiFi: the device reads the file itself. The read
+ * + decode + inference (~seconds) run in the identify worker, so the httpd task
+ * isn't held — see ident_dispatch. */
 static esp_err_t h_classify_file(httpd_req_t *req)
 {
     if (!classify_available()) {
@@ -3391,44 +3536,7 @@ static esp_err_t h_classify_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-
-    char path[160];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s", date, file);
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
-        return ESP_OK;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > CLASSIFY_MAX_BODY) {
-        fclose(f);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized JPEG");
-        return ESP_OK;
-    }
-    uint8_t *body = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!body) {
-        fclose(f);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-        return ESP_OK;
-    }
-    size_t rd = fread(body, 1, sz, f);
-    fclose(f);
-    if (rd != (size_t) sz) {
-        free(body);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
-        return ESP_OK;
-    }
-
-    classify_result_t r;
-    esp_err_t err = classify_run_sync(body, sz, &r);
-    free(body);
-    if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "classification failed");
-        return ESP_OK;
-    }
-    return classify_send_json(req, &r, idfile_save(date, file, &r, "model"));
+    return ident_dispatch(req, IDENT_MODEL_FILE, date, file, NULL, 0);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
