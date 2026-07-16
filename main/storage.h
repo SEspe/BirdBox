@@ -81,6 +81,14 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
  * row). `roi` must already be a validated "x0-y0-x1-y1" string. */
 esp_err_t storage_set_roi(const char *date, const char *file, const char *roi);
 
+/* Append one saved frame's motion box to the per-day frame-ROI sidecar
+ * (/log/frameroi-DATE.csv, "file,roi" per line), §3.4. The capture burst
+ * re-detects the box on every frame but only the event row records one; this
+ * keeps every frame's box so a later human confirm of a follow-up frame can
+ * reuse it (storage_relabel fills it in), no manual backfill. `roi` is a
+ * "x0-y0-x1-y1" string; empty/`,`-bearing inputs are rejected. */
+esp_err_t storage_log_frame_roi(const char *date, const char *file, const char *roi);
+
 /* Accept the model's current classification as human-confirmed (§3.4/v1.59):
  * copies the row's species into its "corrected" column. Returns ESP_ERR_NOT_FOUND
  * when there's nothing confirmable (no row, a sentinel/no-latin row, or already
