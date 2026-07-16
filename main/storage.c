@@ -14,6 +14,7 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
@@ -463,6 +464,69 @@ esp_err_t storage_confirm(const char *date, const char *file)
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+/* ── Per-frame motion-ROI sidecar (§3.4) ─────────────────────────────────────
+ * capture.c logs every saved frame's re-detected box here so a later confirm of
+ * a follow-up frame (which never had its own visit row) can recover that frame's
+ * own box — the frames all exist, only the boxes were being discarded. */
+esp_err_t storage_log_frame_roi(const char *date, const char *file, const char *roi)
+{
+    if (!s_sd_present || !date || strlen(date) != 10 || !file || !file[0] ||
+        !roi || !roi[0] || strchr(file, ',') || strchr(file, '\n'))
+        return ESP_ERR_INVALID_ARG;
+    char path[64];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/frameroi-%.10s.csv", date);
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    FILE *f = fopen(path, "a");
+    esp_err_t err = ESP_FAIL;
+    if (f) { fprintf(f, "%s,%s\n", file, roi); fclose(f); err = ESP_OK; }
+    xSemaphoreGive(s_write_mtx);
+    return err;
+}
+
+/* Load a day's frame-ROI sidecar into a PSRAM buffer (caller frees), NUL-
+ * terminated, or NULL if absent/empty. Takes the write lock briefly, so call it
+ * BEFORE the relabel paths take it — otherwise they'd self-deadlock. */
+static char *frameroi_load(const char *date)
+{
+    if (!date || strlen(date) < 10) return NULL;
+    char path[64];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/frameroi-%.10s.csv", date);
+    char *buf = NULL;
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 0 && sz < 2 * 1024 * 1024) {
+            buf = heap_caps_malloc(sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (buf) { size_t rd = fread(buf, 1, sz, f); buf[rd] = '\0'; }
+        }
+        fclose(f);
+    }
+    xSemaphoreGive(s_write_mtx);
+    return buf;
+}
+
+/* Find `file`'s recorded box ("x0-y0-x1-y1") in a loaded sidecar buffer, newest
+ * wins is irrelevant (a frame appears once). Returns false if absent/empty. */
+static bool frameroi_find(const char *buf, const char *file, char *out, size_t outsz)
+{
+    if (!buf || !file || !file[0]) return false;
+    size_t flen = strlen(file);
+    for (const char *p = buf; p && *p; ) {
+        if (strncmp(p, file, flen) == 0 && p[flen] == ',') {
+            const char *roi = p + flen + 1;
+            size_t rl = strcspn(roi, "\r\n");
+            if (rl > 0 && rl < outsz) { memcpy(out, roi, rl); out[rl] = '\0'; return true; }
+            return false;
+        }
+        const char *nl = strchr(p, '\n');
+        p = nl ? nl + 1 : NULL;
+    }
+    return false;
+}
+
 esp_err_t storage_relabel(const char *date, const char *file,
                           const char *common, const char *latin)
 {
@@ -481,10 +545,11 @@ esp_err_t storage_relabel(const char *date, const char *file,
     snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
+    char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
     FILE *in  = fopen(path, "r");
     FILE *out = fopen(tmp, "w");
-    if (!out) { if (in) fclose(in); xSemaphoreGive(s_write_mtx);
+    if (!out) { if (in) fclose(in); xSemaphoreGive(s_write_mtx); free(frbuf);
         ESP_LOGE(TAG, "relabel: temp open failed"); return ESP_FAIL; }
 
     bool found = false;
@@ -530,13 +595,16 @@ esp_err_t storage_relabel(const char *date, const char *file,
             snprintf(ts, sizeof(ts), "%.10sT%.2s:%.2s:%.2s", file, file+11, file+14, file+17);
         else
             strlcpy(ts, date, sizeof(ts));
-        fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,,\n", ts, c, date, file, c, l);
+        char frroi[24] = "";
+        frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
+        fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,%s,\n", ts, c, date, file, c, l, frroi);
     }
     fclose(out);
 
     unlink(path);
     rename(tmp, path);
     xSemaphoreGive(s_write_mtx);
+    free(frbuf);
     ESP_LOGI(TAG, "relabel %s/%s -> '%s' (%s)", date, file, c, found ? "updated" : "added");
     return ESP_OK;
 }
@@ -567,10 +635,11 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
     snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
+    char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
     FILE *in  = fopen(path, "r");
     FILE *out = fopen(tmp, "w");
-    if (!out) { if (in) fclose(in); xSemaphoreGive(s_write_mtx); free(found);
+    if (!out) { if (in) fclose(in); xSemaphoreGive(s_write_mtx); free(found); free(frbuf);
         ESP_LOGE(TAG, "relabel batch: temp open failed"); return ESP_FAIL; }
 
     int applied_n = 0;
@@ -617,7 +686,9 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
             snprintf(ts, sizeof(ts), "%.10sT%.2s:%.2s:%.2s", file, file+11, file+14, file+17);
         else
             strlcpy(ts, date, sizeof(ts));
-        fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,,\n", ts, c, date, file, c, l);
+        char frroi[24] = "";
+        frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
+        fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,%s,\n", ts, c, date, file, c, l, frroi);
         applied_n++;
     }
     fclose(out);
@@ -626,6 +697,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
     rename(tmp, path);
     xSemaphoreGive(s_write_mtx);
     free(found);
+    free(frbuf);
     if (applied) *applied = applied_n;
     ESP_LOGI(TAG, "relabel batch %s: %d image(s) -> '%s'", date, applied_n, c);
     return ESP_OK;

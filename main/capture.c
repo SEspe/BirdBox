@@ -39,6 +39,22 @@ esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
         strlcpy(s_frame_paths[s_frame_n++], path, sizeof(s_frame_paths[0]));
     }
 
+    /* Record EVERY saved frame's re-detected motion box in the per-day sidecar
+     * (§3.4), not just the classified first-N: a later human confirm of any
+     * follow-up frame then recovers that frame's own box for ROI-crop training,
+     * with no manual backfill. path is "/captures/YYYY-MM-DD/NAME.jpg". */
+    if (err == ESP_OK && !roi_is_empty(roi) &&
+        strncmp(path, "/captures/", 10) == 0 && strlen(path) > 21) {
+        const char *fbase = strrchr(path, '/');
+        char date[11];
+        memcpy(date, path + 10, 10);
+        date[10] = '\0';
+        char roistr[24];
+        snprintf(roistr, sizeof(roistr), "%.2f-%.2f-%.2f-%.2f",
+                 roi.x0, roi.y0, roi.x1, roi.y1);
+        storage_log_frame_roi(date, fbase + 1, roistr);
+    }
+
     return err;
 }
 
