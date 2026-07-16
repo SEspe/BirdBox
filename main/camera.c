@@ -48,6 +48,12 @@ static volatile int64_t  s_last_good_us= 0;     /* esp_timer of last good frame*
 static volatile uint32_t s_recoveries  = 0;     /* successful re-inits         */
 static volatile int64_t  s_last_recov_us = 0;   /* esp_timer of last recovery  */
 static volatile bool     s_fault       = false;
+/* Frame size actually running, as a RES index — CAMERA_RES_NONE until a size
+ * initializes. Kept separate from g_settings.resolution (the user's *request*)
+ * because the degrade ladder below can boot at something smaller: writing the
+ * fallback back into the setting silently rewrote the user's choice, and any
+ * later /api/settings save then persisted it to NVS for good (v1.96). */
+static volatile uint8_t  s_active_idx  = CAMERA_RES_NONE;
 
 static esp_err_t camera_hw_init(void);          /* shared boot + recovery init */
 
@@ -107,10 +113,12 @@ static esp_err_t camera_hw_init(void)
     };
 
     /* A high resolution can exhaust PSRAM alongside the species model/arena
-     * (classify_init runs first, in main.c, so the model is already reserved).
-     * Step down through the RES table until a size fits, rather than failing
-     * boot (which would trigger OTA rollback). g_settings.resolution is updated
-     * in RAM to what actually initialized, so the UI reflects reality. */
+     * (classify_init runs first, in main.c, so the model is already reserved),
+     * and a sensor still wedged from before a *soft* reboot can fail init at
+     * any size. Step down through the RES table until one works, rather than
+     * failing boot (which would trigger OTA rollback). What actually came up
+     * lands in s_active_idx — never in g_settings.resolution, which stays the
+     * user's standing request so the next boot retries it (v1.96). */
     uint8_t idx = res_idx();
     esp_err_t err = ESP_FAIL;
     while (1) {
@@ -126,9 +134,14 @@ static esp_err_t camera_hw_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "camera init failed (%s) — check board_config.h pin map",
                  esp_err_to_name(err));
+        s_active_idx = CAMERA_RES_NONE;
         return err;
     }
-    g_settings.resolution = idx;
+    s_active_idx = idx;
+    if (idx != res_idx())
+        ESP_LOGW(TAG, "running at %s, not the requested %s — reboot to retry "
+                 "(the saved setting is unchanged)",
+                 RES[idx].str, RES[res_idx()].str);
 
     sensor_t *s = esp_camera_sensor_get();
     ESP_LOGI(TAG, "camera ready — sensor PID 0x%04x, %s", s ? s->id.PID : 0,
@@ -391,7 +404,15 @@ esp_err_t camera_set_fast_shutter(bool enable)
     return ESP_OK;
 }
 
-const char *camera_framesize_str(void) { return RES[res_idx()].str; }
+/* The size actually running, not the requested one — those differ after a
+ * degrade, and after a saved-but-not-yet-rebooted change (v1.96). */
+const char *camera_framesize_str(void)
+{
+    uint8_t a = s_active_idx;
+    return a < RES_COUNT ? RES[a].str : "none (camera down)";
+}
+
+uint8_t camera_active_res(void) { return s_active_idx; }
 
 esp_err_t camera_set_rotation(rotation_t rot)
 {
