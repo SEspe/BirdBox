@@ -523,6 +523,7 @@ static const char INDEX_HTML[] =
 "<option value='3'>HD 1280&times;720 &mdash; recommended (best motion)</option>"
 "<option value='4'>SXGA 1280&times;1024 &mdash; +vertical detail, weaker motion</option>"
 "</select>"
+"<p class='sts' id='stResWarn' style='display:none;color:#e0a030;margin-top:2px'></p>"
 "<label class='wl'>Contrast (the OV2640 has no sharpness control)</label>"
 "<select class='wi' id='stContrast'>"
 "<option value='-2'>-2 (soft)</option><option value='-1'>-1</option>"
@@ -1157,6 +1158,17 @@ static const char INDEX_HTML[] =
 "if(![...rs.options].some(o=>o.value==c.res)){var ro=document.createElement('option');"
 "ro.value=c.res;ro.textContent='Current ('+c.res+')';rs.appendChild(ro);}"
 "$g('stRes').value=c.res;$g('stContrast').value=c.contrast;$g('stAe').value=c.ae_level;g_savedRes=c.res;"
+/* The box can run at something other than the saved request — a boot-time
+ * degrade (camera_init steps down when a size won't initialize), or a change
+ * that hasn't been rebooted into. Say which, instead of showing the request
+ * and letting it read as fact (v1.96). */
+"var rw=$g('stResWarn');"
+"if(c.resActive!=null&&c.resActive>=0&&c.resActive!=c.res){rw.style.display='';"
+"rw.textContent='\\u26a0 Running at '+c.resActiveStr+', not the size saved here. "
+"Either the change above hasn\\u2019t been rebooted into yet, or that size failed to start at boot "
+"(a camera fault survives a soft reboot \\u2014 a power cycle clears it). Reboot to retry; "
+"your saved choice is untouched.';}"
+"else rw.style.display='none';"
 "var q=$g('stQual');"
 "if(![...q.options].some(o=>o.value==c.qual)){var op=document.createElement('option');"
 "op.value=c.qual;op.textContent='Custom ('+c.qual+')';q.appendChild(op);}"
@@ -2590,14 +2602,17 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[700];
+    char buf[800];   /* truncation here would emit malformed JSON and take the
+                        whole Settings tab down — keep headroom (v1.96 added
+                        resActive/resActiveStr, ~45 B) */
     /* ckey_set, never the key itself: this reply is world-readable on the LAN,
      * and the same posture as /api/wificfg (which reports configured SSIDs but
      * never the passwords). */
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
-        "\"res\":%u,\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
+        "\"res\":%u,\"resActive\":%d,\"resActiveStr\":\"%s\","
+        "\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"cld\":%u,\"ckey_set\":%s,\"models\":[",
@@ -2606,7 +2621,14 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.confidence_pct, g_settings.sd_cap_pct,
         g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
         (unsigned) g_settings.region_filter,
-        (unsigned) g_settings.resolution, (int) g_settings.contrast,
+        /* res = the standing request (what's in NVS); resActive = what the
+         * camera actually came up at. They differ after a degraded boot, or
+         * after a res change that hasn't been rebooted into yet — the Settings
+         * tab says so rather than letting the request quietly read as fact. */
+        (unsigned) g_settings.resolution,
+        camera_active_res() == CAMERA_RES_NONE ? -1 : (int) camera_active_res(),
+        camera_framesize_str(),
+        (int) g_settings.contrast,
         (int) g_settings.ae_level,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,

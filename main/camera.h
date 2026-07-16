@@ -56,9 +56,20 @@ esp_err_t camera_set_ae_level(int level);
  * blur. false restores normal auto exposure. */
 esp_err_t camera_set_fast_shutter(bool enable);
 
-/* Human-readable current frame size, e.g. "SVGA 800x600" (Debug card, §5).
- * Reflects g_settings.resolution, which is applied at camera_init (reboot). */
+/* No frame size is running (camera down / never initialized). */
+#define CAMERA_RES_NONE 0xFF
+
+/* Human-readable frame size ACTUALLY running, e.g. "SVGA 800x600" (Debug card,
+ * §5) — "none (camera down)" when there isn't one. This is deliberately not
+ * g_settings.resolution: that's the *request*, and it differs from reality both
+ * after a saved-but-not-rebooted change and after camera_init's degrade ladder
+ * steps down. Reporting the request is what hid a degraded boot (v1.96). */
 const char *camera_framesize_str(void);
+
+/* The running frame size as a RES-table index (comparable to
+ * g_settings.resolution), or CAMERA_RES_NONE. Differs from the setting => the
+ * box degraded at boot and a reboot would retry the request. */
+uint8_t camera_active_res(void);
 
 /* Applies 0/180 rotation at the sensor (hmirror+vflip, free — fixes the
  * live stream, SD captures, and classifier input all at once). 90/270 aren't
