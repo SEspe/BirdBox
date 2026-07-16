@@ -1054,7 +1054,7 @@ static const char INDEX_HTML[] =
 "function rbShow(){var g=g_rb;if(!g)return;"
 "if(g.i>=g.list.length){$g('rbEdit').style.display='none';rbSts('Done \\u2013 finished '+g.list.length+' image(s) for '+g.d+'. Reload to re-check.');return;}"
 "var it=g.list[g.i];$g('rbImg').src='/captures/'+g.d+'/'+encodeURIComponent(it.f);"
-"$g('rbProg').textContent=(g.i+1)+' / '+g.list.length+'  ('+it.sp+')';"
+"$g('rbProg').textContent=(g.i+1)+' / '+g.list.length+' \\u2013 '+it.sp;"
 "g_rbc=[0.5,0.5];g_rbbox=null;$g('rbBox').style.display='none';}"
 "function rbClick(e){var im=$g('rbImg');var r=im.getBoundingClientRect();"
 "var cx=(e.clientX-r.left)/r.width,cy=(e.clientY-r.top)/r.height;"
@@ -2340,7 +2340,7 @@ static esp_err_t h_roi_todo(httpd_req_t *req)
         gal_next_field(&p);                        /* frames */
         char *first_fr  = gal_next_field(&p);
         char *corrected = gal_next_field(&p);
-        gal_next_field(&p);                        /* latin */
+        char *latin     = gal_next_field(&p);      /* binomial, for localization */
         char *roi       = gal_next_field(&p);
         if (!corrected[0] || roi[0]) continue;     /* confirmed rows still missing a roi */
         if (!strcmp(corrected, "no bird") || !strcmp(corrected, "other") ||
@@ -2349,10 +2349,12 @@ static esp_err_t h_roi_todo(httpd_req_t *req)
         if (!base) continue;
         base += strlen(match);
         if (!base[0] || strchr(base, '/')) continue;
-        char f_e[64], s_e[80];
+        char disp[96];                             /* localized name (+ Latin) per settings.lang */
+        species_localize(corrected, latin, g_settings.lang, disp, sizeof(disp));
+        char f_e[64], s_e[160];
         json_escape(f_e, sizeof(f_e), base);
-        json_escape(s_e, sizeof(s_e), corrected);
-        char item[176];
+        json_escape(s_e, sizeof(s_e), disp);
+        char item[280];
         int len = snprintf(item, sizeof(item), "%s{\"f\":\"%s\",\"sp\":\"%s\"}",
                            first ? "" : ",", f_e, s_e);
         httpd_resp_send_chunk(req, item, len);
