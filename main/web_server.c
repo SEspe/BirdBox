@@ -831,7 +831,7 @@ static const char INDEX_HTML[] =
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
 "onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
-"<div class=\"gmeta\"><span>'+o.f+' &middot; '+Math.round(o.s/1024)+' KB</span>"
+"<div class=\"gmeta\"><span>'+o.f+'</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
 "<button class=\"gidbtn\" title=\"identify bird (on-device model)\" "
@@ -992,9 +992,18 @@ static const char INDEX_HTML[] =
 "var v=$g('gspecin').value.trim();if(!v){$g('gspecsts').textContent='enter a species';return;}"
 "var d=$g('day').value,m=g_specMap[v]||{c:v,l:''};"
 "if(!confirm('Set \\u201c'+v+'\\u201d on '+fs.length+' selected image(s)?'))return;"
-"gSeq('/api/relabel',fs,function(f){return 'date='+encodeURIComponent(d)+'&f='+encodeURIComponent(f)"
-"+'&c='+encodeURIComponent(m.c)+'&l='+encodeURIComponent(m.l);},"
-"function(ok){g_lastSp={c:m.c,l:m.l,d:v};$g('gspecbar').style.display='none';loadDay();},'Setting species');}"
+"gRelabelBatch(d,m,fs,function(){g_lastSp={c:m.c,l:m.l,d:v};$g('gspecbar').style.display='none';loadDay();});}"
+/* Bulk "Set species" posts the whole selection to /api/relabel-batch, which
+ * applies one label to many images in a SINGLE CSV rewrite. Chunked so each body
+ * stays under the handler's 16 KB cap; the same progress bar drives per chunk.
+ * This replaces the old one-relabel-per-image loop (one full CSV rewrite each). */
+"function gRelabelBatch(d,m,fs,cb){var CH=300,i=0,tot=fs.length;gProg('Setting species',0,tot);"
+"(function nxt(){if(i>=tot){setTimeout(function(){$g('gprog').style.display='none';},500);cb();return;}"
+"var chunk=fs.slice(i,i+CH);"
+"var body='date='+encodeURIComponent(d)+'&c='+encodeURIComponent(m.c)+'&l='+encodeURIComponent(m.l)"
+"+'&files='+chunk.join(',');"
+"fetch('/api/relabel-batch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
+".then(r=>r.json()).catch(()=>null).then(function(){i+=chunk.length;gProg('Setting species',i,tot);nxt();});})();}"
 "function gDelSel(){var d=$g('day').value;"
 "var fs=gChecks().filter(c=>c.checked).map(c=>c.dataset.f);"
 "if(!fs.length){alert('No images selected');return;}"
@@ -1923,6 +1932,7 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
 
 /* GET /api/events?date=YYYY-MM-DD — files of one capture day, each annotated
  * with its species label + confidence when it's a logged event's first frame */
+#define EVENTS_OBUF 4096   /* response send-buffer; flush at this fill (v1.98) */
 static esp_err_t h_events(httpd_req_t *req)
 {
     char query[64] = {0}, date[36] = {0};
@@ -1948,15 +1958,28 @@ static esp_err_t h_events(httpd_req_t *req)
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int nlabels = tab ? gal_build_labels(date, tab) : 0;
 
-    httpd_resp_send_chunk(req, "[", 1);
+    /* Two things dominated this handler on a busy day (v1.98):
+     *  - one httpd_resp_send_chunk() PER FILE — on a 2000+ image day that's 2400
+     *    tiny chunked TCP writes, and the per-write overhead (not the SD, not the
+     *    CPU match) was most of the ~11 s. Buffer items and flush at ~4 KB so the
+     *    whole day goes out in a few dozen sends.
+     *  - a per-file stat() for byte size, feeding only a cosmetic "· NN KB" tile
+     *    label nobody reads — dropped (removes an SD metadata read per file).
+     * A ~1-2 s floor remains: gal_build_labels reads the whole month's visit-log
+     * CSV each call (unavoidable with one monthly file — a per-day log would fix
+     * it, but that's a larger change touching stats/export). */
+    char *obuf = malloc(EVENTS_OBUF);
+    if (!obuf) {
+        closedir(d); free(tab);
+        httpd_resp_sendstr(req, "[]");
+        return ESP_OK;
+    }
+    size_t used = 0;
+    obuf[used++] = '[';
     struct dirent *e;
     bool first = true;
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
-        char fpath[176];
-        snprintf(fpath, sizeof(fpath), "%s/%.48s", dir, e->d_name);
-        struct stat st = {0};
-        stat(fpath, &st);
         const char *sp = "";
         int pct = 0;
         bool confirmed = false;
@@ -1974,19 +1997,27 @@ static esp_err_t h_events(httpd_req_t *req)
         int len;
         if (labelled)
             len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"s\":%ld,\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d}",
-                           first ? "" : ",", e->d_name, (long) st.st_size, sp, pct,
+                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d}",
+                           first ? "" : ",", e->d_name, sp, pct,
                            confirmed ? "true" : "false", state);
         else
-            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"s\":%ld,\"st\":0}",
-                           first ? "" : ",", e->d_name, (long) st.st_size);
-        httpd_resp_send_chunk(req, item, len);
+            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"st\":0}",
+                           first ? "" : ",", e->d_name);
+        if (used + (size_t) len > EVENTS_OBUF) {   /* flush before overflow (item < OBUF) */
+            httpd_resp_send_chunk(req, obuf, used);
+            used = 0;
+        }
+        memcpy(obuf + used, item, len);
+        used += len;
         first = false;
     }
+    if (used + 1 > EVENTS_OBUF) { httpd_resp_send_chunk(req, obuf, used); used = 0; }
+    obuf[used++] = ']';
+    httpd_resp_send_chunk(req, obuf, used);
+    httpd_resp_send_chunk(req, NULL, 0);
     closedir(d);
     free(tab);
-    httpd_resp_send_chunk(req, "]", 1);
-    httpd_resp_send_chunk(req, NULL, 0);
+    free(obuf);
     return ESP_OK;
 }
 
@@ -2148,6 +2179,77 @@ static esp_err_t h_relabel(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "relabel %s/%s -> %s", date, file, common);
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* POST /api/relabel-batch (date, c[, l], files=a.jpg,b.jpg,...) — set one species
+ * on many images in a SINGLE monthly-CSV rewrite (§3.4/v1.98). The Gallery's bulk
+ * "Set species" used to fire one /api/relabel per image, and since each of those
+ * rewrites the whole month's CSV, a 40-image op was 40 full rewrites serialized
+ * through the single httpd task — slow and UI-blocking. This does it in one pass.
+ * The body is read in full (the file list spans several TCP segments), same as
+ * the batch-delete handler. */
+static esp_err_t h_relabel_batch(httpd_req_t *req)
+{
+    int cap = MIN(req->content_len, 16384);
+    char *body = calloc(1, cap + 1);
+    if (!body) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    int got = 0;
+    while (got < cap) {
+        int r = httpd_req_recv(req, body + got, cap - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    if (got <= 0) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body"); return ESP_OK; }
+    body[got] = '\0';
+
+    char date[16] = {0}, common[80] = {0}, latin[80] = {0};
+    httpd_query_key_value(body, "date", date, sizeof(date));
+    httpd_query_key_value(body, "c",    common, sizeof(common));
+    httpd_query_key_value(body, "l",    latin,  sizeof(latin));
+    url_decode(date); url_decode(common); url_decode(latin);
+
+    httpd_resp_set_type(req, "application/json");
+    if (strlen(date) != 10 || !common[0]) {
+        free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad params"); return ESP_OK;
+    }
+
+    /* files=a.jpg,b.jpg,... parsed straight from the body (not a fixed field
+     * buffer) so a long selection isn't truncated. Filenames are safe chars, so
+     * no url-decode; reject any that could escape the day dir. Pointers index
+     * into body, valid until it's freed below — after storage_relabel_batch. */
+    char *fl = strstr(body, "files=");
+    if (!fl) { free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no files"); return ESP_OK; }
+    fl += 6;
+    char *amp = strchr(fl, '&');
+    if (amp) *amp = '\0';
+    int nmax = 1;
+    for (char *q = fl; *q; q++) if (*q == ',') nmax++;
+    const char **names = malloc(nmax * sizeof(char *));
+    if (!names) { free(body); httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
+    int n = 0;
+    for (char *tok = fl; tok && *tok; ) {
+        char *comma = strchr(tok, ',');
+        if (comma) *comma = '\0';
+        if (tok[0] && !strchr(tok, '/') && !strstr(tok, "..") && !strchr(tok, '\\'))
+            names[n++] = tok;
+        if (!comma) break;
+        tok = comma + 1;
+    }
+    if (n == 0) { free(names); free(body); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no valid files"); return ESP_OK; }
+
+    int applied = 0;
+    esp_err_t err = storage_relabel_batch(date, names, n, common, latin, &applied);
+    free(names);
+    free(body);
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "{\"error\":\"relabel failed\"}");
+        return ESP_OK;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"applied\":%d,\"requested\":%d}", applied, n);
+    httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
 
@@ -3791,6 +3893,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/labels",  .method = HTTP_GET,  .handler = h_labels     },
         { .uri = "/api/labels/confirmed", .method = HTTP_GET, .handler = h_labels_confirmed },
         { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
+        { .uri = "/api/relabel-batch", .method = HTTP_POST, .handler = h_relabel_batch },
         { .uri = "/api/confirm", .method = HTTP_POST, .handler = h_confirm    },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },

@@ -63,6 +63,16 @@ int storage_reset_stats_day(const char *date);
 esp_err_t storage_relabel(const char *date, const char *file,
                           const char *common, const char *latin);
 
+/* Batch form of storage_relabel (§3.4/v1.98): applies ONE (common, latin) label
+ * to every image in `files` (an array of `nfiles` basenames) in a SINGLE rewrite
+ * of the month's CSV, instead of one full rewrite per image. Rows whose image
+ * has no existing entry are appended, exactly as storage_relabel does. `*applied`
+ * (may be NULL) receives how many rows were written. Same write lock + CSV
+ * sanitizing as the single-image path. */
+esp_err_t storage_relabel_batch(const char *date, const char *const *files,
+                                int nfiles, const char *common, const char *latin,
+                                int *applied);
+
 /* Accept the model's current classification as human-confirmed (§3.4/v1.59):
  * copies the row's species into its "corrected" column. Returns ESP_ERR_NOT_FOUND
  * when there's nothing confirmable (no row, a sentinel/no-latin row, or already

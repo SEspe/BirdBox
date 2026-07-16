@@ -482,3 +482,93 @@ esp_err_t storage_relabel(const char *date, const char *file,
     ESP_LOGI(TAG, "relabel %s/%s -> '%s' (%s)", date, file, c, found ? "updated" : "added");
     return ESP_OK;
 }
+
+esp_err_t storage_relabel_batch(const char *date, const char *const *files,
+                                int nfiles, const char *common, const char *latin,
+                                int *applied)
+{
+    if (applied) *applied = 0;
+    if (!s_sd_present || !date || strlen(date) < 10 || !files || nfiles <= 0)
+        return ESP_ERR_INVALID_ARG;
+
+    /* Same CSV-safety as storage_relabel: a comma would add phantom columns, a
+     * newline break the row. Sanitize the shared label once. */
+    char c[64], l[64];
+    strlcpy(c, common ? common : "", sizeof(c));
+    strlcpy(l, latin  ? latin  : "", sizeof(l));
+    for (char *s = c; *s; s++) { if (*s == ',') *s = ';'; else if (*s=='\n'||*s=='\r') *s=' '; }
+    for (char *s = l; *s; s++) { if (*s == ',') *s = ';'; else if (*s=='\n'||*s=='\r') *s=' '; }
+
+    /* One found-flag per target so unmatched images get a fresh row appended
+     * (mirrors storage_relabel's no-row case), and so each image is applied to
+     * at most one row. */
+    bool *found = calloc(nfiles, sizeof(bool));
+    if (!found) return ESP_ERR_NO_MEM;
+
+    char path[64], tmp[72];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    FILE *in  = fopen(path, "r");
+    FILE *out = fopen(tmp, "w");
+    if (!out) { if (in) fclose(in); xSemaphoreGive(s_write_mtx); free(found);
+        ESP_LOGE(TAG, "relabel batch: temp open failed"); return ESP_FAIL; }
+
+    int applied_n = 0;
+    if (in) {
+        char line[400];
+        bool header = true;
+        while (fgets(line, sizeof(line), in)) {
+            if (header) { fputs(line, out); header = false; continue; }
+            if (line[0] == '\0' || line[0] == '\n') continue;
+            line[strcspn(line, "\r\n")] = '\0';
+            char *fld[9] = {0};
+            int nf = 0;
+            char *p = line;
+            fld[nf++] = p;
+            while (nf < 9 && (p = strchr(p, ',')) != NULL) { *p++ = '\0'; fld[nf++] = p; }
+            const char *ff = nf > 4 ? fld[4] : "";
+            const char *base = strrchr(ff, '/');
+            base = base ? base + 1 : ff;
+            int hit = -1;
+            for (int i = 0; i < nfiles; i++)
+                if (!found[i] && files[i] && strcmp(base, files[i]) == 0) { hit = i; break; }
+            if (hit >= 0) {
+                found[hit] = true; applied_n++;   /* corrected(5)+latin(6) replaced */
+                fprintf(out, "%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+                        nf>0?fld[0]:"", nf>1?fld[1]:"", nf>2?fld[2]:"",
+                        nf>3?fld[3]:"", ff, c, l, nf>7?fld[7]:"", nf>8?fld[8]:"");
+            } else {
+                for (int i = 0; i < nf; i++) { if (i) fputc(',', out); fputs(fld[i], out); }
+                fputc('\n', out);
+            }
+        }
+        fclose(in);
+    } else {
+        fputs("timestamp,species,confidence,frames,first_frame,corrected,latin,roi,top3\n", out);
+    }
+
+    /* Images with no existing row get one appended, user-confirmed, timestamp
+     * parsed from the capture filename — same as storage_relabel's added case. */
+    for (int i = 0; i < nfiles; i++) {
+        if (found[i] || !files[i] || !files[i][0]) continue;
+        const char *file = files[i];
+        char ts[20];
+        if (strncmp(file, date, 10) == 0 && strlen(file) >= 20 && file[10] == '_')
+            snprintf(ts, sizeof(ts), "%.10sT%.2s:%.2s:%.2s", file, file+11, file+14, file+17);
+        else
+            strlcpy(ts, date, sizeof(ts));
+        fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,,\n", ts, c, date, file, c, l);
+        applied_n++;
+    }
+    fclose(out);
+
+    unlink(path);
+    rename(tmp, path);
+    xSemaphoreGive(s_write_mtx);
+    free(found);
+    if (applied) *applied = applied_n;
+    ESP_LOGI(TAG, "relabel batch %s: %d image(s) -> '%s'", date, applied_n, c);
+    return ESP_OK;
+}
