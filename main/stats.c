@@ -1,5 +1,6 @@
 #include "stats.h"
 #include "storage.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -52,6 +53,12 @@ static void ingest_line(stats_t *st, char *line)
     char *latin     = next_field(&p);
 
     if (!ts[0] || !species[0]) return;
+    /* Stats are "since the last reset" (§3.4): skip rows older than the stored
+     * reset epoch. ISO "YYYY-MM-DDT..." timestamps order lexicographically, so a
+     * strcmp is a correct chronological compare. The visit log itself is never
+     * deleted by a reset, so this filters counting only — labels/ROIs persist. */
+    if (g_settings.stats_reset_ts[0] && strcmp(ts, g_settings.stats_reset_ts) < 0)
+        return;
     /* User-confirmed label wins (§3.2/§3.4). Since v1.51 the relabel writes the
      * corrected species' own binomial into the latin column, so keep it (was
      * blanked when corrected labels had no known latin) — it localizes right. */
