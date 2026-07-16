@@ -38,3 +38,5 @@ training-data/.venv/
 training-data/*.tflite
 training-data/*-v*.txt
 training-data/*-v*.json
+# downloaded detector weights (e.g. yolov8n.pt)
+training-data/*.pt

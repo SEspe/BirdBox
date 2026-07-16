@@ -93,6 +93,10 @@ MODEL_VERSION = "0.5"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
+# NB: split() now routes external/un-timestamped stock images TRAIN-ONLY, gated
+# by the BIRDBOX_EXCLUDE_EXTERNAL toggle (added while evaluating GBIF/stock data,
+# which did not improve accuracy on real captures). With a local-only labels.csv
+# this is a no-op for the target classes.
 DATA_PROVENANCE = "local"
 
 OUT_NAME = f"{LINEAGE}-v{MODEL_VERSION}"
@@ -277,22 +281,34 @@ def split(paths, labels, n_classes):
     Whole visits go to train OR val — a burst is never split across both — so the
     val set measures generalization to *unseen visits*, not memorized near-dups
     (the v0.2 leakage). Each visit is first capped at MAX_PER_VISIT frames.
-    Returns path lists only; ROIs are re-attached by the caller via path."""
+    Returns path lists only; ROIs are re-attached by the caller via path.
+
+    External stock images (un-timestamped filenames, e.g. GBIF/artsobservasjoner
+    GUIDs) are TRAIN-ONLY: validation must measure the *birdbox* domain, not stock
+    hero shots. Because the val draw is over device visits only, adding stock data
+    leaves the val set unchanged — so a with/without-stock comparison is a clean
+    A/B on an identical held-out birdbox set. Per-class RNG (SEED+y) keeps each
+    class's draw independent, so one class's data volume can't shift another's
+    val set. Set BIRDBOX_EXCLUDE_EXTERNAL=1 to drop stock entirely (baseline)."""
     import random
-    rng = random.Random(SEED)
+    exclude_ext = os.environ.get("BIRDBOX_EXCLUDE_EXTERNAL") == "1"
     by_cls = {i: [] for i in range(n_classes)}
     for p, y in zip(paths, labels):
         by_cls[y].append(p)
     tr_p, tr_y, va_p, va_y = [], [], [], []
     for y, ps in by_cls.items():
-        visits = [_dedup_visit(v) for v in _group_visits(ps)]
+        rng = random.Random(SEED + y)                 # per-class, independent
+        dev = [p for p in ps if _frame_time(p) is not None]   # birdbox captures
+        ext = [] if exclude_ext else [p for p in ps if _frame_time(p) is None]
+        visits = [_dedup_visit(v) for v in _group_visits(dev)]
         rng.shuffle(visits)
         k = int(round(len(visits) * VAL_FRAC)) if len(visits) >= 5 else 0
         va = [p for v in visits[:k] for p in v]
-        tr = [p for v in visits[k:] for p in v]
+        tr = [p for v in visits[k:] for p in v] + ext         # stock: train-only
         va_p += va; va_y += [y] * len(va)
         tr_p += tr; tr_y += [y] * len(tr)
-        print(f"  class {y}: {len(visits)} visits -> {len(tr)} train / {len(va)} val frames")
+        print(f"  class {y}: {len(visits)} dev visits + {len(ext)} ext "
+              f"-> {len(tr)} train / {len(va)} val frames")
     return (tr_p, tr_y), (va_p, va_y)
 
 
