@@ -9,11 +9,12 @@
  *    reason — see claude.c. The image goes in an inline_data part; the fixed
  *    generationConfig (response schema + prompt) is the suffix after it.
  *
- * 2. gemini-2.5-flash is a THINKING model by default, and thinking eats the
- *    output-token budget — left on, a small maxOutputTokens can return an empty
- *    candidate (all budget spent thinking, none emitting). thinkingConfig
- *    .thinkingBudget=0 disables it, which is right for a single-image
- *    structured ID: cheaper, faster, and no accuracy to gain from reasoning.
+ * 2. The default model is gemini-2.0-flash (a NON-thinking model — see the
+ *    GEMINI_MODEL note for why, over 2.5-flash / flash-latest), so the request
+ *    sends NO thinkingConfig: that key 400s on a non-thinking model. If this is
+ *    ever pointed back at a 2.5+/thinking model, add
+ *    thinkingConfig.thinkingBudget=0 or a small maxOutputTokens can come back
+ *    empty (all budget spent thinking, none emitting).
  *
  * 3. Structured output is generationConfig.responseSchema (OpenAPI subset:
  *    UPPERCASE types, no additionalProperties) plus responseMimeType
@@ -37,16 +38,19 @@
 
 static const char *TAG = "gemini";
 
-/* Rolling "latest flash" alias, NOT a pinned version. A pinned id
- * (gemini-2.5-flash) returns 404 "no longer available to new users" once Google
- * closes that version to new keys — a moving target we don't want to chase in
- * firmware. The -latest alias always resolves to the current-generation Flash
- * model, which is available to every key and is the right cost/quality trade for
- * a per-event secondary bird ID (far cheaper than the Pro tier). The Test button
- * lists the exact model ids a given key can use, if the alias ever needs
- * overriding. */
+/* Model choice, learned empirically (see FSD v2.10):
+ *   - gemini-2.5-flash      -> 404 "no longer available to new users" for new
+ *     keys (even though it shows in that key's ListModels).
+ *   - gemini-flash-latest   -> resolves, but hit SUSTAINED 503 "model is
+ *     currently experiencing high demand" on the free tier, so every call
+ *     retried ~15 s and still failed.
+ *   - gemini-2.0-flash      -> GA, available to every key, far better free-tier
+ *     availability, vision + JSON responseSchema, cheap. It is NOT a thinking
+ *     model, so the request must NOT send thinkingConfig (that 400s here).
+ * 2.0-flash is the default; the Test button lists the flash model ids a given
+ * key can use if this ever needs overriding. */
 #define GEMINI_API_HOST   "generativelanguage.googleapis.com"
-#define GEMINI_MODEL      "gemini-flash-latest"
+#define GEMINI_MODEL      "gemini-2.0-flash"
 #define GEMINI_URL        "https://" GEMINI_API_HOST "/v1beta/models/" GEMINI_MODEL ":generateContent"
 #define GEMINI_MODELS_URL "https://" GEMINI_API_HOST "/v1beta/models"
 
@@ -132,7 +136,6 @@ static const char REQ_SUFFIX[] =
     "\"}},"
     "{\"text\":\"Identify the bird in this photo.\"}]}],"
     "\"generationConfig\":{\"maxOutputTokens\":512,"
-    "\"thinkingConfig\":{\"thinkingBudget\":0},"
     "\"responseMimeType\":\"application/json\","
     "\"responseSchema\":{\"type\":\"OBJECT\",\"properties\":{"
     "\"bird\":{\"type\":\"BOOLEAN\"},"
@@ -144,7 +147,7 @@ static const char REQ_SUFFIX[] =
 
 /* One HTTP attempt — see claude.c's claude_post_once for the rationale. Returns
  * ESP_OK with *status set when a response arrived, or a transport error. */
-#define GEMINI_MAX_RETRIES 2   /* 3 attempts total, for the 503 "high demand" spikes */
+#define GEMINI_MAX_RETRIES 3   /* 4 attempts total; backoff 2s/4s/8s on 429/5xx */
 
 static esp_err_t gemini_post_once(const char *prefix, const uint8_t *jpeg,
                                   size_t len, char *resp, int *status)
@@ -221,9 +224,12 @@ esp_err_t gemini_classify_jpeg(const uint8_t *jpeg, size_t len,
         esp_err_t terr = gemini_post_once(prefix, jpeg, len, resp, &status);
         if (terr != ESP_OK) { ret = terr; goto done; }   /* couldn't reach — no retry */
         if (status == 200) break;
-        /* Gemini returns 503 "model is currently experiencing high demand" (and
-         * 429 on rate limit) under load; retry a couple of times with backoff. A
-         * 4xx (bad key, bad model) is deterministic — surface it. */
+        /* Gemini returns 429 (free-tier 10 RPM rate limit — clears within a
+         * minute) and 503 "model is currently experiencing high demand" under
+         * load; retry both with exponential backoff (2s/4s/8s, Google's
+         * guidance). A 4xx other than 429 (bad key, bad model) is deterministic
+         * and is surfaced rather than retried. A genuine daily-quota exhaustion
+         * still 429s after all retries and degrades to the on-device model. */
         if (cu_status_transient(status) && attempt < GEMINI_MAX_RETRIES) {
             ESP_LOGW(TAG, "Gemini HTTP %d — retry %d/%d", status, attempt + 1, GEMINI_MAX_RETRIES);
             cu_retry_backoff(attempt);
