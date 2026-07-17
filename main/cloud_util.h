@@ -84,6 +84,17 @@ bool  cu_write(esp_http_client_handle_t c, const char *b, size_t n);
  * image. false on encode/transport error. */
 bool  cu_stream_b64(esp_http_client_handle_t c, const uint8_t *data, size_t len);
 
+/* True for HTTP statuses worth retrying: 429 (rate limited) and the 5xx a busy
+ * provider returns under load (500/502/503/504 — e.g. Gemini's "model is
+ * currently experiencing high demand" 503). A 4xx like 400/401/404 (bad request,
+ * bad key, missing model) is deterministic and must NOT be retried. */
+bool  cu_status_transient(int status);
+
+/* Backoff before a retry: sleeps ~0.8 s × (attempt+1) so a transient provider
+ * spike gets a moment to clear. Called from the classifier / identify-worker
+ * task, never from httpd or motion. */
+void  cu_retry_backoff(int attempt);
+
 #ifdef __cplusplus
 }
 #endif
