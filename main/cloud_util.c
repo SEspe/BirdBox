@@ -10,6 +10,8 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -218,6 +220,17 @@ bool cu_write(esp_http_client_handle_t c, const char *b, size_t n)
         n -= w;
     }
     return true;
+}
+
+bool cu_status_transient(int status)
+{
+    return status == 429 || status == 500 || status == 502 ||
+           status == 503 || status == 504;
+}
+
+void cu_retry_backoff(int attempt)
+{
+    vTaskDelay(pdMS_TO_TICKS(800 * (attempt + 1)));
 }
 
 bool cu_stream_b64(esp_http_client_handle_t c, const uint8_t *data, size_t len)

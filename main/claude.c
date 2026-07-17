@@ -152,6 +152,60 @@ static const char REQ_SUFFIX[] =
     "{\"type\":\"text\",\"text\":\"Identify the bird in this photo.\"}"
     "]}]}";
 
+/* One HTTP attempt: open, stream the body, read the reply. Returns ESP_OK when a
+ * response was received (with *status set), or a transport error (fail() already
+ * called with detail) when the server couldn't be reached. Split out so
+ * claude_classify_jpeg can retry it on a transient status without rebuilding the
+ * request. */
+#define CLAUDE_MAX_RETRIES 2   /* 3 attempts total, for 429/5xx spikes */
+
+static esp_err_t claude_post_once(const char *prefix, const uint8_t *jpeg,
+                                  size_t len, char *resp, int *status)
+{
+    size_t total = strlen(prefix) + cu_b64_len(len) + strlen(REQ_SUFFIX);
+
+    esp_http_client_config_t cfg = {
+        .url               = CLAUDE_URL,
+        .method            = HTTP_METHOD_POST,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 30000,
+        .buffer_size       = 1536,
+        .buffer_size_tx    = 1024,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) { fail("http client init failed"); return ESP_FAIL; }
+    esp_http_client_set_header(c, "Content-Type", "application/json");
+    esp_http_client_set_header(c, "x-api-key", g_settings.claude_key);
+    esp_http_client_set_header(c, "anthropic-version", CLAUDE_API_VER);
+
+    esp_err_t ret = ESP_FAIL;
+    esp_err_t err = esp_http_client_open(c, total);
+    if (err != ESP_OK) {
+        char d[96];
+        cu_tls_detail(c, d, sizeof(d));
+        fail("cannot reach Claude (%s; %s)", esp_err_to_name(err), d);
+        ret = (err == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_FAIL;
+        goto out;
+    }
+    if (!cu_write(c, prefix, strlen(prefix)))         { fail("upload failed (header)"); goto out; }
+    if (!cu_stream_b64(c, jpeg, len))                 { fail("upload failed (image)");  goto out; }
+    if (!cu_write(c, REQ_SUFFIX, strlen(REQ_SUFFIX))) { fail("upload failed (prompt)"); goto out; }
+    if (esp_http_client_fetch_headers(c) < 0)         { fail("no reply from Claude");   goto out; }
+
+    int rd = 0, r;
+    while (rd < CLAUDE_RESP_MAX - 1 &&
+           (r = esp_http_client_read(c, resp + rd, CLAUDE_RESP_MAX - 1 - rd)) > 0)
+        rd += r;
+    resp[rd] = '\0';
+    *status = esp_http_client_get_status_code(c);
+    ret = ESP_OK;
+
+out:
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    return ret;
+}
+
 esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
                                classify_result_t *out)
 {
@@ -169,58 +223,27 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
     char prefix[3200];
     build_prefix(prefix, sizeof(prefix));
 
-    size_t total = strlen(prefix) + cu_b64_len(len) + strlen(REQ_SUFFIX);
-
     char *resp = heap_caps_malloc(CLAUDE_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp) {
         fail("out of memory");
         return ESP_ERR_NO_MEM;
     }
 
-    esp_http_client_config_t cfg = {
-        .url               = CLAUDE_URL,
-        .method            = HTTP_METHOD_POST,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms        = 30000,
-        .buffer_size       = 1536,
-        .buffer_size_tx    = 1024,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) {
-        free(resp);
-        fail("http client init failed");
-        return ESP_FAIL;
-    }
-    esp_http_client_set_header(c, "Content-Type", "application/json");
-    esp_http_client_set_header(c, "x-api-key", g_settings.claude_key);
-    esp_http_client_set_header(c, "anthropic-version", CLAUDE_API_VER);
-
     int64_t t0 = esp_timer_get_time();
     esp_err_t ret = ESP_FAIL;
+    int status = 0;
 
-    esp_err_t err = esp_http_client_open(c, total);
-    if (err != ESP_OK) {
-        char d[96];
-        cu_tls_detail(c, d, sizeof(d));
-        fail("cannot reach Claude (%s; %s)", esp_err_to_name(err), d);
-        ret = (err == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_FAIL;
-        goto done;
-    }
-
-    if (!cu_write(c, prefix, strlen(prefix)))    { fail("upload failed (header)"); goto done; }
-    if (!cu_stream_b64(c, jpeg, len))            { fail("upload failed (image)");  goto done; }
-    if (!cu_write(c, REQ_SUFFIX, strlen(REQ_SUFFIX))) { fail("upload failed (prompt)"); goto done; }
-
-    if (esp_http_client_fetch_headers(c) < 0) { fail("no reply from Claude"); goto done; }
-
-    int rd = 0, r;
-    while (rd < CLAUDE_RESP_MAX - 1 &&
-           (r = esp_http_client_read(c, resp + rd, CLAUDE_RESP_MAX - 1 - rd)) > 0)
-        rd += r;
-    resp[rd] = '\0';
-
-    int status = esp_http_client_get_status_code(c);
-    if (status != 200) {
+    for (int attempt = 0; ; attempt++) {
+        esp_err_t terr = claude_post_once(prefix, jpeg, len, resp, &status);
+        if (terr != ESP_OK) { ret = terr; goto done; }   /* couldn't reach — no retry */
+        if (status == 200) break;
+        /* A busy Anthropic edge returns 429/5xx; retry a couple of times with
+         * backoff. A 4xx (bad key, no credit) is deterministic — surface it. */
+        if (cu_status_transient(status) && attempt < CLAUDE_MAX_RETRIES) {
+            ESP_LOGW(TAG, "Claude HTTP %d — retry %d/%d", status, attempt + 1, CLAUDE_MAX_RETRIES);
+            cu_retry_backoff(attempt);
+            continue;
+        }
         /* Error bodies are {"type":"error","error":{"type":..,"message":..}} —
          * surface the message verbatim to the Debug card; it is the difference
          * between "invalid x-api-key" and "credit balance too low", and there
@@ -261,8 +284,6 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
     ret = ESP_OK;
 
 done:
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
     free(resp);
     if (ret != ESP_OK) s_last_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
     return ret;
