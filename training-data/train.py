@@ -89,7 +89,7 @@ LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
 #   2.0  breaking change — class set added/removed (label indices shift) or a
 #        different architecture/input.
 # Bump MODEL_VERSION per retrain and record it in the registry (README).
-MODEL_VERSION = "0.6"
+MODEL_VERSION = "0.7"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
@@ -134,6 +134,8 @@ CLASSES = [
      "dirs": ["Fringilla_coelebs"]},
     {"latin": "Pica pica", "common": "Eurasian Magpie",
      "dirs": ["Pica_pica"]},
+    {"latin": "Garrulus glandarius", "common": "Eurasian Jay",
+     "dirs": ["Garrulus_glandarius"]},   # Nøtteskrike (added v0.7)
     # Reject/guard class — the model's "not a target bird" output. Merges the
     # two human reject buckets (FSD v1.76): no_bird (empty frames) + other
     # (present but non-bird subjects, e.g. cat/sheep — hard negatives). The
