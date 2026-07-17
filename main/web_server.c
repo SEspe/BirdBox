@@ -488,11 +488,13 @@ static const char INDEX_HTML[] =
 "(head-on, backlit). Roughly doubles identification time per frame; saved photos are unaffected.</p>"
 "<h3 class='sh'>Cloud Identification (Anthropic Claude)</h3>"
 "<label class='wl'><input type='checkbox' id='stCld'> Identify new birds with Claude</label>"
-"<p class='sts' style='margin-top:2px'>Sends the best photo of each new motion event to the "
-"Anthropic Claude API and uses its answer instead of the on-device model &mdash; considerably "
-"more accurate, and the quickest way to build up confirmed labels for a retrained local model. "
-"If a call fails (no internet, bad key, no credit), the on-device model labels the event instead, "
-"so nothing is ever left unidentified. Needs your own API key below, and each event costs roughly "
+"<p class='sts' style='margin-top:2px'>When the on-device model can't identify a new motion event, "
+"sends its best photo to the Anthropic Claude API and uses Claude's answer (restricted to your 30 "
+"target species) &mdash; the on-device model stays primary and handles the events it's confident "
+"about, so Claude is only consulted for the hard ones. It's the quickest way to build up confirmed "
+"labels for a retrained local model. "
+"If a call fails (no internet, bad key, no credit), the on-device result stands, "
+"so nothing is ever left worse off. Needs your own API key below, and each escalated event costs roughly "
 "one to two US cents against it &mdash; a busy feeder can run to a few dollars a day, so leave "
 "this off unless you are actively gathering labels. <b>Photos leave the device only while this is "
 "on.</b> Regardless of this toggle, the Gallery's &#10024; button asks Claude about a single "
@@ -507,6 +509,16 @@ static const char INDEX_HTML[] =
 "<button class='act' style='display:none' id='stCkeyClr' "
 "onclick='ckeyClear()'>&#128465; Forget stored key</button>"
 "<div class='sts' id='stCldSts' style='margin-top:4px'></div>"
+"<h3 class='sh'>Periodic iNat re-scan (optional)</h3>"
+"<label class='wl'><input type='checkbox' id='stInat'> Re-scan unidentified frames with the iNaturalist model</label>"
+"<p class='sts' style='margin-top:2px'>Every so often, temporarily loads the iNaturalist model from the "
+"SD card and re-runs it (whole-frame) on frames the on-device model and Claude left unidentified, "
+"restricted to your 30 target species &mdash; a background booster for the hard cases. "
+"<b>Off by default:</b> iNaturalist is a weak match for this camera's images, and each pass swaps the "
+"model in memory, so live identification pauses for the length of the batch. Requires "
+"<code>inat-birds-v1.tflite</code> on the card.</p>"
+"<label class='wl'>Re-scan interval (minutes)</label>"
+"<input class='wi' type='number' min='5' max='1440' id='stInatv'>"
 "<label class='wl'>Species name language</label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
@@ -1227,6 +1239,7 @@ static const char INDEX_HTML[] =
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
 "$g('stFshut').checked=c.fshut==1;"
 "$g('stTta').checked=c.tta==1;"
+"$g('stInat').checked=c.inat==1;$g('stInatv').value=c.inatv;"
 "$g('stCld').checked=c.cld==1;"
 "$g('stCkey').value='';"
 "$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -1293,6 +1306,7 @@ static const char INDEX_HTML[] =
 "+'&dzoom='+($g('stZoom').checked?1:0)"
 "+'&fshut='+($g('stFshut').checked?1:0)"
 "+'&tta='+($g('stTta').checked?1:0)"
+"+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
 "+'&cld='+($g('stCld').checked?1:0)"
 /* An empty key field means "keep the stored key" — the handler treats an
  * absent ckey as unchanged, so never send an empty one. */
@@ -2865,6 +2879,21 @@ static void form_field(const char *body, const char *key, char *out, size_t olen
     url_decode(out);
 }
 
+/* Whether `key` (e.g. "region=") appears as a real field in the body — i.e.
+ * form_field would read it — distinguishing an ABSENT field from one that is
+ * present but empty. Needed for fields where "" is a legal value (region ""
+ * = auto-pick), so a partial POST that omits the field keeps the current value
+ * instead of blanking it. */
+static bool has_field(const char *body, const char *key)
+{
+    const char *p = body;
+    while ((p = strstr(p, key)) != NULL) {
+        if (p == body || p[-1] == '&') return true;
+        p++;
+    }
+    return false;
+}
+
 static esp_err_t h_ipcfg_save(httpd_req_t *req)
 {
     char body[320] = {0};
@@ -2920,9 +2949,9 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[800];   /* truncation here would emit malformed JSON and take the
+    char buf[880];   /* truncation here would emit malformed JSON and take the
                         whole Settings tab down — keep headroom (v1.96 added
-                        resActive/resActiveStr, ~45 B) */
+                        resActive/resActiveStr, ~45 B; inat fields ~28 B) */
     /* ckey_set, never the key itself: this reply is world-readable on the LAN,
      * and the same posture as /api/wificfg (which reports configured SSIDs but
      * never the passwords). */
@@ -2933,6 +2962,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
+        "\"inat\":%u,\"inatv\":%u,"
         "\"cld\":%u,\"ckey_set\":%s,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -2952,6 +2982,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
+        (unsigned) g_settings.inat_periodic_enabled,
+        (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.claude_enabled,
         g_settings.claude_key[0] ? "true" : "false");
     httpd_resp_send_chunk(req, buf, n);
@@ -3021,9 +3053,14 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.ae_level            = field_num(body, "ael=", -2, 2, g_settings.ae_level);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
-    /* region becomes a /sd/model/<region> path when §3.2 lands — reject
-     * anything that could escape that directory (or break the GET's JSON) */
-    if (!strstr(region, "..") && !strchr(region, '/') &&
+    /* region names the active model file (§3.2); "" = auto-pick. Apply ONLY
+     * when the field is actually present, so a partial POST (any tab's save
+     * that doesn't carry region=) can't blank the model selection — that
+     * silently booted the wrong model after the next reboot. Empty-but-present
+     * is still honoured (the Settings dropdown's "auto" choice). Reject path
+     * escapes / JSON-breakers. */
+    if (has_field(body, "region=") &&
+        !strstr(region, "..") && !strchr(region, '/') &&
         !strchr(region, '\\') && !strchr(region, '"'))
         strlcpy(g_settings.region, region, sizeof(g_settings.region));
     if (ntp[0] && !strchr(ntp, '"') && !strchr(ntp, ' '))
@@ -3055,6 +3092,9 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * it. Deleting a key is therefore an explicit act: ckeyclear=1, the
      * Settings tab's "Forget stored key" button. */
     g_settings.claude_enabled = field_num(body, "cld=", 0, 1, g_settings.claude_enabled);
+    g_settings.inat_periodic_enabled = field_num(body, "inat=", 0, 1, g_settings.inat_periodic_enabled);
+    g_settings.inat_periodic_interval_min =
+        field_num(body, "inatv=", 5, 1440, g_settings.inat_periodic_interval_min);
     if (field_num(body, "ckeyclear=", 0, 1, 0) == 1) {
         g_settings.claude_key[0] = '\0';
         g_settings.claude_enabled = 0;   /* no key => nothing to enable */
@@ -3108,7 +3148,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&cld=%u",
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cld=%u",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3120,6 +3160,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
+        (unsigned) g_settings.inat_periodic_enabled,
+        (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.claude_enabled);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",

@@ -93,6 +93,18 @@ typedef struct {
                                        inference time; 0 = single pass. default 0
                                        — the ~2x cost/heat bought no gain on the
                                        model's hard cases (v1.56), opt-in only */
+    uint8_t  inat_periodic_enabled; /* 1 = periodically reclassify still-
+                                       unclassified frames with the on-SD iNat
+                                       model — whole-frame, masked to the 30
+                                       target species (FSD §3.2.3, third tier).
+                                       A background booster for hard cases the
+                                       nordic model + Claude left unlabelled.
+                                       Off by default: iNat underperforms on this
+                                       domain, and each pass swaps the model
+                                       (blocking live ID for the batch), so it's
+                                       strictly opt-in. */
+    uint16_t inat_periodic_interval_min; /* minutes between iNat batch passes
+                                       when enabled; default 60, min 5. */
 } settings_t;
 
 extern settings_t g_settings;

@@ -42,6 +42,8 @@ settings_t g_settings = {
     .claude_enabled     = 0,   /* opt-in: needs the user's own API key and
                                 * bills them per event (§3.2.3) */
     .claude_key         = "",
+    .inat_periodic_enabled     = 0,    /* opt-in third tier (§3.2.3) */
+    .inat_periodic_interval_min = 60,
 };
 
 esp_err_t settings_load(void)
@@ -87,6 +89,8 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_cld",  &u8)  == ESP_OK) g_settings.claude_enabled = u8;
     l = sizeof(g_settings.claude_key);
     nvs_get_str(h, "s_ckey", g_settings.claude_key, &l);
+    if (nvs_get_u8 (h, "s_inat", &u8)  == ESP_OK) g_settings.inat_periodic_enabled = u8;
+    if (nvs_get_u16(h, "s_inatv",&u16) == ESP_OK) g_settings.inat_periodic_interval_min = u16;
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -128,6 +132,8 @@ esp_err_t settings_save(void)
     nvs_set_u16(h, "s_qtn",   g_settings.detect_quarantine_s);
     nvs_set_u8 (h, "s_cld",   g_settings.claude_enabled);
     nvs_set_str(h, "s_ckey",  g_settings.claude_key);
+    nvs_set_u8 (h, "s_inat",  g_settings.inat_periodic_enabled);
+    nvs_set_u16(h, "s_inatv", g_settings.inat_periodic_interval_min);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
