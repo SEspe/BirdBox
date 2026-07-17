@@ -17,7 +17,7 @@
  * Everything heavyweight (model ~3.5 MB, tensor arena 3 MB, decode buffer)
  * lives in PSRAM; internal RAM is untouched beyond the task stack. */
 #include "classify.h"
-#include "claude.h"         /* has its own extern "C" guard */
+#include "cloud.h"          /* has its own extern "C" guard */
 #include "species_i18n.h"   /* has its own extern "C" guard */
 extern "C" {          /* C headers without their own __cplusplus guards */
 #include "settings.h"
@@ -636,21 +636,23 @@ static bool aggregate_frames(const char (*paths)[96], const roi_t *rois, int nf,
  * frames would triple the bill for a marginal gain. The event's first frame is
  * the one motion.c already judged best.
  *
- * The whole frame goes up regardless of detect_zoom — Claude reasons about
- * context (perch, feeder, other birds) and a tight crop throws that away, the
- * same effect that made zoom hurt the iNat model (§3.2.1/v1.87).
+ * The whole frame goes up regardless of detect_zoom — a cloud model reasons
+ * about context (perch, feeder, other birds) and a tight crop throws that away,
+ * the same effect that made zoom hurt the iNat model (§3.2.1/v1.87).
  *
- * Returns false on any failure — no key, WiFi down, API error — and the caller
- * falls back to the on-device model rather than dropping the event. */
-static bool claude_event(const cls_job_t *job, classify_result_t *out, roi_t *win)
+ * Uses whichever single cloud provider is active (Claude or Gemini — cloud.c).
+ * Returns false on any failure — none active, WiFi down, API error — and the
+ * caller falls back to the on-device model rather than dropping the event. */
+static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win)
 {
-    if (!claude_enabled()) return false;
+    cloud_provider_t p = cloud_active();
+    if (p == CLOUD_OFF) return false;
 
     char full[128];
     snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[0]);
-    if (claude_classify_file(full, out) != ESP_OK) {
-        ESP_LOGW(TAG, "Claude failed (%s) — falling back to the on-device model",
-                 claude_last_error());
+    if (cloud_classify_file(p, full, out) != ESP_OK) {
+        ESP_LOGW(TAG, "%s failed (%s) — falling back to the on-device model",
+                 cloud_name(p), cloud_last_error(p));
         return false;
     }
     *win = job->rois[0];   /* logged as field data either way (§3.4) */
@@ -669,15 +671,16 @@ static void classify_task(void *arg)
         int   scored = 0;
         const char *source = "";   /* engine that produced the label (§3.2.3) */
 
-        /* Cascade: the on-device nordic model is PRIMARY; Claude is the
-         * SECONDARY, tried only when nordic can't identify the bird (its result
-         * is "Unidentified bird", i.e. below the confidence threshold) and only
-         * when Claude is enabled. A confident nordic species OR a confident
-         * "no bird" is kept as-is (no needless API call). If nordic is
-         * unavailable entirely, Claude alone is tried. A failed/declined Claude
-         * call leaves the nordic result in place, so the row never silently
-         * drops work (§3.2). The optional iNat batch is a later out-of-band
-         * third tier (not here). `source` records which engine won. */
+        /* Cascade: the on-device nordic model is PRIMARY; the cloud classifier
+         * (Claude or Gemini — whichever one is active) is the SECONDARY, tried
+         * only when nordic can't identify the bird (its result is "Unidentified
+         * bird", i.e. below the confidence threshold) and only when a cloud
+         * provider is enabled. A confident nordic species OR a confident "no
+         * bird" is kept as-is (no needless API call). If nordic is unavailable
+         * entirely, the cloud alone is tried. A failed/declined cloud call
+         * leaves the nordic result in place, so the row never silently drops
+         * work (§3.2). The optional iNat batch is a later out-of-band third tier
+         * (not here). `source` records which engine won. */
         bool have_best = false;
         if (s_available) {
             have_best = aggregate_frames(job.paths, job.rois, job.path_count,
@@ -686,12 +689,12 @@ static void classify_task(void *arg)
         }
         bool nordic_unsure = have_best &&
             strcmp(best.species, "Unidentified bird") == 0;
-        if ((!have_best || nordic_unsure) && claude_enabled()) {
+        if ((!have_best || nordic_unsure) && cloud_enabled()) {
             classify_result_t cres;
             roi_t cwin = roi_none();
-            if (claude_event(&job, &cres, &cwin)) {
+            if (cloud_event(&job, &cres, &cwin)) {
                 best = cres; win = cwin; scored = 1;
-                have_best = true; source = "claude";
+                have_best = true; source = cloud_source_tag(cloud_active());
             }
         }
 
@@ -1376,8 +1379,8 @@ esp_err_t classify_init(void)
 }
 
 /* On-device model only — /api/classify and /api/classify-file run TFLM
- * synchronously and are unrelated to the Claude path, which has its own
- * claude_enabled() gate and its own endpoint. */
+ * synchronously and are unrelated to the cloud path, which has its own
+ * cloud_enabled() gate and its own endpoint. */
 bool classify_available(void) { return s_available; }
 
 bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
@@ -1385,10 +1388,10 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
                            const char *first_path)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
-    /* Either classifier will do — with Claude on, events are labelled with no
-     * model on the card at all (§3.2.3). Only when neither is available does
-     * this decline, leaving capture.c to write the "unclassified" row. */
-    if ((!s_available && !claude_enabled()) || path_count <= 0 || !s_jobq) return false;
+    /* Either classifier will do — with a cloud provider on, events are labelled
+     * with no model on the card at all (§3.2.3). Only when neither is available
+     * does this decline, leaving capture.c to write the "unclassified" row. */
+    if ((!s_available && !cloud_enabled()) || path_count <= 0 || !s_jobq) return false;
     cls_job_t job = {};
     job.frames = frames;
     strlcpy(job.ts, ts, sizeof(job.ts));

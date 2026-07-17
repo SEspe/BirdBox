@@ -70,23 +70,32 @@ typedef struct {
                                        files captures under /no-date — can't fire
                                        false events during startup (FSD §3.1/v1.61).
                                        default 60; 0 = disabled */
-    uint8_t  claude_enabled;        /* 1 = identify new motion events with the
-                                       Anthropic Claude API INSTEAD of the
-                                       on-device TFLM model (FSD §3.2.3); the
-                                       Gallery's Claude button works whenever a
-                                       key is set, regardless. Needs WiFi and
-                                       costs money per call, so default 0. A
-                                       failed call degrades to the on-device
-                                       answer — never to a dropped event
-                                       (§3.2/never-drop-work) */
+    uint8_t  cloud_provider;        /* active SECONDARY cloud classifier
+                                       (FSD §3.2.3): 0 = off (on-device only),
+                                       1 = Anthropic Claude, 2 = Google Gemini.
+                                       One at a time — both keys may be stored,
+                                       but only the selected provider identifies
+                                       new motion events, and only when its key
+                                       is set. The Gallery's ✨ button works
+                                       whenever any key is set, regardless. Needs
+                                       WiFi and costs money per call, so default
+                                       0. A failed call degrades to the on-device
+                                       answer — never a dropped event
+                                       (§3.2/never-drop-work). Matches
+                                       cloud_provider_t in cloud.h */
     char     claude_key[128];       /* Anthropic API key ("sk-ant-..."); "" =
-                                       Claude unavailable however the toggle is
+                                       Claude unavailable however the selector is
                                        set. Sized for ~108 chars plus headroom —
                                        these are far longer than a typical API
                                        key and a short buffer would truncate one
                                        into a silent 401. Never leaves the device
                                        except to api.anthropic.com, and is
                                        omitted from the settings export (§5) */
+    char     gemini_key[128];       /* Google Gemini (AI Studio) API key; "" =
+                                       Gemini unavailable however the selector is
+                                       set. Same handling as claude_key: sent only
+                                       to generativelanguage.googleapis.com and
+                                       left out of the settings export (§5) */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x

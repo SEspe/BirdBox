@@ -13,7 +13,7 @@
 #include "stats.h"
 #include "settings.h"
 #include "classify.h"
-#include "claude.h"
+#include "cloud.h"
 #include "species_i18n.h"
 #include "target_species.h"
 #include "board_config.h"
@@ -490,29 +490,46 @@ static const char INDEX_HTML[] =
 "<p class='sts' style='margin-top:2px'>Classifies each frame together with its mirror image and "
 "averages the result, giving the model a second look that lifts confidence on hard poses "
 "(head-on, backlit). Roughly doubles identification time per frame; saved photos are unaffected.</p>"
-"<h3 class='sh'>Cloud Identification (Anthropic Claude)</h3>"
-"<label class='wl'><input type='checkbox' id='stCld'> Identify new birds with Claude</label>"
+"<h3 class='sh'>Cloud Identification (secondary classifier)</h3>"
 "<p class='sts' style='margin-top:2px'>When the on-device model can't identify a new motion event, "
-"sends its best photo to the Anthropic Claude API and uses Claude's answer (restricted to your 30 "
+"send its best photo to a cloud vision model and use that answer (restricted to your 30 "
 "target species) &mdash; the on-device model stays primary and handles the events it's confident "
-"about, so Claude is only consulted for the hard ones. It's the quickest way to build up confirmed "
+"about, so the cloud is only consulted for the hard ones. It's the quickest way to build up confirmed "
 "labels for a retrained local model. "
 "If a call fails (no internet, bad key, no credit), the on-device result stands, "
-"so nothing is ever left worse off. Needs your own API key below, and each escalated event costs roughly "
-"one to two US cents against it &mdash; a busy feeder can run to a few dollars a day, so leave "
-"this off unless you are actively gathering labels. <b>Photos leave the device only while this is "
-"on.</b> Regardless of this toggle, the Gallery's &#10024; button asks Claude about a single "
-"photo whenever a key is set.</p>"
+"so nothing is ever left worse off. Needs your own API key below, and each escalated event costs a "
+"fraction of a US cent to a couple of cents against it &mdash; a busy feeder can run to a few dollars "
+"a day, so leave this off unless you are actively gathering labels. <b>Photos leave the device only "
+"while a provider is selected.</b> Regardless of the selection, the Gallery's &#10024; button asks "
+"the cloud about a single photo whenever a key is set.</p>"
+"<label class='wl'>Active provider</label>"
+"<select class='wi' id='stCloud'>"
+"<option value='0'>Off &mdash; on-device model only</option>"
+"<option value='1'>Anthropic Claude (Opus 4.8)</option>"
+"<option value='2'>Google Gemini (2.5 Flash)</option>"
+"</select>"
+"<p class='sts' style='margin-top:2px'>Only one runs at a time. Both keys can be stored; the "
+"selector picks which one identifies new events.</p>"
 "<label class='wl'>Anthropic API key</label>"
 "<input class='wi' type='password' id='stCkey' autocomplete='off' placeholder='(not set)'>"
 "<p class='sts' style='margin-top:2px'>Create one at console.anthropic.com/settings/keys. Stored "
 "on the device and sent only to api.anthropic.com; it is never shown again once saved, and is "
 "left out of the settings export/backup file. Leave blank to keep the current key.</p>"
 "<button class='act' style='margin-left:0' id='stCldTest' "
-"onclick='cldTest()'>&#128268; Test connection</button>"
+"onclick='cldTest(1)'>&#128268; Test Claude</button>"
 "<button class='act' style='display:none' id='stCkeyClr' "
-"onclick='ckeyClear()'>&#128465; Forget stored key</button>"
+"onclick='ckeyClear(1)'>&#128465; Forget Claude key</button>"
 "<div class='sts' id='stCldSts' style='margin-top:4px'></div>"
+"<label class='wl'>Google Gemini API key</label>"
+"<input class='wi' type='password' id='stGkey' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'>Create one at aistudio.google.com/apikey. Stored "
+"on the device and sent only to generativelanguage.googleapis.com; it is never shown again once "
+"saved, and is left out of the settings export/backup file. Leave blank to keep the current key.</p>"
+"<button class='act' style='margin-left:0' id='stGemTest' "
+"onclick='cldTest(2)'>&#128268; Test Gemini</button>"
+"<button class='act' style='display:none' id='stGkeyClr' "
+"onclick='ckeyClear(2)'>&#128465; Forget Gemini key</button>"
+"<div class='sts' id='stGemSts' style='margin-top:4px'></div>"
 "<h3 class='sh'>Periodic iNat re-scan (optional)</h3>"
 "<label class='wl'><input type='checkbox' id='stInat'> Re-scan unidentified frames with the iNaturalist model</label>"
 "<p class='sts' style='margin-top:2px'>Every so often, temporarily loads the iNaturalist model from the "
@@ -877,8 +894,10 @@ static const char INDEX_HTML[] =
 "var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===5?'\\u2713 not a bird':st===6?'\\u2713 unknown bird':st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
 "var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===5?'other / not a bird \\u2013 hard negative':st===6?'unknown / bad bird \\u2013 excluded from training':st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
 "if(prop){bcl='gprop';btxt='\\u2248 '+esc(pnm);bttl=esc(pnm)+' \\u2013 same visit (inherited label, not independently classified)';}"
-"var sc=o.src||0;"   /* provenance: 1 nordic, 2 Claude, 3 iNat */
-"var sbg=sc?(' <span style=\"opacity:.6;font-size:9px\" title=\"labelled by '+(sc===1?'nordic model':sc===2?'Claude':'iNat')+'\">['+(sc===1?'N':sc===2?'C':'I')+']</span>'):'';"
+"var sc=o.src||0;"   /* provenance: 1 nordic, 2 Claude, 3 iNat, 4 Gemini */
+"var snm=sc===1?'nordic model':sc===2?'Claude':sc===3?'iNat':sc===4?'Gemini':'';"
+"var slt=sc===1?'N':sc===2?'C':sc===3?'I':sc===4?'G':'';"
+"var sbg=sc?(' <span style=\"opacity:.6;font-size:9px\" title=\"labelled by '+snm+'\">['+slt+']</span>'):'';"
 "var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+sbg+'</div>';"
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
 ":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
@@ -890,7 +909,7 @@ static const char INDEX_HTML[] =
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
 "<button class=\"gidbtn\" title=\"identify bird (on-device model)\" "
 "onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
-"<button class=\"gidbtn\" title=\"identify bird with Anthropic Claude\" "
+"<button class=\"gidbtn\" title=\"identify bird with the cloud classifier\" "
 "onclick=\"cldBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#10024;</button>'+cfb+'"
 "<button class=\"gidbtn\" title=\"set/correct species\" data-d=\"'+d+'\" "
 "data-f=\"'+esc(o.f)+'\" data-sp=\"'+esc(nm)+'\" onclick=\"reLabel(this)\">&#9998;</button>"
@@ -958,7 +977,7 @@ static const char INDEX_HTML[] =
 /* Both identify buttons render identically — same reply shape, same
  * confirmed-badge flip on save — so they differ only by endpoint. */
 "function idBird(btn,d,f){idRun(btn,d,f,'/api/classify-file');}"
-"function cldBird(btn,d,f){idRun(btn,d,f,'/api/claude-file');}"
+"function cldBird(btn,d,f){idRun(btn,d,f,'/api/cloud-file');}"
 "function idRun(btn,d,f,url){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
 "if(!out){out=document.createElement('div');out.className='gid';it.appendChild(out);}"
@@ -1248,10 +1267,13 @@ static const char INDEX_HTML[] =
 "$g('stFshut').checked=c.fshut==1;"
 "$g('stTta').checked=c.tta==1;"
 "$g('stInat').checked=c.inat==1;$g('stInatv').value=c.inatv;"
-"$g('stCld').checked=c.cld==1;"
+"$g('stCloud').value=c.cprov;"
 "$g('stCkey').value='';"
 "$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stCkeyClr').style.display=c.ckey_set?'':'none';"
+"$g('stGkey').value='';"
+"$g('stGkey').placeholder=c.gkey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
+"$g('stGkeyClr').style.display=c.gkey_set?'':'none';"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
@@ -1315,38 +1337,43 @@ static const char INDEX_HTML[] =
 "+'&fshut='+($g('stFshut').checked?1:0)"
 "+'&tta='+($g('stTta').checked?1:0)"
 "+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
-"+'&cld='+($g('stCld').checked?1:0)"
+"+'&cprov='+$g('stCloud').value"
 /* An empty key field means "keep the stored key" — the handler treats an
- * absent ckey as unchanged, so never send an empty one. */
-"+($g('stCkey').value?'&ckey='+encodeURIComponent($g('stCkey').value):'');"
+ * absent ckey/gkey as unchanged, so never send an empty one. */
+"+($g('stCkey').value?'&ckey='+encodeURIComponent($g('stCkey').value):'')"
+"+($g('stGkey').value?'&gkey='+encodeURIComponent($g('stGkey').value):'');"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})"
 ".then(r=>r.json()).then(function(o){"
 "$g('stSts').textContent=o.ok?'Saved & applied \\u2713':'Save failed';"
 "if(o.ok&&$g('stCkey').value){$g('stCkey').value='';"
 "$g('stCkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
+"if(o.ok&&$g('stGkey').value){$g('stGkey').value='';"
+"$g('stGkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
 "if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
 "setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Save failed';});}"
-/* Save any typed key first, so "paste key, press Test" does what it looks like
- * it does rather than testing the previous key. */
-"function cldTest(){var s=$g('stCldSts');s.textContent='\\u2026 testing';"
-"var pre=$g('stCkey').value?fetch('/api/settings',{method:'POST',"
+/* p: 1=Claude, 2=Gemini. Save any typed key first, so "paste key, press Test"
+ * does what it looks like it does rather than testing the previous key. */
+"function cldTest(p){var kf=p==2?'stGkey':'stCkey',sf=p==2?'stGemSts':'stCldSts',kn=p==2?'gkey':'ckey';"
+"var s=$g(sf);s.textContent='\\u2026 testing';"
+"var pre=$g(kf).value?fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-"body:'ckey='+encodeURIComponent($g('stCkey').value)}).then(function(){stLoad();}):Promise.resolve();"
-"pre.then(function(){return fetch('/api/claude-test');}).then(r=>r.json()).then(function(o){"
+"body:kn+'='+encodeURIComponent($g(kf).value)}).then(function(){stLoad();}):Promise.resolve();"
+"pre.then(function(){return fetch('/api/cloud-test?p='+p);}).then(r=>r.json()).then(function(o){"
 "s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';})"
 ".catch(function(){s.textContent='\\u2717 test failed';s.style.color='#e66';});}"
 /* An empty key box means "keep the stored key", so deleting one needs its own
  * action — otherwise a billable secret could never be removed from the device. */
-"function ckeyClear(){if(!confirm('Forget the stored Claude API key? Cloud "
-"identification stops until you paste a new one.'))return;"
+"function ckeyClear(p){var nm=p==2?'Gemini':'Claude',cf=p==2?'gkeyclear':'ckeyclear';"
+"if(!confirm('Forget the stored '+nm+' API key? If it is the active provider, "
+"cloud identification stops until you paste a new one.'))return;"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-"body:'ckeyclear=1&cld=0'})"
+"body:cf+'=1'})"
 ".then(r=>r.json()).then(function(o){$g('stSts').textContent=o.ok?'Key forgotten \\u2713':'Failed';"
 "stLoad();setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Failed';});}"
@@ -2016,7 +2043,8 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         t->l[count].pct = (uint8_t) atoi(conf);
         t->l[count].src = strcmp(source, "nordic") == 0 ? 1
                         : strcmp(source, "claude") == 0 ? 2
-                        : strcmp(source, "inat")   == 0 ? 3 : 0;
+                        : strcmp(source, "inat")   == 0 ? 3
+                        : strcmp(source, "gemini") == 0 ? 4 : 0;
         count++;
     }
     if (count >= GAL_MAX_LABELS)
@@ -2991,7 +3019,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
-        "\"cld\":%u,\"ckey_set\":%s,\"models\":[",
+        "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3012,8 +3040,9 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.detect_quarantine_s,
         (unsigned) g_settings.inat_periodic_enabled,
         (unsigned) g_settings.inat_periodic_interval_min,
-        (unsigned) g_settings.claude_enabled,
-        g_settings.claude_key[0] ? "true" : "false");
+        (unsigned) g_settings.cloud_provider,
+        g_settings.claude_key[0] ? "true" : "false",
+        g_settings.gemini_key[0] ? "true" : "false");
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -3114,24 +3143,36 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.tta = field_num(body, "tta=", 0, 1, g_settings.tta);
     g_settings.detect_quarantine_s = field_num(body, "qtn=", 0, 3600, g_settings.detect_quarantine_s);
 
-    /* Claude (§3.2.3). An absent/empty ckey keeps the stored key — the UI sends
-     * the field only when the user actually typed a new one, so saving any
-     * other setting (or restoring a backup, which carries no key) can't wipe
-     * it. Deleting a key is therefore an explicit act: ckeyclear=1, the
-     * Settings tab's "Forget stored key" button. */
-    g_settings.claude_enabled = field_num(body, "cld=", 0, 1, g_settings.claude_enabled);
+    /* Cloud classifier (§3.2.3). cprov selects the active provider (0 off, 1
+     * Claude, 2 Gemini) — one at a time. An absent/empty ckey/gkey keeps that
+     * stored key: the UI sends a key field only when the user actually typed a
+     * new one, so saving any other setting (or restoring a backup, which carries
+     * no key) can't wipe it. Deleting a key is an explicit act: ckeyclear /
+     * gkeyclear, the Settings tab's "Forget stored key" buttons. Forgetting the
+     * key of the currently-selected provider turns the selector off, since it
+     * can no longer run. */
+    g_settings.cloud_provider = field_num(body, "cprov=", 0, 2, g_settings.cloud_provider);
     g_settings.inat_periodic_enabled = field_num(body, "inat=", 0, 1, g_settings.inat_periodic_enabled);
     g_settings.inat_periodic_interval_min =
         field_num(body, "inatv=", 5, 1440, g_settings.inat_periodic_interval_min);
     if (field_num(body, "ckeyclear=", 0, 1, 0) == 1) {
         g_settings.claude_key[0] = '\0';
-        g_settings.claude_enabled = 0;   /* no key => nothing to enable */
+        if (g_settings.cloud_provider == CLOUD_CLAUDE) g_settings.cloud_provider = CLOUD_OFF;
     } else {
         char ckey[160];   /* must exceed settings.claude_key so a real
                            * ~108-char sk-ant- key is never clipped here */
         form_field(body, "ckey=", ckey, sizeof(ckey));
         if (ckey[0] && !strchr(ckey, '"') && !strchr(ckey, '\\'))
             strlcpy(g_settings.claude_key, ckey, sizeof(g_settings.claude_key));
+    }
+    if (field_num(body, "gkeyclear=", 0, 1, 0) == 1) {
+        g_settings.gemini_key[0] = '\0';
+        if (g_settings.cloud_provider == CLOUD_GEMINI) g_settings.cloud_provider = CLOUD_OFF;
+    } else {
+        char gkey[160];
+        form_field(body, "gkey=", gkey, sizeof(gkey));
+        if (gkey[0] && !strchr(gkey, '"') && !strchr(gkey, '\\'))
+            strlcpy(g_settings.gemini_key, gkey, sizeof(g_settings.gemini_key));
     }
 
     settings_save();
@@ -3168,15 +3209,15 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    /* The Claude API key is deliberately NOT exported: it is a billable secret
-     * and this file gets mailed around and dropped into cloud folders. Omitting
-     * ckey reads as "keep current" on restore (see h_settings_post), so the only
-     * cost is re-pasting the key after an NVS wipe. */
+    /* The API keys are deliberately NOT exported: they are billable secrets and
+     * this file gets mailed around and dropped into cloud folders. Omitting
+     * ckey/gkey reads as "keep current" on restore (see h_settings_post), so the
+     * only cost is re-pasting a key after an NVS wipe. */
     char buf[700];
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cld=%u",
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3190,7 +3231,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.detect_quarantine_s,
         (unsigned) g_settings.inat_periodic_enabled,
         (unsigned) g_settings.inat_periodic_interval_min,
-        (unsigned) g_settings.claude_enabled);
+        (unsigned) g_settings.cloud_provider);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
@@ -3622,10 +3663,11 @@ static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r
 typedef enum {
     IDENT_MODEL_POST,    /* POST /api/classify      — inference on a posted JPEG */
     IDENT_MODEL_FILE,    /* GET  /api/classify-file — inference on an SD JPEG */
-    IDENT_CLAUDE_FILE,   /* GET  /api/claude-file   — Claude round-trip on an SD JPEG */
-    IDENT_CLAUDE_TEST,   /* GET  /api/claude-test   — reachability/key probe */
+    IDENT_CLOUD_FILE,    /* GET  /api/cloud-file    — cloud round-trip on an SD JPEG */
+    IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
 } ident_kind_t;
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
+                                cloud_provider_t provider,
                                 const char *date, const char *file,
                                 uint8_t *body, size_t body_len);
 
@@ -3670,7 +3712,7 @@ static esp_err_t h_classify_run(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "recv failed");
         return ESP_OK;
     }
-    return ident_dispatch(req, IDENT_MODEL_POST, NULL, NULL, body, total);
+    return ident_dispatch(req, IDENT_MODEL_POST, CLOUD_OFF, NULL, NULL, body, total);
 }
 
 /* Query parse + path validation shared by the Gallery's two identify
@@ -3723,6 +3765,7 @@ static bool idfile_save(const char *date, const char *file,
 typedef struct {
     httpd_req_t *req;         /* async copy — owns the socket until complete */
     ident_kind_t kind;
+    cloud_provider_t provider;/* IDENT_CLOUD_*: which cloud provider to call */
     char     date[24];
     char     file[80];
     uint8_t *body;            /* IDENT_MODEL_POST: received JPEG (PSRAM); else NULL */
@@ -3774,31 +3817,32 @@ static void ident_task(void *arg)
         break;
     }
 
-    case IDENT_CLAUDE_FILE: {
+    case IDENT_CLOUD_FILE: {
         char path[160];
         snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
                  j->date, j->file);
-        if (claude_classify_file(path, &r) != ESP_OK) {
-            /* Surface Claude's own words (bad key, quota, safety block) — the
-             * Gallery prints this straight into the tile. */
+        if (cloud_classify_file(j->provider, path, &r) != ESP_OK) {
+            /* Surface the provider's own words (bad key, quota, safety block) —
+             * the Gallery prints this straight into the tile. */
             char e[128], msg[96];
-            json_escape(msg, sizeof(msg), claude_last_error());
+            json_escape(msg, sizeof(msg), cloud_last_error(j->provider));
             snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
             httpd_resp_set_status(req, "502 Bad Gateway");
             httpd_resp_set_type(req, "application/json");
             httpd_resp_sendstr(req, e);
         } else {
-            classify_send_json(req, &r, idfile_save(j->date, j->file, &r, "claude"));
+            classify_send_json(req, &r,
+                idfile_save(j->date, j->file, &r, cloud_source_tag(j->provider)));
         }
         break;
     }
 
-    case IDENT_CLAUDE_TEST: {
+    case IDENT_CLOUD_TEST: {
         /* Roomy: the TLS verdict carries an mbedTLS code, the cert-verify flags
          * and the with/without-verification comparison; a clipped one loses
          * exactly the part that says which failure it was. */
         char verdict[288] = "";
-        esp_err_t err = claude_test(verdict, sizeof(verdict));
+        esp_err_t err = cloud_test(j->provider, verdict, sizeof(verdict));
         char msg[384], buf[440];
         json_escape(msg, sizeof(msg), verdict);
         snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
@@ -3822,6 +3866,7 @@ static void ident_task(void *arg)
  * race-free against itself; the worker is the only other writer and only ever
  * clears it. */
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
+                                cloud_provider_t provider,
                                 const char *date, const char *file,
                                 uint8_t *body, size_t body_len)
 {
@@ -3839,6 +3884,7 @@ static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
         return ESP_OK;
     }
     j->kind = kind;
+    j->provider = provider;
     j->body = body;
     j->body_len = body_len;
     if (date) strlcpy(j->date, date, sizeof(j->date));
@@ -3864,30 +3910,53 @@ static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
     return ESP_OK;
 }
 
-/* GET /api/claude-test — check reachability + the stored key without spending
- * tokens (FSD §3.2.3/§6). A deployed box has no serial console, so this is the
- * only way to tell a rejected key from a blocked network. Runs in the identify
- * worker (~1-3 s), so it doesn't hold the httpd task. */
-static esp_err_t h_claude_test(httpd_req_t *req)
+/* Read a ?p=1|2 provider selector from the query string, defaulting to the
+ * given fallback when absent/invalid. Lets the Settings Test button probe a
+ * specific provider's key regardless of which one is currently active. */
+static cloud_provider_t cloud_provider_param(httpd_req_t *req, cloud_provider_t fallback)
 {
-    return ident_dispatch(req, IDENT_CLAUDE_TEST, NULL, NULL, NULL, 0);
+    char q[24];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) return fallback;
+    char v[4];
+    if (httpd_query_key_value(q, "p", v, sizeof(v)) != ESP_OK) return fallback;
+    if (v[0] == '1') return CLOUD_CLAUDE;
+    if (v[0] == '2') return CLOUD_GEMINI;
+    return fallback;
 }
 
-/* GET /api/claude-file?date=<day>&f=<file> — identify one saved photo with
- * Anthropic Claude (FSD §3.2.3/§6). The Gallery's ✨ button: the point is the
- * §3.2.2 retrain loop, where confirming a strong cloud label with one click
- * beats typing a species name per image. Independent of the Settings toggle
- * (which only governs the live path) — a stored key is enough.
+/* GET /api/cloud-test?p=<1|2> — check reachability + the stored key for a cloud
+ * provider without spending tokens (FSD §3.2.3/§6). A deployed box has no serial
+ * console, so this is the only way to tell a rejected key from a blocked
+ * network. Runs in the identify worker (~1-3 s), so it doesn't hold the httpd
+ * task. `p` selects the provider (default: the active one). */
+static esp_err_t h_cloud_test(httpd_req_t *req)
+{
+    cloud_provider_t p = cloud_provider_param(req, cloud_active());
+    if (p == CLOUD_OFF) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"msg\":\"pick a provider first\"}");
+        return ESP_OK;
+    }
+    return ident_dispatch(req, IDENT_CLOUD_TEST, p, NULL, NULL, NULL, 0);
+}
+
+/* GET /api/cloud-file?date=<day>&f=<file> — identify one saved photo with the
+ * cloud (FSD §3.2.3/§6). The Gallery's ✨ button: the point is the §3.2.2
+ * retrain loop, where confirming a strong cloud label with one click beats
+ * typing a species name per image. Uses the active provider, or — if none is
+ * selected — whichever one has a key (cloud_for_manual), so the button works
+ * with the live path off. Independent of the provider selector otherwise.
  *
  * Offloaded to the identify worker for the round-trip (~1-5 s) so the httpd
  * task isn't held — see ident_dispatch. */
-static esp_err_t h_claude_file(httpd_req_t *req)
+static esp_err_t h_cloud_file(httpd_req_t *req)
 {
-    if (!claude_have_key()) {
+    cloud_provider_t p = cloud_for_manual();
+    if (p == CLOUD_OFF) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req,
-            "{\"error\":\"no Claude API key (Settings \\u2192 Cloud Identification)\"}");
+            "{\"error\":\"no cloud API key (Settings \\u2192 Cloud Identification)\"}");
         return ESP_OK;
     }
     if (!storage_sd_present()) {
@@ -3899,7 +3968,7 @@ static esp_err_t h_claude_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-    return ident_dispatch(req, IDENT_CLAUDE_FILE, date, file, NULL, 0);
+    return ident_dispatch(req, IDENT_CLOUD_FILE, p, date, file, NULL, 0);
 }
 
 /* GET /api/classify-file?date=<day>&f=<file> — classify a JPEG already on the
@@ -3924,7 +3993,7 @@ static esp_err_t h_classify_file(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-    return ident_dispatch(req, IDENT_MODEL_FILE, date, file, NULL, 0);
+    return ident_dispatch(req, IDENT_MODEL_FILE, CLOUD_OFF, date, file, NULL, 0);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
@@ -4206,8 +4275,8 @@ esp_err_t web_server_start(void)
         { .uri = "/ota/from-url", .method = HTTP_GET,  .handler = h_ota_from_url_status },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
-        { .uri = "/api/claude-file", .method = HTTP_GET, .handler = h_claude_file },
-        { .uri = "/api/claude-test", .method = HTTP_GET, .handler = h_claude_test },
+        { .uri = "/api/cloud-file", .method = HTTP_GET, .handler = h_cloud_file },
+        { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
