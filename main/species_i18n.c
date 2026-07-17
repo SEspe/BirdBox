@@ -132,6 +132,15 @@ static const no_name_t NO_NAMES[] = {
     { "Surnia ulula",               "Haukugle" },
     { "Aquila chrysaetos",          "Kongeørn" },
     { "Haliaeetus albicilla",       "Havørn" },
+
+    /* Open-country / mountain / mire species from the user's target list
+     * (Artsliste.txt, added 2026-07-17) not covered above — offered in the
+     * relabel picker as hand-label ground-truth targets (FSD §3.2.1). Inert
+     * at inference until a model that emits them is installed. */
+    { "Anthus pratensis",           "Heipiplerke" },
+    { "Pluvialis apricaria",        "Heilo" },
+    { "Eremophila alpestris",       "Fjellerke" },
+    { "Luscinia svecica",           "Blåstrupe" },
 };
 #define NO_NAMES_N (sizeof(NO_NAMES) / sizeof(NO_NAMES[0]))
 

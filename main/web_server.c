@@ -2123,15 +2123,60 @@ static esp_err_t h_labels(httpd_req_t *req)
         httpd_resp_send_chunk(req, item, len);
         first = false;
     }
-    /* Off-model target species (§3.2.1/§3.2.2): boreal specialists the v1 model
-     * can't emit but that we want to hand-label as ground truth for the Nordic
-     * retrain. Offered in the relabel picker with a stable binomial so the
-     * export keys on it — one class folder per species, immune to common-name
-     * typos. Kept in sync with the "inert" boreal entries in species_i18n.c. */
+    /* Off-model target species (§3.2.1/§3.2.2): the user's curated target list
+     * (downloads Artsliste.txt) — species we want to hand-label as ground truth
+     * for the Nordic retrain, whether or not the current model can emit them.
+     * Offered in the relabel picker with a stable binomial so the export keys
+     * on it (one class folder per species, immune to common-name typos). Any
+     * entry already emitted above as a model class is skipped so it appears
+     * once (dedup keyed on the Latin binomial — e.g. Lavskrike, now a real
+     * class in nordic-v0.5). Norwegian names live in species_i18n.c. */
     static const struct { const char *latin; const char *common; } EXTRA_LABELS[] = {
-        { "Perisoreus infaustus", "Siberian Jay" },   /* Lavskrike */
+        { "Parus major",             "Great Tit" },                  /* Kjøttmeis */
+        { "Cyanistes caeruleus",     "Eurasian Blue Tit" },          /* Blåmeis */
+        { "Fringilla coelebs",       "Common Chaffinch" },           /* Bokfink */
+        { "Pyrrhula pyrrhula",       "Eurasian Bullfinch" },         /* Dompap */
+        { "Pica pica",               "Eurasian Magpie" },            /* Skjære */
+        { "Emberiza citrinella",     "Yellowhammer" },               /* Gulspurv */
+        { "Perisoreus infaustus",    "Siberian Jay" },               /* Lavskrike */
+        { "Fringilla montifringilla","Brambling" },                  /* Bjørkefink */
+        { "Turdus iliacus",          "Redwing" },                    /* Rødvingetrost */
+        { "Turdus pilaris",          "Fieldfare" },                  /* Gråtrost */
+        { "Erithacus rubecula",      "European Robin" },             /* Rødstrupe */
+        { "Lophophanes cristatus",   "Crested Tit" },                /* Toppmeis */
+        { "Periparus ater",          "Coal Tit" },                   /* Svartmeis */
+        { "Anthus pratensis",        "Meadow Pipit" },               /* Heipiplerke */
+        { "Oenanthe oenanthe",       "Northern Wheatear" },          /* Steinskvett */
+        { "Pluvialis apricaria",     "European Golden Plover" },     /* Heilo */
+        { "Eremophila alpestris",    "Horned Lark" },                /* Fjellerke */
+        { "Luscinia svecica",        "Bluethroat" },                 /* Blåstrupe */
+        { "Corvus corax",            "Northern Raven" },             /* Ravn */
+        { "Ficedula hypoleuca",      "European Pied Flycatcher" },   /* Svarthvit fluesnapper */
+        { "Muscicapa striata",       "Spotted Flycatcher" },         /* Gråfluesnapper */
+        { "Regulus regulus",         "Goldcrest" },                  /* Fuglekonge */
+        { "Troglodytes troglodytes", "Eurasian Wren" },              /* Gjerdesmett */
+        { "Turdus merula",           "Common Blackbird" },           /* Svarttrost */
+        { "Turdus philomelos",       "Song Thrush" },                /* Måltrost */
+        { "Dendrocopos major",       "Great Spotted Woodpecker" },   /* Flaggspett */
+        { "Picoides tridactylus",    "Eurasian Three-toed Woodpecker" }, /* Tretåspett */
+        { "Chloris chloris",         "European Greenfinch" },        /* Grønnfink */
+        { "Acanthis flammea",        "Common Redpoll" },             /* Gråsisik */
+        { "Corvus cornix",           "Hooded Crow" },                /* Kråke */
     };
     for (size_t e = 0; e < sizeof(EXTRA_LABELS) / sizeof(EXTRA_LABELS[0]); e++) {
+        /* Skip if the model already emitted this Latin binomial as a class. */
+        bool dup = false;
+        for (int i = 0; i < n && !dup; i++) {
+            if (!classify_label_region(i)) continue;
+            const char *raw = classify_label(i);
+            const char *op = strrchr(raw, '(');
+            if (!op) continue;
+            size_t rl = (size_t) (op - raw);
+            while (rl > 0 && raw[rl-1] == ' ') rl--;
+            if (rl == strlen(EXTRA_LABELS[e].latin) &&
+                strncmp(raw, EXTRA_LABELS[e].latin, rl) == 0) dup = true;
+        }
+        if (dup) continue;
         char disp[96];
         species_localize(EXTRA_LABELS[e].common, EXTRA_LABELS[e].latin,
                          g_settings.lang, disp, sizeof(disp));
