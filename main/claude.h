@@ -26,16 +26,11 @@ extern "C" {
  * Off by default. Requires WiFi; every call costs money against the user's
  * own Anthropic API key. */
 
-/* True when a key is stored — i.e. a Claude call is possible at all. This, not
- * claude_enabled(), gates the manual Gallery button: labelling a training image
- * on demand shouldn't require turning on billing for every live event. */
+/* True when a key is stored — i.e. a Claude call is possible at all. The live
+ * "identify new events" gate is the provider selector in cloud.c
+ * (cloud_enabled); this only reports whether a Claude call could be made, which
+ * is what the manual Gallery button needs. */
 bool claude_have_key(void);
-
-/* True when the Settings toggle is on AND a key is stored: identify NEW MOTION
- * EVENTS with Claude instead of the local model. Governs the live path only.
- * Cheap — safe to call per event. Does not check WiFi (a call that fails
- * degrades to the on-device answer at the call site). */
-bool claude_enabled(void);
 
 /* Identify the bird in a JPEG. Blocks the caller for the round-trip
  * (~2-8 s: TLS handshake + upload + inference), so never call from the motion

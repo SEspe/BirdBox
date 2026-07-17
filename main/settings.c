@@ -39,9 +39,10 @@ settings_t g_settings = {
     .fast_shutter       = 0,
     .detect_quarantine_s = 60,
     .tta                = 0,
-    .claude_enabled     = 0,   /* opt-in: needs the user's own API key and
-                                * bills them per event (§3.2.3) */
+    .cloud_provider     = 0,   /* opt-in: off until the user picks a provider and
+                                * supplies that provider's key (§3.2.3) */
     .claude_key         = "",
+    .gemini_key         = "",
     .inat_periodic_enabled     = 0,    /* opt-in third tier (§3.2.3) */
     .inat_periodic_interval_min = 60,
 };
@@ -86,9 +87,15 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_fshut",&u8)  == ESP_OK) g_settings.fast_shutter = u8;
     if (nvs_get_u8 (h, "s_tta",  &u8)  == ESP_OK) g_settings.tta = u8;
     if (nvs_get_u16(h, "s_qtn",  &u16) == ESP_OK) g_settings.detect_quarantine_s = u16;
-    if (nvs_get_u8 (h, "s_cld",  &u8)  == ESP_OK) g_settings.claude_enabled = u8;
+    /* Cloud provider selector. New key is s_cprov; migrate the pre-two-provider
+     * layout, where a bare s_cld=1 (u8 boolean "Claude on") meant Claude. Read
+     * s_cprov if present, else fall back to the old s_cld. */
+    if (nvs_get_u8 (h, "s_cprov", &u8) == ESP_OK) g_settings.cloud_provider = u8;
+    else if (nvs_get_u8 (h, "s_cld", &u8) == ESP_OK) g_settings.cloud_provider = u8 ? 1 : 0;
     l = sizeof(g_settings.claude_key);
     nvs_get_str(h, "s_ckey", g_settings.claude_key, &l);
+    l = sizeof(g_settings.gemini_key);
+    nvs_get_str(h, "s_gkey", g_settings.gemini_key, &l);
     if (nvs_get_u8 (h, "s_inat", &u8)  == ESP_OK) g_settings.inat_periodic_enabled = u8;
     if (nvs_get_u16(h, "s_inatv",&u16) == ESP_OK) g_settings.inat_periodic_interval_min = u16;
     nvs_close(h);
@@ -130,8 +137,9 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_fshut", g_settings.fast_shutter);
     nvs_set_u8 (h, "s_tta",   g_settings.tta);
     nvs_set_u16(h, "s_qtn",   g_settings.detect_quarantine_s);
-    nvs_set_u8 (h, "s_cld",   g_settings.claude_enabled);
+    nvs_set_u8 (h, "s_cprov", g_settings.cloud_provider);
     nvs_set_str(h, "s_ckey",  g_settings.claude_key);
+    nvs_set_str(h, "s_gkey",  g_settings.gemini_key);
     nvs_set_u8 (h, "s_inat",  g_settings.inat_periodic_enabled);
     nvs_set_u16(h, "s_inatv", g_settings.inat_periodic_interval_min);
     err = nvs_commit(h);
