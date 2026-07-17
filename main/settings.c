@@ -43,6 +43,7 @@ settings_t g_settings = {
                                 * supplies that provider's key (§3.2.3) */
     .claude_key         = "",
     .gemini_key         = "",
+    .gemini_model       = "",   /* "" => gemini.c's GEMINI_MODEL_DEFAULT */
     .inat_periodic_enabled     = 0,    /* opt-in third tier (§3.2.3) */
     .inat_periodic_interval_min = 60,
 };
@@ -96,6 +97,8 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_ckey", g_settings.claude_key, &l);
     l = sizeof(g_settings.gemini_key);
     nvs_get_str(h, "s_gkey", g_settings.gemini_key, &l);
+    l = sizeof(g_settings.gemini_model);
+    nvs_get_str(h, "s_gmdl", g_settings.gemini_model, &l);
     if (nvs_get_u8 (h, "s_inat", &u8)  == ESP_OK) g_settings.inat_periodic_enabled = u8;
     if (nvs_get_u16(h, "s_inatv",&u16) == ESP_OK) g_settings.inat_periodic_interval_min = u16;
     nvs_close(h);
@@ -140,6 +143,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_cprov", g_settings.cloud_provider);
     nvs_set_str(h, "s_ckey",  g_settings.claude_key);
     nvs_set_str(h, "s_gkey",  g_settings.gemini_key);
+    nvs_set_str(h, "s_gmdl",  g_settings.gemini_model);
     nvs_set_u8 (h, "s_inat",  g_settings.inat_periodic_enabled);
     nvs_set_u16(h, "s_inatv", g_settings.inat_periodic_interval_min);
     err = nvs_commit(h);

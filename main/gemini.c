@@ -9,12 +9,12 @@
  *    reason — see claude.c. The image goes in an inline_data part; the fixed
  *    generationConfig (response schema + prompt) is the suffix after it.
  *
- * 2. The default model is gemini-2.0-flash (a NON-thinking model — see the
- *    GEMINI_MODEL note for why, over 2.5-flash / flash-latest), so the request
- *    sends NO thinkingConfig: that key 400s on a non-thinking model. If this is
- *    ever pointed back at a 2.5+/thinking model, add
- *    thinkingConfig.thinkingBudget=0 or a small maxOutputTokens can come back
- *    empty (all budget spent thinking, none emitting).
+ * 2. The model id is operator-settable (see the GEMINI_MODEL_DEFAULT block). The
+ *    body sends thinkingConfig.thinkingBudget=0 to disable thinking — the usable
+ *    flash models are all thinking-capable and a single-image ID gains nothing
+ *    from reasoning (left on it adds seconds and eats the maxOutputTokens
+ *    budget). A non-thinking model would 400 on this, but that whole generation
+ *    (2.0) is retired.
  *
  * 3. Structured output is generationConfig.responseSchema (OpenAPI subset:
  *    UPPERCASE types, no additionalProperties) plus responseMimeType
@@ -38,21 +38,35 @@
 
 static const char *TAG = "gemini";
 
-/* Model choice, learned empirically (see FSD v2.10):
- *   - gemini-2.5-flash      -> 404 "no longer available to new users" for new
- *     keys (even though it shows in that key's ListModels).
- *   - gemini-flash-latest   -> resolves, but hit SUSTAINED 503 "model is
- *     currently experiencing high demand" on the free tier, so every call
- *     retried ~15 s and still failed.
- *   - gemini-2.0-flash      -> GA, available to every key, far better free-tier
- *     availability, vision + JSON responseSchema, cheap. It is NOT a thinking
- *     model, so the request must NOT send thinkingConfig (that 400s here).
- * 2.0-flash is the default; the Test button lists the flash model ids a given
- * key can use if this ever needs overriding. */
-#define GEMINI_API_HOST   "generativelanguage.googleapis.com"
-#define GEMINI_MODEL      "gemini-2.0-flash"
-#define GEMINI_URL        "https://" GEMINI_API_HOST "/v1beta/models/" GEMINI_MODEL ":generateContent"
-#define GEMINI_MODELS_URL "https://" GEMINI_API_HOST "/v1beta/models"
+/* The model id is OPERATOR-SETTABLE (settings.gemini_model), because Gemini
+ * model availability shifts under you in ways no single pinned id survives —
+ * learned the hard way (see FSD v2.08-v2.12):
+ *   - gemini-2.5-flash    -> 404 "not available to new users" (account-tier
+ *     gated — billing did NOT lift it on this key).
+ *   - gemini-flash-latest -> sustained 503 "high demand" on free tier.
+ *   - gemini-2.0-flash    -> 404 "no longer available" once the 2.0 generation
+ *     started retiring.
+ * So rather than chase it in firmware, the id comes from Settings; the Test
+ * button lists what a given key can actually call. GEMINI_MODEL_DEFAULT is the
+ * fallback when the field is blank: gemini-flash-lite-latest — the rolling
+ * lite-flash alias, verified live to return a correct ID in ~4 s. The plain
+ * gemini-flash-latest alias resolved too but returned sustained 503 "high
+ * demand"; the lite alias is the less-contended (and cheaper) sibling.
+ *
+ * The body sends thinkingConfig.thinkingBudget=0 to DISABLE thinking: the usable
+ * flash models are all thinking-capable (the non-thinking 2.0 generation is
+ * gone), and a single-image ID gains nothing from reasoning while it adds
+ * seconds of latency and eats the token budget. NOTE: if a future NON-thinking
+ * model is ever selected, thinkingConfig would 400 and must be removed. */
+#define GEMINI_API_HOST      "generativelanguage.googleapis.com"
+#define GEMINI_MODEL_DEFAULT "gemini-flash-lite-latest"
+#define GEMINI_MODELS_URL    "https://" GEMINI_API_HOST "/v1beta/models"
+
+/* Effective model: the operator's choice, or the default when unset. */
+static const char *gemini_model(void)
+{
+    return g_settings.gemini_model[0] ? g_settings.gemini_model : GEMINI_MODEL_DEFAULT;
+}
 
 #define GEMINI_MAX_JPEG   (300 * 1024)   /* matches CLASSIFY_MAX_BODY */
 #define GEMINI_RESP_MAX   4096           /* schema'd reply is small; slack is for
@@ -136,6 +150,7 @@ static const char REQ_SUFFIX[] =
     "\"}},"
     "{\"text\":\"Identify the bird in this photo.\"}]}],"
     "\"generationConfig\":{\"maxOutputTokens\":512,"
+    "\"thinkingConfig\":{\"thinkingBudget\":0},"
     "\"responseMimeType\":\"application/json\","
     "\"responseSchema\":{\"type\":\"OBJECT\",\"properties\":{"
     "\"bird\":{\"type\":\"BOOLEAN\"},"
@@ -154,8 +169,14 @@ static esp_err_t gemini_post_once(const char *prefix, const uint8_t *jpeg,
 {
     size_t total = strlen(prefix) + cu_b64_len(len) + strlen(REQ_SUFFIX);
 
+    /* Model id comes from Settings; esp_http_client_init copies the URL, so this
+     * stack buffer is safe to go out of scope after init. */
+    char url[176];
+    snprintf(url, sizeof(url), "https://%s/v1beta/models/%s:generateContent",
+             GEMINI_API_HOST, gemini_model());
+
     esp_http_client_config_t cfg = {
-        .url               = GEMINI_URL,
+        .url               = url,
         .method            = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 30000,

@@ -525,6 +525,14 @@ static const char INDEX_HTML[] =
 "<p class='sts' style='margin-top:2px'>Create one at aistudio.google.com/apikey. Stored "
 "on the device and sent only to generativelanguage.googleapis.com; it is never shown again once "
 "saved, and is left out of the settings export/backup file. Leave blank to keep the current key.</p>"
+"<label class='wl'>Gemini model</label>"
+"<input class='wi' type='text' id='stGmodel' autocomplete='off' spellcheck='false' "
+"placeholder='gemini-flash-lite-latest (default)'>"
+"<p class='sts' style='margin-top:2px'>Which model to call. Model availability changes with your "
+"Google account and as generations retire, so if a call 404s (&ldquo;not available to new "
+"users&rdquo; / &ldquo;no longer available&rdquo;), press <b>Test Gemini</b> below to list the "
+"model ids your key can use, then paste one here and Save &mdash; no reflash. Blank = default "
+"(gemini-flash-lite-latest). Lowercase letters, digits, dot and hyphen only.</p>"
 "<button class='act' style='margin-left:0' id='stGemTest' "
 "onclick='cldTest(2)'>&#128268; Test Gemini</button>"
 "<button class='act' style='display:none' id='stGkeyClr' "
@@ -1274,6 +1282,7 @@ static const char INDEX_HTML[] =
 "$g('stGkey').value='';"
 "$g('stGkey').placeholder=c.gkey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stGkeyClr').style.display=c.gkey_set?'':'none';"
+"$g('stGmodel').value=c.gmodel||'';"
 "$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
@@ -1338,8 +1347,10 @@ static const char INDEX_HTML[] =
 "+'&tta='+($g('stTta').checked?1:0)"
 "+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
 "+'&cprov='+$g('stCloud').value"
+"+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
 /* An empty key field means "keep the stored key" — the handler treats an
- * absent ckey/gkey as unchanged, so never send an empty one. */
+ * absent ckey/gkey as unchanged, so never send an empty one. gmdl is always
+ * sent (present-only on the server): blank resets it to the default. */
 "+($g('stCkey').value?'&ckey='+encodeURIComponent($g('stCkey').value):'')"
 "+($g('stGkey').value?'&gkey='+encodeURIComponent($g('stGkey').value):'');"
 "fetch('/api/settings',{method:'POST',"
@@ -3019,7 +3030,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
-        "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"models\":[",
+        "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\",\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3042,7 +3053,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.claude_key[0] ? "true" : "false",
-        g_settings.gemini_key[0] ? "true" : "false");
+        g_settings.gemini_key[0] ? "true" : "false",
+        g_settings.gemini_model);   /* [a-z0-9.-] only (validated on save) — JSON-safe */
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -3174,6 +3186,19 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         if (gkey[0] && !strchr(gkey, '"') && !strchr(gkey, '\\'))
             strlcpy(g_settings.gemini_key, gkey, sizeof(g_settings.gemini_key));
     }
+    /* Gemini model id. Present-only (like the keys): a POST without gmdl leaves
+     * it unchanged. An explicit empty value ("gmdl=") resets to the gemini.c
+     * default. Validated to [a-z0-9.-] so it's safe both in the request URL and
+     * echoed unescaped into the /api/settings JSON. */
+    if (has_field(body, "gmdl=")) {
+        char gmdl[64];
+        form_field(body, "gmdl=", gmdl, sizeof(gmdl));
+        bool ok = true;
+        for (char *p = gmdl; *p; p++)
+            if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') ||
+                  *p == '-' || *p == '.')) { ok = false; break; }
+        if (ok) strlcpy(g_settings.gemini_model, gmdl, sizeof(g_settings.gemini_model));
+    }
 
     settings_save();
 
@@ -3217,7 +3242,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u",
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3231,7 +3256,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.detect_quarantine_s,
         (unsigned) g_settings.inat_periodic_enabled,
         (unsigned) g_settings.inat_periodic_interval_min,
-        (unsigned) g_settings.cloud_provider);
+        (unsigned) g_settings.cloud_provider,
+        g_settings.gemini_model);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
