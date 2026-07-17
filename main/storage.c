@@ -26,6 +26,8 @@ static sdmmc_card_t     *s_card = NULL;
 static SemaphoreHandle_t s_write_mtx;
 static bool              s_last_write_ok = true;
 
+static void storage_migrate_perday(void);   /* one-time monthly→per-day split */
+
 esp_err_t storage_init(void)
 {
     s_write_mtx = xSemaphoreCreateMutex();
@@ -65,6 +67,7 @@ esp_err_t storage_init(void)
     mkdir(STORAGE_MOUNT_POINT "/captures", 0775);
     mkdir(STORAGE_MOUNT_POINT "/log",      0775);
     mkdir(STORAGE_MOUNT_POINT "/model",    0775);
+    storage_migrate_perday();   /* split any legacy monthly logs into per-day */
     return ESP_OK;
 #endif
 }
@@ -236,6 +239,129 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     return ESP_OK;
 }
 
+/* Visit-log path for a day: /log/visits-<date>.csv, where `date` is the full
+ * "YYYY-MM-DD" (only the first 10 chars are used, so a "YYYY-MM-DDT..." timestamp
+ * works too) or the literal "no-date" for pre-SNTP captures. Per-day files (FSD
+ * v2.07) so gallery/relabel/stats-today touch one day, not a whole month. */
+void storage_visit_log_path(const char *date, char *buf, size_t sz)
+{
+    if (date && strcmp(date, "no-date") == 0)
+        strlcpy(buf, STORAGE_MOUNT_POINT "/log/visits-no-date.csv", sz);
+    else
+        snprintf(buf, sz, STORAGE_MOUNT_POINT "/log/visits-%.10s.csv",
+                 date ? date : "");
+}
+
+/* One-time migration (FSD v2.07): split any legacy monthly `visits-YYYY-MM.csv`
+ * into per-day `visits-YYYY-MM-DD.csv`. Crash-safe and idempotent:
+ *   - only touches files named exactly "visits-<7 chars>.csv" that aren't
+ *     "no-date" (per-day names are 10 chars → skipped; re-running after all
+ *     months are done is a no-op);
+ *   - before splitting a month it deletes that month's per-day files (undoes a
+ *     crashed prior run), so a retry is clean;
+ *   - the monthly file is renamed to `.bak` (same-dir extension swap — never a
+ *     cross-dir move, per the FATFS rename gotcha) ONLY after the per-day row
+ *     count matches, so data is never lost; a mismatch keeps the `.csv` and
+ *     retries next boot. `.bak` has no ".csv" substring so every enumerator
+ *     ignores it. Captures under /captures are never touched. */
+static void storage_migrate_perday(void)
+{
+    if (!s_sd_present) return;
+
+    char months[64][8];   /* "YYYY-MM" + NUL */
+    int  nm = 0;
+    DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && nm < 64) {
+        if (e->d_type != DT_REG) continue;
+        if (strncmp(e->d_name, "visits-", 7) != 0) continue;
+        const char *mid = e->d_name + 7;
+        const char *dot = strstr(mid, ".csv");
+        if (!dot || (size_t) (dot - mid) != 7) continue;   /* not YYYY-MM (per-day=10) */
+        if (strncmp(mid, "no-date", 7) == 0) continue;     /* keep the unsynced bucket */
+        memcpy(months[nm], mid, 7); months[nm][7] = '\0';
+        nm++;
+    }
+    closedir(d);
+    if (nm == 0) return;   /* already per-day */
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    for (int i = 0; i < nm; i++) {
+        char mpath[64];
+        snprintf(mpath, sizeof(mpath), STORAGE_MOUNT_POINT "/log/visits-%s.csv", months[i]);
+
+        /* (1) undo any partial per-day files for this month from a crashed run */
+        char pfx[24];
+        snprintf(pfx, sizeof(pfx), "visits-%.7s-", months[i]);   /* "visits-YYYY-MM-" */
+        DIR *dd = opendir(STORAGE_MOUNT_POINT "/log");
+        if (dd) {
+            struct dirent *de;
+            while ((de = readdir(dd)) != NULL) {
+                if (strncmp(de->d_name, pfx, strlen(pfx)) == 0 && strstr(de->d_name, ".csv")) {
+                    char p[96];
+                    snprintf(p, sizeof(p), STORAGE_MOUNT_POINT "/log/%.40s", de->d_name);
+                    unlink(p);
+                }
+            }
+            closedir(dd);
+        }
+
+        /* (2) split rows into per-day files (verbatim — ROI column untouched) */
+        FILE *in = fopen(mpath, "r");
+        if (!in) continue;
+        char line[400];
+        bool header = true;
+        char cur[11] = "";
+        FILE *out = NULL;
+        long in_rows = 0, out_rows = 0;
+        while (fgets(line, sizeof(line), in)) {
+            if (header) {
+                header = false;
+                /* Skip the header row — but only if it IS one. A file without a
+                 * header (unexpected) must keep its first data row, not lose it
+                 * (ROI-preservation guarantee). */
+                if (strncmp(line, "timestamp,", 10) == 0) continue;
+            }
+            if (line[0] == '\0' || line[0] == '\n') continue;
+            in_rows++;
+            char date[11];
+            memcpy(date, line, 10); date[10] = '\0';
+            const char *dst = (date[4] == '-' && date[7] == '-') ? date : "no-date";
+            if (strcmp(dst, cur) != 0) {
+                if (out) fclose(out);
+                char dp[64];
+                storage_visit_log_path(dst, dp, sizeof(dp));
+                struct stat st;
+                bool isnew = (stat(dp, &st) != 0);
+                out = fopen(dp, "a");
+                if (out && isnew)
+                    fputs("timestamp,species,confidence,frames,first_frame,corrected,latin,roi,top3\n", out);
+                strlcpy(cur, dst, sizeof(cur));
+            }
+            if (out && fputs(line, out) >= 0) out_rows++;
+        }
+        if (out) fclose(out);
+        fclose(in);
+
+        /* (3) verify + (4) back up (never delete). */
+        if (out_rows == in_rows) {
+            char bpath[64];
+            snprintf(bpath, sizeof(bpath), STORAGE_MOUNT_POINT "/log/visits-%s.bak", months[i]);
+            unlink(bpath);
+            if (rename(mpath, bpath) == 0)
+                ESP_LOGI(TAG, "migrate: %s -> per-day (%ld rows); monthly kept as .bak",
+                         months[i], out_rows);
+            else
+                ESP_LOGE(TAG, "migrate: %s split ok but .bak rename failed — kept .csv", months[i]);
+        } else {
+            ESP_LOGE(TAG, "migrate: %s row mismatch (in=%ld out=%ld) — kept .csv, retry next boot",
+                     months[i], in_rows, out_rows);
+        }
+    }
+    xSemaphoreGive(s_write_mtx);
+}
+
 esp_err_t storage_append_visit_log(const char *line)
 {
     if (!s_sd_present) return ESP_ERR_INVALID_STATE;
@@ -245,11 +371,18 @@ esp_err_t storage_append_visit_log(const char *line)
     localtime_r(&now, &tm_now);
 
     char path[64];
-    if (tm_now.tm_year + 1900 < 2020)
-        strlcpy(path, STORAGE_MOUNT_POINT "/log/visits-no-date.csv", sizeof(path));
-    else
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%04d-%02d.csv",
-                 tm_now.tm_year + 1900, tm_now.tm_mon + 1);
+    if (tm_now.tm_year + 1900 < 2020) {
+        storage_visit_log_path("no-date", path, sizeof(path));
+    } else {
+        char date[11];
+        /* unsigned + modulo so -Werror=format-truncation can prove each width
+         * (year<10000 → 4 digits, month/day<100 → 2, all non-negative). */
+        snprintf(date, sizeof(date), "%04u-%02u-%02u",
+                 (unsigned) (tm_now.tm_year + 1900) % 10000u,
+                 (unsigned) (tm_now.tm_mon + 1) % 100u,
+                 (unsigned) tm_now.tm_mday % 100u);
+        storage_visit_log_path(date, path, sizeof(path));
+    }
 
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
     struct stat st;
@@ -312,7 +445,7 @@ int storage_reset_stats_day(const char *date)
     /* Real date -> filter that month's CSV, dropping rows whose timestamp
      * (first field, "YYYY-MM-DDT...") starts with this day. */
     char path[64], tmp[72];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/wipe.tmp");
 
     FILE *in = fopen(path, "r");
@@ -358,7 +491,7 @@ esp_err_t storage_set_roi(const char *date, const char *file, const char *roi)
     for (char *s = rv; *s; s++) { if (*s == ',') *s = ';'; else if (*s=='\n'||*s=='\r') *s=' '; }
 
     char path[64], tmp[72];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
@@ -416,7 +549,7 @@ esp_err_t storage_confirm(const char *date, const char *file)
         return ESP_ERR_INVALID_ARG;
 
     char path[64], tmp[72];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
@@ -542,7 +675,7 @@ esp_err_t storage_relabel(const char *date, const char *file,
     for (char *s = l; *s; s++) { if (*s == ',') *s = ';'; else if (*s=='\n'||*s=='\r') *s=' '; }
 
     char path[64], tmp[72];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
     char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
@@ -632,7 +765,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
     if (!found) return ESP_ERR_NO_MEM;
 
     char path[64], tmp[72];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
     char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */

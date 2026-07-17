@@ -873,7 +873,7 @@ static bool rc_rewrite_row(const char *csv, const recheck_row_t *row,
 static void recheck_task(void *arg)
 {
     char csv[64];
-    snprintf(csv, sizeof(csv), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", s_rc_date);
+    storage_visit_log_path(s_rc_date, csv, sizeof(csv));
 
     recheck_row_t *rows = (recheck_row_t *) heap_caps_calloc(
         RECHECK_MAX_ROWS, sizeof(recheck_row_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1241,7 +1241,7 @@ static void inat_batch_task(void *arg)
             INAT_BATCH_MAX, sizeof(recheck_row_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rows) continue;
         char csv[64];
-        snprintf(csv, sizeof(csv), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+        storage_visit_log_path(date, csv, sizeof(csv));
         char match[48];
         snprintf(match, sizeof(match), "/captures/%.10s/", date);
         int nc = 0;
