@@ -73,6 +73,22 @@ model **`nordic-v0.6.tflite`** (iNat periodic batch **off**, region persists).
   threshold. A clear Bokfink scores Fringilla coelebs 14% under iNat, so the path
   is proven; it just declines empty frames.
 
+## Known issues / deferred
+
+- **Visit log is monthly, not per-day (perf).** `visits-YYYY-MM.csv` is read in
+  full on every gallery load (~2.2 s SD-bound floor, independent of the day's
+  size) and rewritten whole on each relabel (~6.5 s). The fix is **per-day files
+  `visits-YYYY-MM-DD.csv`** so no operation touches a month of unrelated rows —
+  deferred (documented in FSD v1.98) because it also touches stats / export /
+  reset / recheck, **and now the Phase B iNat batch** (which scans the monthly
+  file for candidates). Bigger structural change; still open.
+- **frameroi sidecar not pruned** — `/log/frameroi-YYYY-MM-DD.csv` (0.70.9) grows
+  append-only and isn't cleaned when old captures age out (small, deferred; FSD
+  v2.03).
+- **iNat batch is coarse** — holds the run mutex for a bounded (25-frame) cycle,
+  skips if live events are queued; fine as an opt-in booster, but a busy period
+  during a batch delays live ID. Acceptable given it's off by default.
+
 ## Device / next steps
 
 - Device: 192.168.1.111, fw **0.70.12**, `nordic-v0.6.tflite`, iNat batch off,
