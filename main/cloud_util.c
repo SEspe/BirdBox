@@ -230,7 +230,12 @@ bool cu_status_transient(int status)
 
 void cu_retry_backoff(int attempt)
 {
-    vTaskDelay(pdMS_TO_TICKS(800 * (attempt + 1)));
+    /* Exponential: 2 s, 4 s, 8 s. Matches Google's Gemini free-tier guidance for
+     * riding out a 429 (10 RPM) — a fixed rate-limit window clears in under a
+     * minute, so a widening backoff catches it without hammering. Capped so a
+     * stray high `attempt` can't overflow into a multi-minute sleep. */
+    if (attempt > 3) attempt = 3;   /* cap at 16 s */
+    vTaskDelay(pdMS_TO_TICKS(2000 << attempt));
 }
 
 bool cu_stream_b64(esp_http_client_handle_t c, const uint8_t *data, size_t len)

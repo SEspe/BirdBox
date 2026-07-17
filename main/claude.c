@@ -157,7 +157,7 @@ static const char REQ_SUFFIX[] =
  * called with detail) when the server couldn't be reached. Split out so
  * claude_classify_jpeg can retry it on a transient status without rebuilding the
  * request. */
-#define CLAUDE_MAX_RETRIES 2   /* 3 attempts total, for 429/5xx spikes */
+#define CLAUDE_MAX_RETRIES 3   /* 4 attempts total; backoff 2s/4s/8s on 429/5xx */
 
 static esp_err_t claude_post_once(const char *prefix, const uint8_t *jpeg,
                                   size_t len, char *resp, int *status)
@@ -237,8 +237,9 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
         esp_err_t terr = claude_post_once(prefix, jpeg, len, resp, &status);
         if (terr != ESP_OK) { ret = terr; goto done; }   /* couldn't reach — no retry */
         if (status == 200) break;
-        /* A busy Anthropic edge returns 429/5xx; retry a couple of times with
-         * backoff. A 4xx (bad key, no credit) is deterministic — surface it. */
+        /* A busy Anthropic edge returns 429/5xx; retry with exponential backoff
+         * (2s/4s/8s). A 4xx other than 429 (bad key, no credit) is deterministic
+         * — surface it rather than retrying. */
         if (cu_status_transient(status) && attempt < CLAUDE_MAX_RETRIES) {
             ESP_LOGW(TAG, "Claude HTTP %d — retry %d/%d", status, attempt + 1, CLAUDE_MAX_RETRIES);
             cu_retry_backoff(attempt);
