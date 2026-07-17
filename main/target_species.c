@@ -34,6 +34,7 @@ const target_species_t TARGET_SPECIES[] = {
     { "Chloris chloris",          "European Greenfinch" },         /* Grønnfink */
     { "Acanthis flammea",         "Common Redpoll" },              /* Gråsisik */
     { "Corvus cornix",            "Hooded Crow" },                 /* Kråke */
+    { "Garrulus glandarius",      "Eurasian Jay" },                /* Nøtteskrike */
 };
 const size_t TARGET_SPECIES_N = sizeof(TARGET_SPECIES) / sizeof(TARGET_SPECIES[0]);
 

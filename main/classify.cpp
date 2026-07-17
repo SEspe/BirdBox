@@ -22,6 +22,7 @@
 extern "C" {          /* C headers without their own __cplusplus guards */
 #include "settings.h"
 #include "storage.h"
+#include "target_species.h"
 }
 
 #include <string.h>
@@ -29,6 +30,7 @@ extern "C" {          /* C headers without their own __cplusplus guards */
 #include <stdlib.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -1006,6 +1008,104 @@ static void recheck_task(void *arg)
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 #if CONFIG_IDF_TARGET_ESP32S3
+/* The op set the interpreter needs — built once, referenced by every loaded
+ * model (the interpreter keeps a reference, so it must outlive the interp).
+ * Ops verified against the reference model (mobilenet_v2 iNat-birds) plus PAD,
+ * which Keras-built MobileNetV2 emits as ZeroPadding2D before its stride-2
+ * convs (§3.2.2 retrain path). The stock Coral model needs only 6; PAD is
+ * harmless there and just makes locally-retrained models load too. */
+static tflite::MicroMutableOpResolver<7> &get_resolver(void)
+{
+    static tflite::MicroMutableOpResolver<7> r;
+    static bool init = false;
+    if (!init) {
+        r.AddAdd();
+        r.AddAveragePool2D();
+        r.AddConv2D();
+        r.AddDepthwiseConv2D();
+        r.AddFullyConnected();
+        r.AddPad();
+        r.AddSoftmax();
+        init = true;
+    }
+    return r;
+}
+
+/* Tear down the loaded model but KEEP the tensor arena (its 3 MB PSRAM block is
+ * reused by the next model — see model_load_named). Frees the score scratch too
+ * so it's re-sized for the next model's class count. Caller holds s_run_mtx (or
+ * runs before any task starts). */
+static void model_unload(void)
+{
+    if (s_interp)     { delete s_interp;   s_interp = NULL; }
+    if (s_model_buf)  { free(s_model_buf); s_model_buf = NULL; }
+    if (s_label_buf)  { free(s_label_buf); s_label_buf = NULL; }
+    if (s_labels)     { free(s_labels);    s_labels = NULL; }
+    if (s_scores)     { free(s_scores);    s_scores = NULL; }
+    if (s_scores_flip){ free(s_scores_flip); s_scores_flip = NULL; }
+    s_label_count = 0;
+    s_region_matches = 0;
+    s_model_name[0] = '\0';
+    /* s_arena is intentionally retained. */
+}
+
+/* Load model `name` from /sd/model into the (reused) arena, ready to infer.
+ * Allocates the arena on first use. Does NOT create the run mutex (one-time in
+ * model_init). Assumes no model is currently loaded (call model_unload first
+ * when swapping). Returns false (leaving nothing usable) on any failure. */
+static bool model_load_named(const char *name)
+{
+    char p[96];
+    snprintf(p, sizeof(p), STORAGE_MOUNT_POINT "/model/%.48s", name);
+    size_t model_len = 0;
+    s_model_buf = load_file_psram(p, &model_len);
+    if (!s_model_buf) {
+        ESP_LOGE(TAG, "failed to load %s", p);
+        return false;   /* degrade, don't brick (same posture as camera/SD) */
+    }
+    if (!load_labels(name)) {
+        ESP_LOGE(TAG, "no labels file for %s (expected same name .txt)", name);
+        free(s_model_buf); s_model_buf = NULL;
+        return false;
+    }
+
+    const tflite::Model *model = tflite::GetModel(s_model_buf);
+    if (model->version() != TFLITE_SCHEMA_VERSION) {
+        ESP_LOGE(TAG, "model schema v%lu != supported v%d",
+                 (unsigned long) model->version(), TFLITE_SCHEMA_VERSION);
+        return false;
+    }
+
+    if (!s_arena) {
+        s_arena = (uint8_t *) heap_caps_malloc(CLS_ARENA_BYTES,
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_arena) {
+            ESP_LOGE(TAG, "no PSRAM for tensor arena");
+            return false;
+        }
+    }
+
+    s_interp = new tflite::MicroInterpreter(model, get_resolver(), s_arena, CLS_ARENA_BYTES);
+    if (s_interp->AllocateTensors() != kTfLiteOk) {
+        ESP_LOGE(TAG, "AllocateTensors failed (arena %d KB, unsupported op, or bad model)",
+                 CLS_ARENA_BYTES / 1024);
+        return false;
+    }
+    TfLiteTensor *in = s_interp->input(0);
+    if (in->type != kTfLiteInt8 || in->dims->size != 4 ||
+        in->dims->data[1] != CLS_INPUT_SIDE || in->dims->data[2] != CLS_INPUT_SIDE ||
+        in->dims->data[3] != 3) {
+        ESP_LOGE(TAG, "unexpected input tensor (want int8 1x224x224x3)");
+        return false;
+    }
+    strlcpy(s_model_name, name, sizeof(s_model_name));
+
+    ESP_LOGI(TAG, "model loaded: %s (%u KB, %d labels, arena used %u KB)",
+             s_model_name, (unsigned) (model_len / 1024), s_label_count,
+             (unsigned) (s_interp->arena_used_bytes() / 1024));
+    return true;
+}
+
 /* Bring up the on-device model. Split out of classify_init so the event task
  * can exist without it: with Claude on (§3.2.3) a card may carry no .tflite at
  * all, and the toggle is live-settable, so the queue/task must be there either
@@ -1016,79 +1116,220 @@ static bool model_init(void)
         ESP_LOGW(TAG, "no SD card — species ID disabled (model lives on SD, §3.2)");
         return false;
     }
-    if (!pick_model_file(s_model_name, sizeof(s_model_name))) {
+    char name[48];
+    if (!pick_model_file(name, sizeof(name))) {
         ESP_LOGW(TAG, "no .tflite model in /sd/model — species ID disabled "
                       "(see docs/MODEL.md, or POST /model/upload)");
         return false;
     }
-
-    char p[96];
-    snprintf(p, sizeof(p), STORAGE_MOUNT_POINT "/model/%.48s", s_model_name);
-    size_t model_len = 0;
-    s_model_buf = load_file_psram(p, &model_len);
-    if (!s_model_buf) {
-        ESP_LOGE(TAG, "failed to load %s", p);
-        return false;   /* degrade, don't brick (same posture as camera/SD) */
-    }
-    if (!load_labels(s_model_name)) {
-        ESP_LOGE(TAG, "no labels file for %s (expected same name .txt) — disabled",
-                 s_model_name);
-        free(s_model_buf); s_model_buf = NULL;
-        return false;
-    }
-
-    const tflite::Model *model = tflite::GetModel(s_model_buf);
-    if (model->version() != TFLITE_SCHEMA_VERSION) {
-        ESP_LOGE(TAG, "model schema v%lu != supported v%d — disabled",
-                 (unsigned long) model->version(), TFLITE_SCHEMA_VERSION);
-        return false;
-    }
-
-    s_arena = (uint8_t *) heap_caps_malloc(CLS_ARENA_BYTES,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_arena) {
-        ESP_LOGE(TAG, "no PSRAM for tensor arena — disabled");
-        return false;
-    }
-
-    /* Ops verified against the reference model (mobilenet_v2 iNat-birds) plus
-     * PAD, which Keras-built MobileNetV2 emits as explicit ZeroPadding2D before
-     * its stride-2 convs — required by the §3.2.2 retrain path (training-data/
-     * train.py). The stock Coral model used SAME-padding and needs only 6, so
-     * PAD is harmless there; it just makes locally-retrained models load too. */
-    static tflite::MicroMutableOpResolver<7> resolver;
-    resolver.AddAdd();
-    resolver.AddAveragePool2D();
-    resolver.AddConv2D();
-    resolver.AddDepthwiseConv2D();
-    resolver.AddFullyConnected();
-    resolver.AddPad();
-    resolver.AddSoftmax();
-
-    s_interp = new tflite::MicroInterpreter(model, resolver, s_arena, CLS_ARENA_BYTES);
-    if (s_interp->AllocateTensors() != kTfLiteOk) {
-        ESP_LOGE(TAG, "AllocateTensors failed (arena %d KB, unsupported op, or bad model) — disabled",
-                 CLS_ARENA_BYTES / 1024);
-        return false;
-    }
-    TfLiteTensor *in = s_interp->input(0);
-    if (in->type != kTfLiteInt8 || in->dims->size != 4 ||
-        in->dims->data[1] != CLS_INPUT_SIDE || in->dims->data[2] != CLS_INPUT_SIDE ||
-        in->dims->data[3] != 3) {
-        ESP_LOGE(TAG, "unexpected input tensor (want int8 1x224x224x3) — disabled");
-        return false;
-    }
-
     s_run_mtx = xSemaphoreCreateMutex();
     if (!s_run_mtx) {
         ESP_LOGE(TAG, "mutex create failed — disabled");
         return false;
     }
+    return model_load_named(name);
+}
 
-    ESP_LOGI(TAG, "classifier ready: %s (%u KB, %d labels, arena used %u KB)",
-             s_model_name, (unsigned) (model_len / 1024), s_label_count,
-             (unsigned) (s_interp->arena_used_bytes() / 1024));
+/* ── Optional periodic iNat batch (§3.2.3, third tier) ───────────────────────
+ * A background booster: every inat_periodic_interval_min, temporarily swap the
+ * active (nordic) model for the on-SD iNaturalist model and re-run it, WHOLE-
+ * frame (iNat is not ROI-trained — "zoom hurts"), on the frames the primary +
+ * Claude left unlabelled, restricted to the 30 target species. Off by default:
+ * iNat under-performs on this domain, and a pass holds the run mutex (blocking
+ * live ID) for its duration, so it's strictly opt-in and bounded. Frames beyond
+ * the per-cycle cap are simply picked up next cycle. */
+#define INAT_MODEL_FILE  "inat-birds-v1.tflite"
+#define INAT_BATCH_MAX   25          /* frames reclassified per cycle (bounds the swap window) */
+
+/* Score one JPEG whole-frame with the CURRENT model, returning the highest-
+ * scoring class whose binomial is one of the 30 target species (§30-mask).
+ * Fills common/latin (parsed from the "Latin (Common)" label) + *pct. Returns
+ * false on decode/infer error or when no target class appears. Holds no lock —
+ * the caller owns s_run_mtx for the whole batch. */
+static bool inat_score_target(const uint8_t *jpeg, size_t len,
+                              char *common, size_t csz,
+                              char *latin, size_t lsz, int *pct)
+{
+    if (!s_scores) {
+        s_scores = (float *) heap_caps_malloc(s_label_count * sizeof(float),
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_scores) return false;
+    }
+    int n = 0;
+    int32_t dur = 0;
+    if (infer_scores(jpeg, len, roi_none(), false, s_scores, &n, &dur) != ESP_OK)
+        return false;
+    s_last_ms = dur;
+
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        const char *lbl = s_labels[i];
+        const char *open = strrchr(lbl, '(');
+        if (!open) continue;
+        char lat[64];
+        size_t l = (size_t) (open - lbl);
+        while (l > 0 && lbl[l - 1] == ' ') l--;
+        if (l >= sizeof(lat)) l = sizeof(lat) - 1;
+        memcpy(lat, lbl, l); lat[l] = '\0';
+        if (!species_in_target(lat)) continue;
+        if (best < 0 || s_scores[i] > s_scores[best]) best = i;
+    }
+    if (best < 0) return false;
+
+    float p = s_scores[best] < 0 ? 0 : s_scores[best];
+    *pct = (int) (p * 100.0f + 0.5f);
+
+    const char *lbl = s_labels[best];
+    const char *open = strrchr(lbl, '(');
+    size_t l = (size_t) (open - lbl);
+    while (l > 0 && lbl[l - 1] == ' ') l--;
+    if (l >= lsz) l = lsz - 1;
+    memcpy(latin, lbl, l); latin[l] = '\0';
+    const char *cp = strchr(open, ')');
+    size_t cl = cp ? (size_t) (cp - (open + 1)) : strlen(open + 1);
+    if (cl >= csz) cl = csz - 1;
+    memcpy(common, open + 1, cl); common[cl] = '\0';
+    for (char *c = common; *c; c++) if (*c == ',') *c = ';';   /* CSV-safe */
     return true;
+}
+
+static void inat_batch_task(void *arg)
+{
+    (void) arg;
+    /* Tick in short increments (not one long delay) so enabling the feature or
+     * changing the interval takes effect within ~30 s instead of only when a
+     * boot-time delay expires. Flipping the toggle on schedules the first pass
+     * immediately (elapsed primed to the interval); off resets the clock. */
+    uint32_t elapsed_s = 0;
+    bool was_enabled = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        elapsed_s += 30;
+
+        bool enabled = g_settings.inat_periodic_enabled;
+        uint32_t mins = g_settings.inat_periodic_interval_min;
+        if (mins < 5) mins = 60;
+        uint32_t interval_s = mins * 60;
+
+        if (!enabled) { was_enabled = false; elapsed_s = 0; continue; }
+        if (enabled && !was_enabled) elapsed_s = interval_s;   /* just enabled → run next tick */
+        was_enabled = true;
+        if (elapsed_s < interval_s) continue;
+        elapsed_s = 0;
+
+        if (!s_available || !storage_sd_present()) continue;
+        if (s_rc_busy) continue;                                  /* manual recheck running */
+        if (s_jobq && uxQueueMessagesWaiting(s_jobq) > 0) continue; /* live events queued — yield */
+
+        struct stat stt;
+        char ip[96];
+        snprintf(ip, sizeof(ip), STORAGE_MOUNT_POINT "/model/" INAT_MODEL_FILE);
+        if (stat(ip, &stt) != 0) {
+            ESP_LOGW(TAG, "iNat batch: " INAT_MODEL_FILE " not on card — skipping");
+            continue;
+        }
+
+        time_t now = time(NULL);
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        if (tmv.tm_year + 1900 < 2020) continue;   /* pre-SNTP clock guard (§3.4) */
+        char date[11];
+        strftime(date, sizeof(date), "%Y-%m-%d", &tmv);
+
+        /* Collect today's still-unclassified, un-corrected rows (cap per cycle). */
+        recheck_row_t *rows = (recheck_row_t *) heap_caps_calloc(
+            INAT_BATCH_MAX, sizeof(recheck_row_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!rows) continue;
+        char csv[64];
+        snprintf(csv, sizeof(csv), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+        char match[48];
+        snprintf(match, sizeof(match), "/captures/%.10s/", date);
+        int nc = 0;
+        FILE *fp = fopen(csv, "r");
+        if (fp) {
+            char line[400];
+            bool header = true;
+            while (fgets(line, sizeof(line), fp) && nc < INAT_BATCH_MAX) {
+                if (header) { header = false; continue; }
+                if (line[0] == '\0' || line[0] == '\n') continue;
+                char *p = line;
+                char *ts        = rc_next_field(&p);
+                char *species   = rc_next_field(&p);
+                rc_next_field(&p);                    /* confidence */
+                char *frames    = rc_next_field(&p);
+                char *first     = rc_next_field(&p);
+                char *corrected = rc_next_field(&p);
+                rc_next_field(&p);                    /* latin */
+                char *roi_s     = rc_next_field(&p);
+                if (corrected[0] || !first[0]) continue;           /* human label wins */
+                if (strcmp(species, "unclassified") != 0 &&
+                    strcmp(species, "Unidentified bird") != 0) continue;
+                if (!strstr(first, match)) continue;               /* today's captures only */
+                recheck_row_t *r = &rows[nc];
+                strlcpy(r->ts, ts, sizeof(r->ts));
+                strlcpy(r->path, first, sizeof(r->path));
+                r->frames = atoi(frames);
+                r->roi = roi_none();
+                float x0, y0, x1, y1;
+                if (sscanf(roi_s, "%f-%f-%f-%f", &x0, &y0, &x1, &y1) == 4) {
+                    r->roi.x0 = x0; r->roi.y0 = y0; r->roi.x1 = x1; r->roi.y1 = y1;
+                }
+                r->add = false;
+                nc++;
+            }
+            fclose(fp);
+        }
+        if (nc == 0) { free(rows); continue; }
+
+        /* Swap nordic -> iNat, holding the run mutex for the whole (bounded)
+         * batch so no live inference runs against the wrong model. Restore
+         * nordic no matter what before releasing. */
+        char prev[48];
+        strlcpy(prev, s_model_name, sizeof(prev));
+        xSemaphoreTake(s_run_mtx, portMAX_DELAY);
+        model_unload();
+        if (!model_load_named(INAT_MODEL_FILE)) {
+            ESP_LOGE(TAG, "iNat batch: load failed — restoring %s", prev);
+            model_unload();
+            if (!model_load_named(prev))
+                ESP_LOGE(TAG, "iNat batch: restore of %s FAILED — species ID down until reboot", prev);
+            xSemaphoreGive(s_run_mtx);
+            free(rows);
+            continue;
+        }
+
+        ESP_LOGI(TAG, "iNat batch: %d candidate frame(s) for %s", nc, date);
+        int relabelled = 0;
+        for (int i = 0; i < nc; i++) {
+            if (!g_settings.inat_periodic_enabled) break;   /* turned off mid-run */
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", rows[i].path);
+            size_t len = 0;
+            uint8_t *buf = load_file_psram(full, &len);
+            if (!buf) continue;
+            char common[64], latin[64];
+            int pct = 0;
+            bool ok = inat_score_target(buf, len, common, sizeof(common),
+                                        latin, sizeof(latin), &pct);
+            free(buf);
+            if (!ok || pct < g_settings.confidence_pct) continue;   /* leave unclassified */
+            char roi_s[24] = "";
+            if (!roi_is_empty(rows[i].roi))
+                snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
+                         rows[i].roi.x0, rows[i].roi.y0, rows[i].roi.x1, rows[i].roi.y1);
+            char nl[400];
+            snprintf(nl, sizeof(nl), "%s,%s,%d,%d,%s,,%s,%s,,inat",
+                     rows[i].ts, common, pct, rows[i].frames, rows[i].path, latin, roi_s);
+            if (rc_rewrite_row(csv, &rows[i], nl)) relabelled++;
+        }
+
+        model_unload();
+        if (!model_load_named(prev))
+            ESP_LOGE(TAG, "iNat batch: restore of %s FAILED — species ID down until reboot", prev);
+        xSemaphoreGive(s_run_mtx);
+        free(rows);
+        ESP_LOGI(TAG, "iNat batch: %d/%d frame(s) got a target-species label", relabelled, nc);
+    }
 }
 #endif
 
@@ -1122,6 +1363,14 @@ esp_err_t classify_init(void)
         s_available = false;
         return ESP_OK;
     }
+
+    /* Optional periodic iNat batch (§3.2.3, third tier). The task always exists
+     * (its interval loop is cheap) and gates on inat_periodic_enabled each wake,
+     * so the toggle is live — no reboot. Priority 2, below the event task (3),
+     * and it also yields when live events are queued. Needs the on-device model
+     * path (it swaps against s_arena / s_run_mtx), so skip when that's down. */
+    if (s_available)   /* 14 KB: TFLM Invoke wants ~12 KB (cf. recheck_task) + this task's file-scan locals */
+        xTaskCreatePinnedToCore(inat_batch_task, "inat_batch", 14336, NULL, 2, NULL, 1);
     return ESP_OK;
 #endif
 }
