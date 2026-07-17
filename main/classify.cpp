@@ -665,16 +665,33 @@ static void classify_task(void *arg)
         classify_result_t best;
         roi_t win = roi_none();
         int   scored = 0;
+        const char *source = "";   /* engine that produced the label (§3.2.3) */
 
-        /* Claude replaces the local model when on; a failed call degrades to
-         * TFLM, and only if THAT is unavailable too does the row fall through
-         * to "unclassified" (§3.2 — never drop work). */
-        bool have_best = claude_event(&job, &best, &win);
-        if (have_best)
-            scored = 1;
-        else if (s_available)
+        /* Cascade: the on-device nordic model is PRIMARY; Claude is the
+         * SECONDARY, tried only when nordic can't identify the bird (its result
+         * is "Unidentified bird", i.e. below the confidence threshold) and only
+         * when Claude is enabled. A confident nordic species OR a confident
+         * "no bird" is kept as-is (no needless API call). If nordic is
+         * unavailable entirely, Claude alone is tried. A failed/declined Claude
+         * call leaves the nordic result in place, so the row never silently
+         * drops work (§3.2). The optional iNat batch is a later out-of-band
+         * third tier (not here). `source` records which engine won. */
+        bool have_best = false;
+        if (s_available) {
             have_best = aggregate_frames(job.paths, job.rois, job.path_count,
                                          &scored, &best, &win);
+            if (have_best) source = "nordic";
+        }
+        bool nordic_unsure = have_best &&
+            strcmp(best.species, "Unidentified bird") == 0;
+        if ((!have_best || nordic_unsure) && claude_enabled()) {
+            classify_result_t cres;
+            roi_t cwin = roi_none();
+            if (claude_event(&job, &cres, &cwin)) {
+                best = cres; win = cwin; scored = 1;
+                have_best = true; source = "claude";
+            }
+        }
 
         /* Motion ROI on EVERY row (v1.99). `win` is the winning frame's crop
          * when best-of-N won, but empty when the multi-frame POOLED result won
@@ -701,12 +718,12 @@ static void classify_task(void *arg)
                      scored, job.path_count, (long) best.duration_ms);
             char top3[112];
             top3_field(&best, top3, sizeof(top3));
-            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s",
+            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s,%s",
                      job.ts, best.species, best.confidence_pct, job.frames,
-                     job.first_path, best.latin, roi_s, top3);
+                     job.first_path, best.latin, roi_s, top3, source);
         } else {
-            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,%s,",
-                     job.ts, job.frames, job.first_path, roi_s);
+            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,%s,,%s",
+                     job.ts, job.frames, job.first_path, roi_s, source);
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
@@ -965,9 +982,10 @@ static void recheck_task(void *arg)
             char top3[112];
             top3_field(&best, top3, sizeof(top3));
             char nl[400];
-            snprintf(nl, sizeof(nl), "%s,%s,%u,%d,%s,,%s,%s,%s",
+            /* Recheck re-runs the on-device model, so the label is nordic's. */
+            snprintf(nl, sizeof(nl), "%s,%s,%u,%d,%s,,%s,%s,%s,%s",
                      row->ts, best.species, best.confidence_pct, row->frames,
-                     row->path, best.latin, roi_s, top3);
+                     row->path, best.latin, roi_s, top3, "nordic");
             if (row->add) {
                 if (storage_append_visit_log(nl) != ESP_OK)
                     ESP_LOGW(TAG, "recheck: append for %s failed", row->path);

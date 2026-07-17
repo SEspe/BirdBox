@@ -15,6 +15,7 @@
 #include "classify.h"
 #include "claude.h"
 #include "species_i18n.h"
+#include "target_species.h"
 #include "board_config.h"
 
 #include <string.h>
@@ -860,7 +861,9 @@ static const char INDEX_HTML[] =
 "var btxt=st===2?('\\u2713 '+esc(nm)):st===4?('\\u2713 '+esc(nm||'no bird')):st===5?'\\u2713 not a bird':st===6?'\\u2713 unknown bird':st===1?(esc(nm)+pc):st===3?(esc(nm)+pc):(nm?esc(nm):'unclassified');"
 "var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===5?'other / not a bird \\u2013 hard negative':st===6?'unknown / bad bird \\u2013 excluded from training':st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
 "if(prop){bcl='gprop';btxt='\\u2248 '+esc(pnm);bttl=esc(pnm)+' \\u2013 same visit (inherited label, not independently classified)';}"
-"var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+'</div>';"
+"var sc=o.src||0;"   /* provenance: 1 nordic, 2 Claude, 3 iNat */
+"var sbg=sc?(' <span style=\"opacity:.6;font-size:9px\" title=\"labelled by '+(sc===1?'nordic model':sc===2?'Claude':'iNat')+'\">['+(sc===1?'N':sc===2?'C':'I')+']</span>'):'';"
+"var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+sbg+'</div>';"
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
 ":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
@@ -1891,7 +1894,9 @@ static esp_err_t h_days(httpd_req_t *req)
  * row, or no row at all), 1 = classified by the model (a real species, latin
  * non-empty, not yet human-confirmed), 2 = human-confirmed (corrected set —
  * whether the user accepted the model's guess or typed their own). §3.4/v1.59 */
-typedef struct { char base[32]; uint8_t spi; uint8_t pct; uint8_t state; } gal_label_t;
+/* src: engine that produced the label — 0 none/legacy, 1 nordic, 2 claude,
+ * 3 iNat (§3.2.3 cascade provenance). */
+typedef struct { char base[32]; uint8_t spi; uint8_t pct; uint8_t state; uint8_t src; } gal_label_t;
 typedef struct {
     int n, nsp;
     char sp[GAL_MAX_SPECIES][72];
@@ -1955,6 +1960,9 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         char *first     = gal_next_field(&p);
         char *corrected = gal_next_field(&p);
         char *latin     = gal_next_field(&p);
+        gal_next_field(&p);                        /* roi (col 8) */
+        gal_next_field(&p);                        /* top3 (col 9, ';'-separated, no comma) */
+        char *source    = gal_next_field(&p);      /* provenance (col 10, may be empty) */
         if (!species[0] || !first[0]) continue;
         char *base = strstr(first, match);         /* only this day's frames */
         if (!base) continue;
@@ -1987,6 +1995,9 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         species_localize(species, latin, g_settings.lang, loc, sizeof(loc));
         t->l[count].spi = gal_intern(t, loc);
         t->l[count].pct = (uint8_t) atoi(conf);
+        t->l[count].src = strcmp(source, "nordic") == 0 ? 1
+                        : strcmp(source, "claude") == 0 ? 2
+                        : strcmp(source, "inat")   == 0 ? 3 : 0;
         count++;
     }
     if (count >= GAL_MAX_LABELS)
@@ -2051,12 +2062,14 @@ static esp_err_t h_events(httpd_req_t *req)
         int pct = 0;
         bool confirmed = false;
         int state = 0;
+        int src = 0;
         bool labelled = false;
         for (int i = 0; i < nlabels; i++)
             if (strcmp(tab->l[i].base, e->d_name) == 0) {
                 if (tab->l[i].spi != GAL_SPI_NONE) sp = tab->sp[tab->l[i].spi];
                 pct = tab->l[i].pct;
                 state = tab->l[i].state;
+                src = tab->l[i].src;
                 confirmed = gal_confirmed(tab->l[i].state);
                 labelled = true; break;
             }
@@ -2064,9 +2077,9 @@ static esp_err_t h_events(httpd_req_t *req)
         int len;
         if (labelled)
             len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d}",
+                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d,\"src\":%d}",
                            first ? "" : ",", e->d_name, sp, pct,
-                           confirmed ? "true" : "false", state);
+                           confirmed ? "true" : "false", state, src);
         else
             len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"st\":0}",
                            first ? "" : ",", e->d_name);
@@ -2123,47 +2136,15 @@ static esp_err_t h_labels(httpd_req_t *req)
         httpd_resp_send_chunk(req, item, len);
         first = false;
     }
-    /* Off-model target species (§3.2.1/§3.2.2): the user's curated target list
-     * (downloads Artsliste.txt) — species we want to hand-label as ground truth
-     * for the Nordic retrain, whether or not the current model can emit them.
-     * Offered in the relabel picker with a stable binomial so the export keys
-     * on it (one class folder per species, immune to common-name typos). Any
-     * entry already emitted above as a model class is skipped so it appears
-     * once (dedup keyed on the Latin binomial — e.g. Lavskrike, now a real
-     * class in nordic-v0.5). Norwegian names live in species_i18n.c. */
-    static const struct { const char *latin; const char *common; } EXTRA_LABELS[] = {
-        { "Parus major",             "Great Tit" },                  /* Kjøttmeis */
-        { "Cyanistes caeruleus",     "Eurasian Blue Tit" },          /* Blåmeis */
-        { "Fringilla coelebs",       "Common Chaffinch" },           /* Bokfink */
-        { "Pyrrhula pyrrhula",       "Eurasian Bullfinch" },         /* Dompap */
-        { "Pica pica",               "Eurasian Magpie" },            /* Skjære */
-        { "Emberiza citrinella",     "Yellowhammer" },               /* Gulspurv */
-        { "Perisoreus infaustus",    "Siberian Jay" },               /* Lavskrike */
-        { "Fringilla montifringilla","Brambling" },                  /* Bjørkefink */
-        { "Turdus iliacus",          "Redwing" },                    /* Rødvingetrost */
-        { "Turdus pilaris",          "Fieldfare" },                  /* Gråtrost */
-        { "Erithacus rubecula",      "European Robin" },             /* Rødstrupe */
-        { "Lophophanes cristatus",   "Crested Tit" },                /* Toppmeis */
-        { "Periparus ater",          "Coal Tit" },                   /* Svartmeis */
-        { "Anthus pratensis",        "Meadow Pipit" },               /* Heipiplerke */
-        { "Oenanthe oenanthe",       "Northern Wheatear" },          /* Steinskvett */
-        { "Pluvialis apricaria",     "European Golden Plover" },     /* Heilo */
-        { "Eremophila alpestris",    "Horned Lark" },                /* Fjellerke */
-        { "Luscinia svecica",        "Bluethroat" },                 /* Blåstrupe */
-        { "Corvus corax",            "Northern Raven" },             /* Ravn */
-        { "Ficedula hypoleuca",      "European Pied Flycatcher" },   /* Svarthvit fluesnapper */
-        { "Muscicapa striata",       "Spotted Flycatcher" },         /* Gråfluesnapper */
-        { "Regulus regulus",         "Goldcrest" },                  /* Fuglekonge */
-        { "Troglodytes troglodytes", "Eurasian Wren" },              /* Gjerdesmett */
-        { "Turdus merula",           "Common Blackbird" },           /* Svarttrost */
-        { "Turdus philomelos",       "Song Thrush" },                /* Måltrost */
-        { "Dendrocopos major",       "Great Spotted Woodpecker" },   /* Flaggspett */
-        { "Picoides tridactylus",    "Eurasian Three-toed Woodpecker" }, /* Tretåspett */
-        { "Chloris chloris",         "European Greenfinch" },        /* Grønnfink */
-        { "Acanthis flammea",        "Common Redpoll" },             /* Gråsisik */
-        { "Corvus cornix",           "Hooded Crow" },                /* Kråke */
-    };
-    for (size_t e = 0; e < sizeof(EXTRA_LABELS) / sizeof(EXTRA_LABELS[0]); e++) {
+    /* Off-model target species (§3.2.1/§3.2.2): the operator's curated target
+     * list (Artsliste.txt) — offered in the relabel picker whether or not the
+     * current model can emit them, so every target species is a one-click
+     * ground-truth pick. Shared with the Claude fallback + iNat mask via
+     * target_species.c so the three never diverge. Any entry already emitted
+     * above as a model class is skipped so it appears once (dedup keyed on the
+     * Latin binomial — e.g. Lavskrike, now a real class in nordic). Norwegian
+     * names live in species_i18n.c. */
+    for (size_t e = 0; e < TARGET_SPECIES_N; e++) {
         /* Skip if the model already emitted this Latin binomial as a class. */
         bool dup = false;
         for (int i = 0; i < n && !dup; i++) {
@@ -2173,16 +2154,16 @@ static esp_err_t h_labels(httpd_req_t *req)
             if (!op) continue;
             size_t rl = (size_t) (op - raw);
             while (rl > 0 && raw[rl-1] == ' ') rl--;
-            if (rl == strlen(EXTRA_LABELS[e].latin) &&
-                strncmp(raw, EXTRA_LABELS[e].latin, rl) == 0) dup = true;
+            if (rl == strlen(TARGET_SPECIES[e].latin) &&
+                strncmp(raw, TARGET_SPECIES[e].latin, rl) == 0) dup = true;
         }
         if (dup) continue;
         char disp[96];
-        species_localize(EXTRA_LABELS[e].common, EXTRA_LABELS[e].latin,
+        species_localize(TARGET_SPECIES[e].common, TARGET_SPECIES[e].latin,
                          g_settings.lang, disp, sizeof(disp));
         char c_e[80], l_e[80], d_e[112];
-        json_escape(c_e, sizeof(c_e), EXTRA_LABELS[e].common);
-        json_escape(l_e, sizeof(l_e), EXTRA_LABELS[e].latin);
+        json_escape(c_e, sizeof(c_e), TARGET_SPECIES[e].common);
+        json_escape(l_e, sizeof(l_e), TARGET_SPECIES[e].latin);
         json_escape(d_e, sizeof(d_e), disp);
         char item[300];
         int len = snprintf(item, sizeof(item), "%s{\"c\":\"%s\",\"l\":\"%s\",\"d\":\"%s\"}",
