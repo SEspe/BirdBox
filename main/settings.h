@@ -96,6 +96,16 @@ typedef struct {
                                        set. Same handling as claude_key: sent only
                                        to generativelanguage.googleapis.com and
                                        left out of the settings export (§5) */
+    char     gemini_model[48];      /* Gemini model id for generateContent, e.g.
+                                       "gemini-2.5-flash". Operator-settable
+                                       because model availability shifts with
+                                       account tier + generation lifecycle (a
+                                       pinned id can 404 "not available to new
+                                       users" or "no longer available"); the
+                                       Settings Test button lists what a key can
+                                       use. "" falls back to GEMINI_MODEL_DEFAULT
+                                       in gemini.c. Ids are [a-z0-9.-]; validated
+                                       on save so it's URL-safe */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x
