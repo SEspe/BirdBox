@@ -27,6 +27,7 @@
  *    bird event for no accuracy gain. */
 #include "claude.h"
 #include "settings.h"
+#include "target_species.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -213,8 +214,11 @@ static void scrub(char *s)
  * The image block goes BEFORE the text block: the API documents better results
  * when the question follows the image. */
 
-/* Reuses the existing region_filter setting (§3.2.1) rather than adding a
- * second, divergent notion of "where is this camera".
+/* When region_filter is on (§3.2.1), Claude is constrained to the operator's
+ * curated target list (target_species.c — the same 30 the relabel picker and
+ * the iNat mask use), so the cloud tier can't return a geographically absurd or
+ * off-target species. All entries are ASCII (letters/space/paren/hyphen), so
+ * the list is safe inside the JSON string with no escaping.
  *
  * additionalProperties:false and a complete `required` list are mandatory for
  * structured outputs — without them the request is rejected. With them the
@@ -222,6 +226,22 @@ static void scrub(char *s)
  * key lookups instead of a JSON parser. */
 static void build_prefix(char *out, size_t osz)
 {
+    char constraint[1600];
+    constraint[0] = '\0';
+    if (g_settings.region_filter) {
+        char list[1300];
+        size_t lp = 0;
+        for (size_t i = 0; i < TARGET_SPECIES_N && lp < sizeof(list); i++)
+            lp += snprintf(list + lp, sizeof(list) - lp, "%s%s (%s)",
+                           i ? ", " : "",
+                           TARGET_SPECIES[i].common, TARGET_SPECIES[i].latin);
+        snprintf(constraint, sizeof(constraint),
+            "The camera is in Northern Europe (the Nordic region). Choose the "
+            "species only from this list (common name - scientific name): %s. "
+            "If the bird clearly matches none of them, give your closest pick "
+            "but set a low confidence. ", list);
+    }
+
     snprintf(out, osz,
         "{\"model\":\"" CLAUDE_MODEL "\",\"max_tokens\":512,"
         "\"system\":\""
@@ -246,10 +266,7 @@ static void build_prefix(char *out, size_t osz)
         "\"messages\":[{\"role\":\"user\",\"content\":["
         "{\"type\":\"image\",\"source\":{\"type\":\"base64\","
         "\"media_type\":\"image/jpeg\",\"data\":\"",
-        g_settings.region_filter
-            ? "The camera is in Northern Europe (the Nordic region) - only "
-              "identify species that occur there. "
-            : "");
+        constraint);
 }
 
 static const char REQ_SUFFIX[] =
@@ -343,7 +360,7 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
         return ESP_ERR_INVALID_ARG;
     }
 
-    char prefix[1280];
+    char prefix[3200];
     build_prefix(prefix, sizeof(prefix));
 
     size_t b64_len = 4 * ((len + 2) / 3);

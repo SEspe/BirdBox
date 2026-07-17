@@ -13,6 +13,7 @@ idf_component_register(
         "storage.c"
         "stats.c"
         "species_i18n.c"
+        "target_species.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_wifi
