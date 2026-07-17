@@ -430,6 +430,10 @@ static const char INDEX_HTML[] =
 "<datalist id='speclist'></datalist>"
 "</div>"
 "<div id='statsp' class='pane'>"
+"<div class='gacts' style='margin-bottom:12px'>"
+"<button class='act' id='stgToday' style='opacity:1' onclick='setStatScope(\"day\")'>Today</button>"
+"<button class='act' id='stgAll' style='opacity:.5' onclick='setStatScope(\"all\")'>All time</button>"
+"</div>"
 "<h3 class='sh' style='margin-top:0'>Visits per day</h3><div id='sDaily'></div>"
 "<h3 class='sh'>Activity by hour of day</h3><div class='hwrap' id='sHourly'></div>"
 "<h3 class='sh'>Species</h3><table class='st' id='sSpecies'></table>"
@@ -1153,8 +1157,12 @@ static const char INDEX_HTML[] =
 "setTimeout(gRcPoll,2000);}"
 "else if(o.date){el.textContent='Recheck '+o.date+' done ('+o.done+'/'+o.total+' row(s))';}"
 "});}"
-"function loadStats(){"
-"Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u).then(r=>r.json())))"
+"var g_statScope='day';"   /* 'day' = Today (v2.07), 'all' = all-time */
+"function setStatScope(s){g_statScope=s;"
+"$g('stgToday').style.opacity=s==='day'?'1':'.5';"
+"$g('stgAll').style.opacity=s==='all'?'1':'.5';loadStats();}"
+"function loadStats(){var q=g_statScope==='day'?'?scope=day':'';"
+"Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u+q).then(r=>r.json())))"
 ".then(function(res){var d=res[0],spo=res[1],sp=spo.rows,h=res[2];"
 "d.sort((a,b)=>a.d.localeCompare(b.d));d=d.slice(-30);"
 "var m=Math.max(1,...d.map(o=>o.n));"
@@ -1174,7 +1182,7 @@ static const char INDEX_HTML[] =
 "'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
 "'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
 "var birds=sp.filter(o=>!o.fp).reduce((a,o)=>a+o.n,0);"
-"document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(spo.since?(' since '+spo.since.replace('T',' ')):' total')"
+"document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(g_statScope==='day'?' today':(spo.since?(' since '+spo.since.replace('T',' ')):' total'))"
 "+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
 "$g('sImgs').innerHTML='';"
 "});}"
@@ -1948,11 +1956,8 @@ static char *gal_next_field(char **p)
 static int gal_build_labels(const char *date, gal_tab_t *t)
 {
     if (!storage_sd_present()) return 0;
-    char logpath[64];
-    if (strcmp(date, "no-date") == 0)
-        strlcpy(logpath, STORAGE_MOUNT_POINT "/log/visits-no-date.csv", sizeof(logpath));
-    else   /* monthly file: visits-YYYY-MM.csv, i.e. the date's first 7 chars */
-        snprintf(logpath, sizeof(logpath), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    char logpath[64];   /* per-day file (v2.07); helper handles the no-date case */
+    storage_visit_log_path(date, logpath, sizeof(logpath));
     FILE *fp = fopen(logpath, "r");
     if (!fp) return 0;
 
@@ -2377,7 +2382,7 @@ static esp_err_t h_roi_todo(httpd_req_t *req)
         if (!isalnum((unsigned char) *c) && *c != '-') { httpd_resp_sendstr(req, "[]"); return ESP_OK; }
 
     char logpath[64], match[48];
-    snprintf(logpath, sizeof(logpath), STORAGE_MOUNT_POINT "/log/visits-%.7s.csv", date);
+    storage_visit_log_path(date, logpath, sizeof(logpath));
     snprintf(match, sizeof(match), "/captures/%.10s/", date);
     FILE *fp = storage_sd_present() ? fopen(logpath, "r") : NULL;
     if (!fp) { httpd_resp_sendstr(req, "[]"); return ESP_OK; }
@@ -2619,11 +2624,32 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
 }
 
 /* ── Stats endpoints (FSD §3.4, §6) — aggregated from the visit logs ────── */
+/* Resolve the Stats scope from ?scope=day → today's "YYYY-MM-DD" (v2.07 Today
+ * view); anything else → "" (all-time). Guards the pre-SNTP ~1970 clock: if the
+ * clock isn't synced, returns "" (all-time) rather than a bogus 1970 day. The
+ * empty string is what stats_collect_scoped treats as all-time. */
+static const char *stats_scope_date(httpd_req_t *req, char *buf, size_t sz)
+{
+    buf[0] = '\0';
+    char q[48] = {0}, scope[8] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
+        httpd_query_key_value(q, "scope", scope, sizeof(scope));
+    if (strcmp(scope, "day") == 0) {
+        time_t now = time(NULL);
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        if (tmv.tm_year + 1900 >= 2020)
+            strftime(buf, sz, "%Y-%m-%d", &tmv);
+    }
+    return buf;
+}
+
 static esp_err_t h_stats_daily(httpd_req_t *req)
 {
     stats_t *st = calloc(1, sizeof(stats_t));
     if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
-    stats_collect(st);
+    char scope[12];
+    stats_collect_scoped(st, stats_scope_date(req, scope, sizeof(scope)));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send_chunk(req, "[", 1);
     for (int i = 0; i < st->day_count; i++) {
@@ -2642,7 +2668,8 @@ static esp_err_t h_stats_species(httpd_req_t *req)
 {
     stats_t *st = calloc(1, sizeof(stats_t));
     if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
-    stats_collect(st);
+    char scope[12];
+    stats_collect_scoped(st, stats_scope_date(req, scope, sizeof(scope)));
     httpd_resp_set_type(req, "application/json");
     /* Object, not a bare array (v1.46): confirmed false positives ("no bird"
      * rows, §3.4) ride alongside the species rows instead of polluting them. */
@@ -2725,7 +2752,8 @@ static esp_err_t h_stats_hourly(httpd_req_t *req)
 {
     stats_t *st = calloc(1, sizeof(stats_t));
     if (!st) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
-    stats_collect(st);
+    char scope[12];
+    stats_collect_scoped(st, stats_scope_date(req, scope, sizeof(scope)));
     char buf[192] = "[";
     for (int h = 0; h < 24; h++) {
         char n[10];

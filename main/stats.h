@@ -8,7 +8,11 @@
 
 #define STATS_MAX_DAYS     62   /* two months of daily buckets */
 #define STATS_MAX_SPECIES  24
-#define STATS_MAX_LOGFILES 12   /* newest-first cap on files parsed per request */
+#define STATS_MAX_LOGFILES 400  /* newest-first cap on files parsed per request.
+                                 * v2.07: per-day files (not monthly), so this is
+                                 * days (~13 months) not months; older history
+                                 * beyond it is dropped from the all-time view
+                                 * (acceptable — history need not be exact). */
 
 typedef struct {
     int      day_count;
@@ -45,5 +49,9 @@ typedef struct { char path[64]; char ts[20]; } stats_img_t;
 int stats_list_images(const char *want, stats_img_t *out, int max);
 
 /* Fills *out from the visit logs; zero stats (not an error) when no SD or
- * no logs. ~2.6 kB — allocate on the heap, not an httpd stack. */
+ * no logs. ~2.6 kB — allocate on the heap, not an httpd stack.
+ * `date` ("YYYY-MM-DD") scopes to that single per-day file (the Stats "Today"
+ * view, FSD v2.07); NULL aggregates every log file (the all-time view).
+ * `stats_collect` is the all-time convenience wrapper. */
+esp_err_t stats_collect_scoped(stats_t *out, const char *date);
 esp_err_t stats_collect(stats_t *out);

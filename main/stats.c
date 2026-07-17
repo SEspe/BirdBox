@@ -3,11 +3,13 @@
 #include "settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "stats";
 
@@ -113,16 +115,48 @@ static void ingest_line(stats_t *st, char *line)
     }
 }
 
-esp_err_t stats_collect(stats_t *out)
+/* Read one visit-log file and ingest its rows. */
+static void stats_ingest_file(stats_t *out, const char *fname)
+{
+    char path[64];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", fname);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    /* Sized past the longest possible row (~330 with roi/top3, v1.33): an
+     * fgets split would surface the row's tail as a bogus extra row. */
+    char line[400];
+    bool header = true;
+    while (fgets(line, sizeof(line), fp)) {
+        if (header) { header = false; continue; }
+        if (line[0] == '\0' || line[0] == '\n') continue;
+        ingest_line(out, line);
+    }
+    fclose(fp);
+}
+
+esp_err_t stats_collect_scoped(stats_t *out, const char *date)
 {
     memset(out, 0, sizeof(*out));
     if (!storage_sd_present()) return ESP_OK;
 
-    /* Collect matching log filenames, newest first (names sort by date) */
-    char names[STATS_MAX_LOGFILES][40];
+    /* "Today" scope (v2.07): ingest just that day's per-day file — one small
+     * read, no directory scan. */
+    if (date && date[0]) {
+        char path[64];
+        storage_visit_log_path(date, path, sizeof(path));
+        const char *base = strrchr(path, '/');
+        stats_ingest_file(out, base ? base + 1 : path);
+        return ESP_OK;
+    }
+
+    /* All-time: newest STATS_MAX_LOGFILES files (heap-allocated — the cap is now
+     * days-scale, too big for the httpd stack). */
+    char (*names)[40] = heap_caps_malloc(STATS_MAX_LOGFILES * sizeof(names[0]),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!names) return ESP_OK;
     int  n_files = 0;
     DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
-    if (!d) return ESP_OK;
+    if (!d) { free(names); return ESP_OK; }
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_REG) continue;
@@ -142,38 +176,30 @@ esp_err_t stats_collect(stats_t *out)
     }
     closedir(d);
 
-    for (int f = 0; f < n_files; f++) {
-        char path[64];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", names[f]);
-        FILE *fp = fopen(path, "r");
-        if (!fp) continue;
-        /* Sized past the longest possible row (~330 with roi/top3, v1.33): an
-         * fgets split would surface the row's tail as a bogus extra row. */
-        char line[400];
-        bool header = true;
-        while (fgets(line, sizeof(line), fp)) {
-            if (header) { header = false; continue; }
-            if (line[0] == '\0' || line[0] == '\n') continue;
-            ingest_line(out, line);
-        }
-        fclose(fp);
-    }
+    for (int f = 0; f < n_files; f++)
+        stats_ingest_file(out, names[f]);
+    free(names);
 
     ESP_LOGD(TAG, "stats: %lu visits, %d days, %d species",
              (unsigned long) out->total, out->day_count, out->sp_count);
     return ESP_OK;
 }
 
+esp_err_t stats_collect(stats_t *out) { return stats_collect_scoped(out, NULL); }
+
 int stats_list_images(const char *want, stats_img_t *out, int max)
 {
     if (max <= 0 || !want || !want[0] || !storage_sd_present()) return 0;
 
     /* Log filenames, ascending (oldest first) so a single pass with a ring
-     * buffer of size `max` naturally ends holding the newest `max` matches. */
-    char names[STATS_MAX_LOGFILES][40];
+     * buffer of size `max` naturally ends holding the newest `max` matches.
+     * Heap-allocated (the cap is days-scale since v2.07, too big for the stack). */
+    char (*names)[40] = heap_caps_malloc(STATS_MAX_LOGFILES * sizeof(names[0]),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!names) return 0;
     int  n_files = 0;
     DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
-    if (!d) return 0;
+    if (!d) { free(names); return 0; }
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_REG) continue;
@@ -195,7 +221,7 @@ int stats_list_images(const char *want, stats_img_t *out, int max)
     }
 
     stats_img_t *ring = calloc(max, sizeof(stats_img_t));
-    if (!ring) return 0;
+    if (!ring) { free(names); return 0; }
     int total = 0;
 
     for (int f = 0; f < n_files; f++) {
@@ -234,5 +260,6 @@ int stats_list_images(const char *want, stats_img_t *out, int max)
         out[k] = ring[idx];
     }
     free(ring);
+    free(names);
     return cnt;
 }

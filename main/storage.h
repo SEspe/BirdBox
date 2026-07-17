@@ -38,8 +38,13 @@ bool storage_last_write_ok(void);
 esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
                             char *path_out, size_t path_out_len);
 
-/* Appends one CSV row to the monthly visit log (/sd/log/visits-YYYY-MM.csv),
- * writing the header line first when the file is new (FSD §3.4). */
+/* Builds the visit-log path for one day: /sd/log/visits-<date>.csv, where
+ * `date` is "YYYY-MM-DD" (first 10 chars used) or "no-date" (FSD v2.07 per-day
+ * files). The shared source of truth for every per-date reader/writer. */
+void storage_visit_log_path(const char *date, char *buf, size_t sz);
+
+/* Appends one CSV row to that day's visit log (/sd/log/visits-YYYY-MM-DD.csv),
+ * writing the header line first when the file is new (FSD §3.4/v2.07). */
 esp_err_t storage_append_visit_log(const char *line);
 
 /* Deletes every /sd/log/visits-*.csv file — clears historic species
