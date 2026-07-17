@@ -89,7 +89,7 @@ LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
 #   2.0  breaking change — class set added/removed (label indices shift) or a
 #        different architecture/input.
 # Bump MODEL_VERSION per retrain and record it in the registry (README).
-MODEL_VERSION = "0.5"
+MODEL_VERSION = "0.6"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
@@ -98,6 +98,13 @@ MODEL_VERSION = "0.5"
 # which did not improve accuracy on real captures). With a local-only labels.csv
 # this is a no-op for the target classes.
 DATA_PROVENANCE = "local"
+
+# Backbone weight initialisation: "imagenet" (generic objects, the historical
+# default) or "inat" (Google AIY birds_V1 MobileNetV2 — bird-specific features
+# across ~965 species, a better start for this task). "inat" transplants only
+# *weights*, not stock training images, so it does NOT reintroduce the GBIF
+# domain-gap finding (see inat_backbone.py). Override with BIRDBOX_BACKBONE.
+BACKBONE_INIT = os.environ.get("BIRDBOX_BACKBONE", "imagenet")
 
 OUT_NAME = f"{LINEAGE}-v{MODEL_VERSION}"
 VAL_FRAC = 0.2
@@ -390,9 +397,19 @@ def build_model(n_classes):
     import tensorflow as tf
     from tensorflow.keras import layers, Model
 
-    backbone = tf.keras.applications.MobileNetV2(
-        input_shape=(IMG_SIZE, IMG_SIZE, 3), alpha=1.0,
-        include_top=False, weights="imagenet")
+    if BACKBONE_INIT == "inat":
+        # iNat bird backbone: build empty, then transplant the AIY birds_V1
+        # weights. Same Keras MobileNetV2 object as the ImageNet path, so the
+        # int8 export + device-contract verify below are unchanged.
+        import inat_backbone
+        backbone = tf.keras.applications.MobileNetV2(
+            input_shape=(IMG_SIZE, IMG_SIZE, 3), alpha=1.0,
+            include_top=False, weights=None)
+        inat_backbone.load_into(backbone)
+    else:
+        backbone = tf.keras.applications.MobileNetV2(
+            input_shape=(IMG_SIZE, IMG_SIZE, 3), alpha=1.0,
+            include_top=False, weights="imagenet")
     backbone.trainable = False
 
     # Head kept inside the registered ops: AveragePooling2D collapses the
@@ -554,7 +571,7 @@ def write_manifest(out_path, names, counts, split_sizes, verify_info, eval_info)
         "built": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "tensorflow": tf_ver,
         "input_size": IMG_SIZE,
-        "backbone": "MobileNetV2 alpha=1.0 (ImageNet)",
+        "backbone": f"MobileNetV2 alpha=1.0 ({'iNat birds_V1' if BACKBONE_INIT=='inat' else 'ImageNet'})",
         "classes": [{"index": i, "label": n, "train_images": counts[i]}
                     for i, n in enumerate(names)],
         "train_count": split_sizes[0],
