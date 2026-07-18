@@ -89,7 +89,7 @@ LINEAGE = "nordic"          # model family; the stock Coral model is "inat"
 #   2.0  breaking change — class set added/removed (label indices shift) or a
 #        different architecture/input.
 # Bump MODEL_VERSION per retrain and record it in the registry (README).
-MODEL_VERSION = "0.7"
+MODEL_VERSION = "0.8"
 # Where THIS build's training images come from: "external" (stock only),
 # "local" (BirdBox captures only), or "mixed". Recorded in the manifest so a
 # model's provenance is never guessed later. A 1.0 must be "external".
