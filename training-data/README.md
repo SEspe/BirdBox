@@ -237,4 +237,6 @@ with local data.
 |---|---|---|---|
 | `inat-v1.0` (stock `inat-birds-v1.tflite`) | external | 965 | Google/Coral iNaturalist-birds, the shipped v1 default (§3.2.1). |
 | `nordic-v0.1` | local | Dompap, Lavskrike | First pipeline proof — data-thin, not an accuracy result. |
+| `nordic-v0.7` | local | 5 species + background | ROI-crop, ImageNet backbone. 91.9% val acc, but Garrulus glandarius (Nøtteskrike) had 0 training images → dead class (0% recall). |
+| `nordic-v0.8` | local | 5 species + background | **Deployed 2026-07-18.** 95.0% val acc (n=262). Nøtteskrike now a real trained class (108 imgs → 80% recall/prec); Dompap 88→95% recall; precision up across the board. ROI-crop, serve with `detect_zoom` ON. |
 | `nordic-v1.0` | external | *(planned)* | Pure iNat/GBIF-stock baseline for the Nordic class set. |
