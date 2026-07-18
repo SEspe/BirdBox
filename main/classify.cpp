@@ -63,6 +63,7 @@ static int              s_out_classes = 0;     /* classes the model actually out
 static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
 static char             s_last_latin[64] = "";
+static uint8_t          s_last_conf = 0;      /* confidence % of the last event */
 
 #if CONFIG_IDF_TARGET_ESP32S3
 
@@ -718,6 +719,7 @@ static void classify_task(void *arg)
         if (have_best) {
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
             strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
+            s_last_conf = best.confidence_pct;
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);
@@ -1489,6 +1491,7 @@ int         classify_label_count(void)      { return s_label_count; }
 int         classify_region_matches(void)   { return s_region_matches; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
+uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 
 const char *classify_label(int i)
 {
