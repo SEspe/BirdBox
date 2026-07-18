@@ -1433,7 +1433,9 @@ static const char INDEX_HTML[] =
 "drow('Device time',(d.time?d.time+' ('+d.clockSrc+')':'not set'),(d.time?(d.clockSrc==='ntp'?'ok':''):'bad'))+"
 "drow('SoC temperature',(d.socTempC>-100?d.socTempC.toFixed(1)+'\\u00b0C':'n/a'),(d.socTempC>75?'bad':(d.socTempC>-100?'ok':'')))+"
 "drow('WiFi reconnects',d.wifiDisc)+"
-"drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'));"
+"drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'))+"
+"drow('HTTP sockets',(d.httpdSock==null||d.httpdSock<0?'n/a':d.httpdSock+' / '+d.httpdSockMax),"
+"(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'');"
 "$g('dWifi').innerHTML="
 "drow('Network',d.apSsid||'\\u2014')+"
 "drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
@@ -1520,6 +1522,17 @@ static const char INDEX_HTML[] =
 #define STREAM_PART_HDR     "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n"
 
 static volatile int s_stream_clients = 0;
+
+/* HTTP server socket pool. Raised from esp_http_server's default 7 to give
+ * headroom: with a small pool, a long-lived browser UI (keep-alive polls + the
+ * jerky HD stream reconnecting) can leave most slots in slow-to-reclaim states,
+ * so a fresh request after idle stalls ~recv_wait_timeout seconds while an old
+ * socket is purged — the "reboot cures sluggishness" root cause (FSD v2.13).
+ * Needs CONFIG_LWIP_MAX_SOCKETS >= this + 3 (set to 16 in sdkconfig.defaults).
+ * s_httpd is the running handle, exposed here so h_sysinfo can report the live
+ * socket count (httpd_get_client_list) to confirm the pool never saturates. */
+#define HTTPD_MAX_SOCKETS   12
+static httpd_handle_t s_httpd = NULL;
 
 /* Has the stream client closed its TCP connection? A browser that navigates
  * away, clears the <img> src, or reloads sends a FIN, but the MJPEG client
@@ -3422,7 +3435,17 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     int64_t now_us = esp_timer_get_time();
 
-    char buf[1088];
+    /* Live httpd socket usage — the diagnostic for the "reboot cures sluggishness"
+     * root cause (FSD v2.13). If httpdSock climbs toward httpdSockMax over hours,
+     * the pool is congesting; healthy is a handful. */
+    int httpd_sock = -1;
+    if (s_httpd) {
+        int fds[HTTPD_MAX_SOCKETS];
+        size_t nfds = HTTPD_MAX_SOCKETS;
+        if (httpd_get_client_list(s_httpd, &nfds, fds) == ESP_OK) httpd_sock = (int) nfds;
+    }
+
+    char buf[1152];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
         "\"heapInt\":%lu,\"heapIntBig\":%lu,\"heapPsram\":%lu,\"heapPsramBig\":%lu,"
@@ -3435,7 +3458,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
-        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d}",
+        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,"
+        "\"httpdSock\":%d,\"httpdSockMax\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -3457,7 +3481,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_fault() ? "true" : "false",
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
-        classify_model_name(), classify_label_count(), classify_region_matches());
+        classify_model_name(), classify_label_count(), classify_region_matches(),
+        httpd_sock, HTTPD_MAX_SOCKETS);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
@@ -4257,8 +4282,7 @@ static esp_err_t h_reboot(httpd_req_t *req)
 /* ── Start Web Server ───────────────────────────────────────────────────── */
 esp_err_t web_server_start(void)
 {
-    static httpd_handle_t server = NULL;
-    if (server) return ESP_OK;   /* already running (portal path starts us early) */
+    if (s_httpd) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 56;     /* headroom above route count (44 as of v1.93) — an
@@ -4266,11 +4290,19 @@ esp_err_t web_server_start(void)
                                       404ing whichever routes land last (RemoteStart v1.27;
                                       hit again at v1.51 when the count crossed 32) */
     cfg.stack_size       = 8192;
+    cfg.max_open_sockets  = HTTPD_MAX_SOCKETS;   /* 12, up from default 7 — pool headroom
+                                      so a fresh request doesn't stall purging a stale
+                                      socket (FSD v2.13; needs CONFIG_LWIP_MAX_SOCKETS>=15) */
+    cfg.recv_wait_timeout = 3;     /* down from default 5s: a stale/idle socket is
+                                      reclaimed in ~3s not 5s, shrinking the worst-case
+                                      first-request-after-idle stall. Still ample for a
+                                      continuous OTA/model upload (chunks arrive in ms) */
+    cfg.send_wait_timeout = 3;
     cfg.lru_purge_enable = true;   /* abandoned sessions must not exhaust the socket
                                       pool and wedge the server (RemoteStart v1.35) */
     cfg.uri_match_fn     = httpd_uri_match_wildcard;   /* for the /captures wildcard route */
 
-    if (httpd_start(&server, &cfg) != ESP_OK) {
+    if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
         return ESP_FAIL;
     }
@@ -4326,7 +4358,7 @@ esp_err_t web_server_start(void)
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        esp_err_t err = httpd_register_uri_handler(server, &routes[i]);
+        esp_err_t err = httpd_register_uri_handler(s_httpd, &routes[i]);
         if (err != ESP_OK)
             ESP_LOGE(TAG, "Failed to register %s: %s", routes[i].uri, esp_err_to_name(err));
     }
