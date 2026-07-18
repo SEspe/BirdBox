@@ -46,3 +46,8 @@ CONFIG_ESP_TLS_INSECURE=n
 # share of the internet) presents the same cross-signed shape, so don't
 # "clean this up" when swapping API vendors.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+
+# Larger httpd socket pool (FSD v2.13): default 10 caps max_open_sockets at 7;
+# 16 allows the httpd pool of 12 that stops fresh requests stalling to purge a
+# stale socket. Requires deleting the generated sdkconfig to take effect.
+CONFIG_LWIP_MAX_SOCKETS=16
