@@ -241,6 +241,15 @@ static const char INDEX_HTML[] =
 ".liveWrap.mot{outline:5px solid #ff2f2f;outline-offset:-5px;"   /* 1s per-trigger motion flash */
 "box-shadow:inset 0 0 18px rgba(255,47,47,.6)}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
+/* Live-view species overlay: the last classified event's species, bottom-left. */
+".livesp{position:absolute;left:8px;bottom:8px;z-index:3;display:none;"
+"align-items:center;gap:6px;max-width:82%;background:rgba(16,22,18,.78);"
+"color:#eafaef;font-size:.9rem;font-weight:600;padding:5px 11px;border-radius:6px;"
+"pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,.4)}"
+".livesp.on{display:inline-flex}"
+".livesp .spc{font-weight:500;color:#a8d8bb;font-size:.82rem}"
+".livesp.pop{animation:livesppop .55s ease}"
+"@keyframes livesppop{0%{transform:scale(.8)}55%{transform:scale(1.07)}100%{transform:scale(1)}}"
 ".pausebadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
 "align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
@@ -371,6 +380,7 @@ static const char INDEX_HTML[] =
 "<div class='livemsg' id='livemsg'></div>"
 "<div class='zone' id='zone'></div>"
 "<div class='motgrid' id='motgrid'></div>"
+"<div class='livesp' id='livesp'></div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
@@ -779,6 +789,14 @@ static const char INDEX_HTML[] =
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
+/* Species overlay in the live view: last event's species + confidence; pops on a
+ * new decision (dataset.v holds the last rendered value so it only re-animates
+ * when it actually changes). */
+"var sp=$g('livesp');"
+"if(sp){if(s.species){"
+"var h='\\uD83D\\uDC26 '+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+"if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;sp.classList.remove('pop');void sp.offsetWidth;sp.classList.add('pop');}"
+"sp.classList.add('on');}else{sp.classList.remove('on');sp.dataset.v='';}}"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
 "if(lw)lw.classList.toggle('det',!!s.motion);"
@@ -3305,7 +3323,7 @@ static esp_err_t h_status(httpd_req_t *req)
     char tstr[24]; const char *tsrc;
     device_time(tstr, sizeof(tstr), &tsrc);
 
-    char buf[720];
+    char buf[768];
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
@@ -3313,7 +3331,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
-        "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\"}",
+        "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3328,7 +3346,8 @@ static esp_err_t h_status(httpd_req_t *req)
         s_stream_clients, STREAM_MAX_CLIENTS,
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
-        classify_last_species()[0] ? species : "");
+        classify_last_species()[0] ? species : "",
+        (unsigned) classify_last_confidence());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
