@@ -947,7 +947,8 @@ static const char INDEX_HTML[] =
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
 ":st===3?('<button class=\"gidbtn gcfb\" title=\"confirm: no bird\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmNoBird(this)\">\\u2713</button>'):'';"
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
-"onchange=\"gSelSync(this)\">"
+"title=\"shift-click to select the whole range\" "
+"onclick=\"gChkClick(event,this)\" onchange=\"gSelSync(this)\">"
 "<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+'</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
@@ -962,7 +963,7 @@ static const char INDEX_HTML[] =
 "onclick=\"copyLast(this)\"'+(g_lastSp?' title=\"copy last: '+esc(g_lastSp.d)+'\"':' title=\"copy last species (label one first)\" disabled')+'>&#128203;</button>"
 "<button title=\"delete\" onclick=\"del(\\''+p+'\\')\">&#10060;</button></span></div>';"
 "g.appendChild(div);});gSelSync();fillSpecFilter();applyFilter();});}"
-"var g_gfilter='all',g_tally=null,g_nbBound=false,g_conf=17,g_lastSp=null;"
+"var g_gfilter='all',g_tally=null,g_nbBound=false,g_conf=17,g_lastSp=null,g_selAnchor=null;"
 /* Aligned label/value table + optional hint line, instead of a run-on sentence
  * that wrapped one word per line in the toolbar column. */
 "function renderTally(vis){var t=g_tally;var el=$g('gsts');if(!t){el.textContent='';return;}"
@@ -1095,6 +1096,19 @@ static const char INDEX_HTML[] =
 "$g('gselc').textContent=n?(n+' selected'):'';}"
 "function gSelAll(){var c=gVisChecks();var on=c.some(x=>!x.checked);"
 "c.forEach(x=>{x.checked=on;x.closest('.gitem').classList.toggle('sel',on);});gSelSync();}"
+/* Shift-click range select: shift-clicking a checkbox sets every visible tile
+ * between the last-clicked (anchor) and this one to this box's new state — the
+ * fast way to multiselect a whole burst/region. Runs on click (which carries
+ * shiftKey and the already-toggled .checked, unlike change). g_selAnchor is
+ * updated on every click; a stale anchor after a reload just yields index -1
+ * (no range), so nothing breaks. */
+"function gChkClick(e,cb){"
+"if(e.shiftKey&&g_selAnchor&&g_selAnchor!==cb){"
+"var v=gVisChecks(),i=v.indexOf(g_selAnchor),j=v.indexOf(cb);"
+"if(i>=0&&j>=0){var a=Math.min(i,j),b=Math.max(i,j),on=cb.checked;"
+"for(var k=a;k<=b;k++){v[k].checked=on;v[k].closest('.gitem').classList.toggle('sel',on);}"
+"gSelSync();}}"
+"g_selAnchor=cb;}"
 /* Sequential POST runner — the ESP32 httpd has only a handful of worker
  * sockets, so bulk label ops go one at a time (never a fan-out of fetches).
  * bodyFn builds the form body per file; cb(okCount) runs when all are done. */
