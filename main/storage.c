@@ -26,16 +26,22 @@ static sdmmc_card_t     *s_card = NULL;
 static SemaphoreHandle_t s_write_mtx;
 static bool              s_last_write_ok = true;
 
+/* SD write-error auto-recovery (FSD v2.14): a transient FATFS/driver write error
+ * wedges the card into a write-failing state that survives until a remount —
+ * seen in the field silently killing captures for hours. On a failed write the
+ * writers remount the card and retry once; these count/timestamp the recoveries
+ * so the Debug tab can surface a card that's wearing out. */
+static uint32_t          s_remount_count = 0;       /* successful recoveries */
+static int64_t           s_last_remount_us = 0;     /* last ATTEMPT (cooldown gate) */
+static int64_t           s_last_remount_ok_us = 0;  /* last SUCCESS */
+#define SD_RECOVER_COOLDOWN_US  (20 * 1000000LL)    /* ≤1 remount attempt / 20 s */
+
 static void storage_migrate_perday(void);   /* one-time monthly→per-day split */
 
-esp_err_t storage_init(void)
+#if SD_USE_SDMMC
+/* Mount the card (shared by storage_init and sd_recover). Sets s_sd_present. */
+static esp_err_t sd_mount(void)
 {
-    s_write_mtx = xSemaphoreCreateMutex();
-
-#if !SD_USE_SDMMC
-    ESP_LOGE(TAG, "SPI-mode SD not implemented yet (this board uses SDMMC)");
-    return ESP_OK;
-#else
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 1;                       /* 1-bit bus: only D0 is routed on these boards */
@@ -52,14 +58,56 @@ esp_err_t storage_init(void)
 
     esp_err_t err = esp_vfs_fat_sdmmc_mount(STORAGE_MOUNT_POINT, &host, &slot,
                                             &mount_cfg, &s_card);
+    s_sd_present = (err == ESP_OK);
+    return err;
+}
+
+/* Clear a transient SD write error by unmount+remount. Cooldown-limited so a
+ * genuinely dead / read-only card can't thrash the driver on every failed
+ * capture. Caller MUST hold s_write_mtx. Returns true only when the card is
+ * writable again. A concurrent SD *read* (gallery) can glitch during the
+ * unmount — acceptable, and far better than every capture failing until a human
+ * notices and reboots. */
+static bool sd_recover(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_last_remount_us && now - s_last_remount_us < SD_RECOVER_COOLDOWN_US)
+        return false;                     /* remounted recently — don't thrash */
+    s_last_remount_us = now;
+
+    ESP_LOGW(TAG, "SD write failed — remounting to recover");
+    if (s_card) { esp_vfs_fat_sdcard_unmount(STORAGE_MOUNT_POINT, s_card); s_card = NULL; }
+    s_sd_present = false;
+
+    esp_err_t err = sd_mount();
+    if (err == ESP_OK) {
+        s_remount_count++;
+        s_last_remount_ok_us = now;
+        ESP_LOGW(TAG, "SD remounted OK (recovery #%u)", (unsigned) s_remount_count);
+        return true;
+    }
+    ESP_LOGE(TAG, "SD remount failed (%s) — card may be failing/read-only",
+             esp_err_to_name(err));
+    return false;
+}
+#endif
+
+esp_err_t storage_init(void)
+{
+    s_write_mtx = xSemaphoreCreateMutex();
+
+#if !SD_USE_SDMMC
+    ESP_LOGE(TAG, "SPI-mode SD not implemented yet (this board uses SDMMC)");
+    return ESP_OK;
+#else
+    esp_err_t err = sd_mount();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "SD mount failed (%s) — running without SD. "
                  "Card must be FAT32; check SD pins in board_config.h",
                  esp_err_to_name(err));
         return ESP_OK;   /* degrade, don't abort (FSD §7) */
     }
-
-    s_sd_present = true;
+    /* s_sd_present set inside sd_mount() */
     ESP_LOGI(TAG, "SD mounted: %s, %llu MB",
              s_card->cid.name,
              ((uint64_t) s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024));
@@ -89,6 +137,13 @@ void storage_get_card_name(char *out, size_t out_len)
 }
 
 bool storage_last_write_ok(void) { return s_last_write_ok; }
+
+uint32_t storage_remount_count(void) { return s_remount_count; }
+int storage_last_remount_ago_s(void)
+{
+    return s_last_remount_ok_us
+         ? (int) ((esp_timer_get_time() - s_last_remount_ok_us) / 1000000) : -1;
+}
 
 void storage_write_lock(void)   { xSemaphoreTake(s_write_mtx, portMAX_DELAY); }
 void storage_write_unlock(void) { xSemaphoreGive(s_write_mtx); }
@@ -223,10 +278,20 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
         written = fwrite(data, 1, len, f);
         fclose(f);
     }
+    bool ok = f && written == len;
+#if SD_USE_SDMMC
+    if (!ok && sd_recover()) {          /* transient write error → remount + retry once */
+        mkdir(dir, 0775);
+        f = fopen(path, "wb");
+        written = f ? fwrite(data, 1, len, f) : 0;
+        if (f) fclose(f);
+        ok = f && written == len;
+    }
+#endif
     xSemaphoreGive(s_write_mtx);
 
-    s_last_write_ok = f && written == len;
-    if (!s_last_write_ok) {
+    s_last_write_ok = ok;
+    if (!ok) {
         ESP_LOGE(TAG, "write failed: %s (%u/%u bytes)", path,
                  (unsigned) written, (unsigned) len);
         return ESP_FAIL;
@@ -362,6 +427,22 @@ static void storage_migrate_perday(void)
     xSemaphoreGive(s_write_mtx);
 }
 
+/* Append one CSV line (writing the header first if the file is new). Factored so
+ * both the first attempt and the post-remount retry share it. Caller holds the
+ * write mutex. */
+static bool append_visit_line(const char *path, const char *line)
+{
+    struct stat st;
+    bool is_new = (stat(path, &st) != 0);
+    FILE *f = fopen(path, "a");
+    if (!f) return false;
+    if (is_new)
+        fputs("timestamp,species,confidence,frames,first_frame,corrected,latin,roi,top3\n", f);
+    bool ok = (fputs(line, f) >= 0) && (fputc('\n', f) != EOF);
+    fclose(f);
+    return ok;
+}
+
 esp_err_t storage_append_visit_log(const char *line)
 {
     if (!s_sd_present) return ESP_ERR_INVALID_STATE;
@@ -385,16 +466,10 @@ esp_err_t storage_append_visit_log(const char *line)
     }
 
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
-    struct stat st;
-    bool is_new = (stat(path, &st) != 0);
-    FILE *f = fopen(path, "a");
-    bool ok = false;
-    if (f) {
-        if (is_new)
-            fputs("timestamp,species,confidence,frames,first_frame,corrected,latin,roi,top3\n", f);
-        ok = (fputs(line, f) >= 0) && (fputc('\n', f) != EOF);
-        fclose(f);
-    }
+    bool ok = append_visit_line(path, line);
+#if SD_USE_SDMMC
+    if (!ok && sd_recover()) ok = append_visit_line(path, line);
+#endif
     xSemaphoreGive(s_write_mtx);
 
     s_last_write_ok = ok;
