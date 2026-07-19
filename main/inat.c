@@ -55,12 +55,33 @@ const char *inat_last_error(void)       { return s_last_error; }
 int32_t     inat_last_duration_ms(void) { return s_last_ms; }
 uint32_t    inat_call_count(void)       { return s_calls; }
 
-/* Multipart parts around the raw JPEG. */
-static const char MP_PRE[] =
-    "--" INAT_BOUNDARY "\r\n"
-    "Content-Disposition: form-data; name=\"image\"; filename=\"b.jpg\"\r\n"
-    "Content-Type: image/jpeg\r\n\r\n";
+/* Multipart parts around the raw JPEG. When a geo hint is set, lat+lng parts are
+ * prepended (see build_preamble) — iNat's CV is far stronger with location. */
+#define MP_IMG \
+    "--" INAT_BOUNDARY "\r\n" \
+    "Content-Disposition: form-data; name=\"image\"; filename=\"b.jpg\"\r\n" \
+    "Content-Type: image/jpeg\r\n\r\n"
 static const char MP_POST[] = "\r\n--" INAT_BOUNDARY "--\r\n";
+
+/* Build the multipart preamble (everything up to the raw JPEG bytes): optional
+ * lat/lng form parts from settings.inat_loc ("lat,lng", already validated to
+ * [0-9.,-]), then the image part header. */
+static void build_preamble(char *out, size_t osz)
+{
+    int n = 0;
+    const char *comma = g_settings.inat_loc[0] ? strchr(g_settings.inat_loc, ',') : NULL;
+    if (comma) {
+        char lat[16] = "", lng[16] = "";
+        size_t la = (size_t) (comma - g_settings.inat_loc);
+        if (la < sizeof(lat)) { memcpy(lat, g_settings.inat_loc, la); lat[la] = '\0'; }
+        strlcpy(lng, comma + 1, sizeof(lng));
+        n += snprintf(out + n, osz - n,
+            "--" INAT_BOUNDARY "\r\nContent-Disposition: form-data; name=\"lat\"\r\n\r\n%s\r\n"
+            "--" INAT_BOUNDARY "\r\nContent-Disposition: form-data; name=\"lng\"\r\n\r\n%s\r\n",
+            lat, lng);
+    }
+    snprintf(out + n, osz - n, "%s", MP_IMG);
+}
 
 /* Auth header value "Bearer <jwt>" — the JWT is ~300-800 chars. */
 static void bearer(char *out, size_t osz)
@@ -81,10 +102,27 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     if (!resp || !auth) { free(resp); free(auth); fail("out of memory"); return ESP_ERR_NO_MEM; }
     bearer(auth, 900);
 
-    size_t total = strlen(MP_PRE) + len + strlen(MP_POST);
+    char pre[400];
+    build_preamble(pre, sizeof(pre));
+    size_t total = strlen(pre) + len + strlen(MP_POST);
+
+    /* Geo is passed as URL QUERY params (lat/lng) — that's what score_image's
+     * geomodel reads; the multipart lat/lng parts are kept as belt-and-suspenders.
+     * inat_loc is validated [0-9.,-] so it's URL-safe. */
+    char url[128];
+    if (g_settings.inat_loc[0] && strchr(g_settings.inat_loc, ',')) {
+        char lat[16] = "", lng[16] = "";
+        const char *comma = strchr(g_settings.inat_loc, ',');
+        size_t la = (size_t) (comma - g_settings.inat_loc);
+        if (la < sizeof(lat)) { memcpy(lat, g_settings.inat_loc, la); lat[la] = '\0'; }
+        strlcpy(lng, comma + 1, sizeof(lng));
+        snprintf(url, sizeof(url), "%s?lat=%s&lng=%s", INAT_CV_URL, lat, lng);
+    } else {
+        strlcpy(url, INAT_CV_URL, sizeof(url));
+    }
 
     esp_http_client_config_t cfg = {
-        .url               = INAT_CV_URL,
+        .url               = url,
         .method            = HTTP_METHOD_POST,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 30000,
@@ -109,7 +147,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         ret = (err == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_FAIL;
         goto done;
     }
-    if (!cu_write(c, MP_PRE, strlen(MP_PRE)))    { fail("upload failed (header)"); goto done; }
+    if (!cu_write(c, pre, strlen(pre)))          { fail("upload failed (header)"); goto done; }
     if (!cu_write(c, (const char *) jpeg, len))  { fail("upload failed (image)");  goto done; }
     if (!cu_write(c, MP_POST, strlen(MP_POST)))  { fail("upload failed (trailer)"); goto done; }
 
