@@ -43,16 +43,21 @@ typedef struct { float x0, y0, x1, y1; } roi_t;
 static inline bool  roi_is_empty(roi_t r) { return r.x1 <= r.x0 || r.y1 <= r.y0; }
 static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
 
-/* Best-of-N: how many of an event's saved frames the classifier scores,
- * keeping the most confident real-species result (§3.2). The event's first
- * frame is often the worst (bird mid-entry / motion-blurred), so scoring a
- * few and picking the best improves the label. */
-#define CLASSIFY_BEST_OF_N 3
+/* Frame capacity per event: how many of an event's saved frames the classifier
+ * carries and scores. Sized to the max capture_count (settings.c clamps ccnt to
+ * 10), so EVERY captured frame is classified — not just the first few (§3.2).
+ * The iNat tier scores all of them and requires the winning species to be
+ * corroborated by >=2 frames (v2.26); the nordic tier keeps its best-of-N +
+ * evidence-pooling over the same set. The event's first frame is often the
+ * worst (bird mid-entry / motion-blurred), so scoring all and cross-checking
+ * beats trusting any single view. */
+#define CLASSIFY_BEST_OF_N 10
 
 /* Queues a visit event for async best-of-N classification + visit-log write.
  * `paths` are the event's saved-frame paths (web-relative, e.g.
- * "/captures/DAY/NAME.jpg"), best-first; up to CLASSIFY_BEST_OF_N are scored,
- * the rest ignored. The classifier re-reads each from SD. `rois` is the
+ * "/captures/DAY/NAME.jpg"), best-first; up to CLASSIFY_BEST_OF_N (= the max
+ * capture_count, i.e. all of them) are scored. The classifier re-reads each
+ * from SD. `rois` is the
  * parallel array of per-frame motion regions — species ID zooms each frame
  * onto its own ROI (empty rect -> whole frame; honoured only when
  * g_settings.detect_zoom is on). All args are copied; the caller keeps
