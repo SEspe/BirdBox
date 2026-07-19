@@ -1037,8 +1037,20 @@ static const char INDEX_HTML[] =
 "if(!bdg){bdg=document.createElement('div');bdg.className='glabel';it.insertBefore(bdg,it.firstChild);}"
 "bdg.className='glabel gconf';bdg.textContent='\\u2713 '+(o.species||'');"
 "bdg.title=(o.species||'')+' \\u2013 confirmed';it.dataset.st=2;it.dataset.sp=(o.species||'');"
-"var cb=it.querySelector('.gcfb');if(cb)cb.remove();applyFilter();}})"
+"var cb=it.querySelector('.gcfb');if(cb)cb.remove();"
+/* A confident identify (cloud ✨ or on-device 🔍) that produced a real species
+ * seeds the 📋 copy-last fast-path, so a strong Gemini/Claude label on one frame
+ * can be one-click applied to its sibling frames. Gated on latin (empty ⇒
+ * no-bird/Unidentified, not a species to copy). */
+"if(o.latin){g_lastSp={c:o.common||o.species,l:o.latin,d:o.species};refreshCopyLast();}"
+"applyFilter();}})"
 ".catch(()=>{btn.disabled=false;out.textContent='identify failed';});}"
+/* Enable + retitle every 📋 copy-last button in place once g_lastSp is set,
+ * without a full day reload (idRun updates a single tile; the buttons were
+ * rendered disabled at load). */
+"function refreshCopyLast(){if(!g_lastSp)return;"
+"document.querySelectorAll('.gcpl').forEach(function(b){b.disabled=false;"
+"b.title='copy last: '+g_lastSp.d;});}"
 "var g_specMap=null;"   /* display name -> {c:common,l:latin}, loaded once */
 "function ensureSpecs(cb){if(g_specMap){cb();return;}"
 "fetch('/api/labels').then(r=>r.json()).then(function(a){g_specMap={};"
@@ -3737,12 +3749,20 @@ static esp_err_t classify_send_json(httpd_req_t *req, const classify_result_t *r
     classify_localize_label(r->top_label[1], l1, sizeof(l1));
     classify_localize_label(r->top_label[2], l2, sizeof(l2));
 
-    char buf[800];
+    /* latin + common (the English canonical) are emitted too so the Gallery can
+     * seed the 📋 copy-last fast-path from a confident cloud/model identify —
+     * they're what /api/relabel needs (l/c), which the localized `species`
+     * display name can't supply. Both are already CSV/JSON-scrubbed at the
+     * classifier boundary. Empty latin ⇒ "no bird"/"Unidentified", so the client
+     * only seeds copy-last when latin is present. */
+    char buf[912];
     snprintf(buf, sizeof(buf),
-        "{\"species\":\"%s\",\"confidence\":%u,\"durationMs\":%ld,\"saved\":%s,\"top3\":["
+        "{\"species\":\"%s\",\"latin\":\"%s\",\"common\":\"%s\","
+        "\"confidence\":%u,\"durationMs\":%ld,\"saved\":%s,\"top3\":["
         "{\"label\":\"%s\",\"pct\":%u},{\"label\":\"%s\",\"pct\":%u},"
         "{\"label\":\"%s\",\"pct\":%u}]}",
-        species, r->confidence_pct, (long) r->duration_ms, saved ? "true" : "false",
+        species, r->latin, r->species,
+        r->confidence_pct, (long) r->duration_ms, saved ? "true" : "false",
         l0, r->top_pct[0], l1, r->top_pct[1], l2, r->top_pct[2]);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
