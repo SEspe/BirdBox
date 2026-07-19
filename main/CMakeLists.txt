@@ -11,6 +11,7 @@ idf_component_register(
         "cloud_util.c"
         "claude.c"
         "gemini.c"
+        "inat.c"
         "cloud.c"
         "settings.c"
         "storage.c"

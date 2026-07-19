@@ -106,6 +106,20 @@ typedef struct {
                                        use. "" falls back to GEMINI_MODEL_DEFAULT
                                        in gemini.c. Ids are [a-z0-9.-]; validated
                                        on save so it's URL-safe */
+    uint8_t  inat_cv_enabled;       /* 1 = iNaturalist online CV is the PRIMARY
+                                       classifier tier (FSD §3.2.3): identify new
+                                       events with iNat's score_image first,
+                                       nordic model + Claude/Gemini as the
+                                       fallbacks. Free (no per-call fee) but needs
+                                       inat_key + WiFi; default 0. Distinct from
+                                       inat_periodic_enabled (the on-device iNat
+                                       batch) */
+    char     inat_key[800];         /* iNaturalist API JWT (sent as "Bearer …").
+                                       iNat JWTs EXPIRE ~24 h after issue, so this
+                                       needs periodic refresh (grabbed from
+                                       inaturalist.org/users/api_token). A billable-
+                                       grade secret — omitted from the settings
+                                       export (§5). Sized for a long JWT */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x
