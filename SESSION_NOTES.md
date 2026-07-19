@@ -1,100 +1,125 @@
-# Session Notes — BirdBox (updated 2026-07-17)
+# Session Notes — BirdBox (updated 2026-07-18)
 
-Big on-device session. Shipped a **three-tier classification cascade**, trained
-and deployed **nordic-v0.6**, added **Nøtteskrike** as a target + training class,
-and fixed two bugs. Firmware went **0.70.9 → 0.70.12 / FSD v2.03 → v2.06**. The
-reference unit at **192.168.1.111** now runs firmware **0.70.12** with the active
-model **`nordic-v0.6.tflite`** (iNat periodic batch **off**, region persists).
+Big session. Added **Google Gemini as a second, coequal cloud classifier**
+(one active at a time), trained + deployed **nordic-v0.8**, added a **live-view
+species overlay**, and root-caused + fixed **creeping web-UI sluggishness**.
+Firmware went **0.70.13 → 0.72.1 / FSD v2.07 → v2.13**. The reference unit at
+**192.168.1.111** now runs firmware **0.72.1** with the active model
+**`nordic-v0.8.tflite`**. Cloud classifier is **configured (Gemini key stored,
+verified working) but the Active provider is OFF** — no automatic cloud calls.
+**TTA is off** (operator turned it off; halves inference to ~10 s).
 
-(The prior session's GBIF stock-image experiment is archived under
-`training-data/archive-gbif-experiment/` and in memory — not repeated here.)
+(Prior sessions — three-tier cascade, nordic-v0.6, per-day visit log v2.07 — are
+in git history + memory, not repeated here.)
 
 ## What shipped (commits on master, all built + deployed + verified)
 
-- `f934198` **0.70.10 / v2.04** — Relabel-picker bugfixes: de-dup Lavskrike
-  (now a real nordic class, was emitted twice), and offer the operator's full
-  target species list. Added 4 Norwegian names in `species_i18n.c`.
-- `9648426` — `train.py` iNat-backbone init option (`BIRDBOX_BACKBONE=inat`) +
-  `inat_backbone.py`; bumped MODEL_VERSION → 0.6.
-- `beab989` **0.70.11 / v2.05** (Phase A) — cascade reorder: **nordic primary →
-  Claude secondary** (only on "Unidentified", constrained to the target
-  species); **engine provenance** (`source` visit-log column → `/api/events`
-  `src` → gallery `[N]/[C]/[I]` badge); shared `target_species.{h,c}`.
-- `2115264` **0.70.12 / v2.06** (Phase B) — **optional periodic iNat batch** via
-  runtime model-swap (off by default); **Nøtteskrike** added (target list
-  30→31); **region-clobber fix**.
-- `1723627` — `train.py`: **Garrulus glandarius (Nøtteskrike) class**;
-  MODEL_VERSION → 0.7.
+- `1c5c422` **0.71.1 / v2.08** — **Gemini as a second cloud classifier.** Shared
+  HTTP/JSON/TLS plumbing factored into `cloud_util.{c,h}`; `gemini.{c,h}` mirrors
+  `claude.{c,h}`; `cloud.{c,h}` dispatches to the one active provider. Settings:
+  `claude_enabled` bool → **`cloud_provider`** enum (0 off / 1 Claude / 2 Gemini);
+  new `gemini_key`. NVS migrates old `s_cld` → `s_cprov`. Endpoints generalised
+  to `/api/cloud-file` + `/api/cloud-test?p=<1|2>`; gallery gains a `[G]` badge.
+- `10da626` **0.71.2 / v2.09** — auto-retry transient provider errors.
+- `a10c808` **0.71.5 / v2.10** — Gemini reliability: model → `gemini-2.0-flash`,
+  drop `thinkingConfig`, exponential backoff **2/4/8 s** on 429/5xx.
+- `f3bc62b` **0.71.9 / v2.11** — **Gemini model is an operator-set Settings field**
+  (`settings.gemini_model`, NVS `s_gmdl`, `[a-z0-9.-]` validated, in the export),
+  default **`gemini-flash-lite-latest`**. Test Gemini lists callable model ids.
+- `b77d8de` — `train.py` **MODEL_VERSION 0.8**; README registry rows for v0.7/v0.8.
+- `8ff3c9f` **0.72.0 / v2.12** — **Live-view species overlay** (last event's
+  species + confidence on the video; `classify_last_confidence()` → `spConf`).
+- `6c0651c` **0.72.1 / v2.13** — **web-UI sluggishness fix + socket diagnostic**
+  (see below).
 
-## The three-tier classifier (how an event is labelled now)
+## Gemini cloud classifier — the model saga (cost ~6 reflashes; important)
 
-1. **nordic-v0.6** (on-device, primary) — ROI-crop, `detect_zoom` ON. Confident
-   species / "no bird" kept as-is. `source=nordic`.
-2. **Claude** (secondary, when `claude_enabled` + key) — only when nordic returns
-   "Unidentified bird"; whole-frame; prompt-constrained to the 31 target species.
-   `source=claude`. (Was previously *primary* when on — this session inverted it.)
-3. **iNat-965** (optional third tier, **off by default**) — a periodic batch that
-   swaps the model, re-scores still-unclassified frames whole-frame masked to the
-   31 targets, and swaps back. `source=inat`. Periodic (not live) because only one
-   model fits in PSRAM, so a swap costs ~10-13 s SD reload — batching amortizes it.
+Gemini model availability shifts under you and **ListModels is misleading** (it
+lists models `generateContent` then 404s). On this **new, billed** key:
+- `gemini-2.5-flash` → 404 **"not available to new users"** — an account-tier
+  gate that **enabling billing did NOT lift**.
+- whole **2.0 generation** (`gemini-2.0-flash`/`-001`/`-lite`) → 404 **"no longer
+  available"** (retired) even though ListModels still lists them.
+- `gemini-flash-latest` → resolves but **sustained 503 "high demand"**.
+- **`gemini-flash-lite-latest` → WORKS**: correct ID (Nøtteskrike @ 95%) in ~4 s.
+  This is the default; change it in Settings (no reflash) if it ever 404s.
 
-## Models / retrain
+Other Gemini facts: **free tier is 10 RPM** — a no-billing key gets 429 "exceeded
+quota"; billing is the fix (firmware can't manufacture quota). Body sends
+`thinkingConfig.thinkingBudget=0` (usable flash models are thinking models; a
+non-thinking model would 400 — but that generation is retired). Retry does 429 +
+5xx with 2/4/8 s backoff, 4 attempts; other 4xx fail fast; a final failure
+degrades to the on-device model. **Do NOT hammer the device with rapid cloud
+calls** — overlapping TLS handshakes starve internal DRAM (~44 KB largest block
+under load) and wedge the single httpd task.
 
-- **nordic-v0.6 (ImageNet backbone, 92.4% val)** trained this session, deployed,
-  and promoted over v0.5 (~on par, marginally better). Active on the device.
-- **iNat-backbone init A/B = negative result.** Initializing train.py's backbone
-  from Google AIY birds_V1 (iNat) weights instead of ImageNet **hurt**: 80.0% /
-  79.3% (frozen) vs ImageNet 92.4%, schedule-independent. Tooling
-  (`inat_backbone.py`, `.npz`) committed but unused. See memory
-  `inat-backbone-init-hurts`.
-- **`train.py` is now MODEL_VERSION 0.7 with a 5-species class set** (added
-  Garrulus glandarius / Nøtteskrike). Next build = `nordic-v0.7`.
-- **Today's confirmed + ROI counts (per species):** Skjære 128, Bokfink 54,
-  **Nøtteskrike 32**, Lavskrike 23, Dompap 5 (skipped today), no-bird 37. ROI
-  coverage ~99.6% (per-frame ROI logging from 0.70.9 is working). Nøtteskrike at
-  32 is thin but a start.
+## nordic-v0.8 retrain + deploy
+
+- **Deployed ~20:15 on 2026-07-18** (uploaded + region-selected + rebooted; still
+  firmware 0.71.9 at the time — model swaps never touch firmware). Active now.
+- **95.0% val acc (n=262), up from v0.7's 91.9%.** The win: **Garrulus glandarius
+  (Nøtteskrike)** went from a dead 0-image class (0% recall in v0.7) to a real
+  trained class — **108 confirmed images → 80% recall/precision**. Dompap recall
+  88→95%; precision up across the board (Lavskrike 64→91%, Bokfink 64→96%).
+- Export pulled **684 new** confirmed images (5,563 already had). Per-class:
+  Dompap 2563, no_bird 1777, **Lavskrike/Perisoreus_infaustus 722** (+2 in the
+  free-typed `Lavskrike/` folder — folds into the same class), Skjære 513, Bokfink
+  470, other 110, **Nøtteskrike 108**.
+- Reminder: **Lavskrike = Perisoreus infaustus** (folders key on the Latin
+  binomial, so Lavskrike confirmations land in `Perisoreus_infaustus/`).
+- Still **ImageNet backbone** (iNat-init is a documented negative — see memory
+  `inat-backbone-init-hurts`). `train.py` now MODEL_VERSION 0.8.
+
+## Web-UI sluggishness — root cause + fix (v2.13)
+
+Symptom: UI (stream, Gallery, every endpoint) grows sluggish over uptime; a
+**reboot fully cures it** (happened twice). Profiled: warm requests **~20 ms**
+(incl. the *cached* SD free-space query), **no memory leak** (2.12 MB at 50 min
+vs 2.14 MB fresh), camera/WiFi healthy — but the **first request after idle
+stalls ~5 s**, and 5 s == esp_http_server's default socket timeout. **Root cause:
+socket-pool congestion** — default `max_open_sockets` 7 (capped by
+`CONFIG_LWIP_MAX_SOCKETS`=10); a long-lived browser UI (keep-alive polls + the
+jerky HD stream reconnecting) leaves slots in slow-to-reclaim states, so a fresh
+request waits ~`recv_wait_timeout` (5 s) to purge one. **Fix:**
+`CONFIG_LWIP_MAX_SOCKETS` 10→**16** (sdkconfig.defaults → clean rebuild),
+`max_open_sockets` 7→**12**, `recv/send_wait_timeout` 5→**3 s**. **Diagnostic:**
+`/api/sysinfo` `httpdSock`/`httpdSockMax` + Debug-panel **"HTTP sockets N / 12"**
+(red near cap). Verified post-flash: 5/12, warm ~15 ms.
 
 ## Gotchas / decisions this session
 
-- **iNat features don't transfer** — backbone init joins GBIF-stock and iNat-zoom
-  as documented negatives. Keep ImageNet init + real BirdBox captures.
-- **One model in PSRAM** (3 MB arena + ~3.5 MB buffer, ~600-700 KB free heap) →
-  the iNat tier must **swap**, hence periodic + opt-in. `model_load_named` /
-  `model_unload` reuse the arena (never realloc it); score scratch freed so it
-  re-sizes 5↔965 classes. Verified: swap runs, heap stable, restores nordic.
-- **Region-clobber bug (fixed):** `h_settings_post` overwrote `g_settings.region`
-  even when the field was absent, so any partial settings POST blanked the model
-  selection and the device auto-picked the first `.tflite` (`inat-birds-v1`,
-  alphabetically) on next boot. Added `has_field()`; empty-but-present (the
-  "auto" dropdown option) still honoured. This bit us mid-session (device booted
-  into iNat). Always send `region=` on manual settings POSTs.
-- **iNat batch on hard frames correctly produces nothing** — its candidates are
-  03:xx dark/IR frames nordic also couldn't ID; iNat 30-masked stays below
-  threshold. A clear Bokfink scores Fringilla coelebs 14% under iNat, so the path
-  is proven; it just declines empty frames.
+- **Stream jerkiness at HD is inherent, not a bug** — ~130 KB/frame over WiFi =
+  only a few fps. RSSI is strong (-55). Only knob is stream quality (operator's
+  call; raise the number for smoother/lower-quality; it's the shared sensor JPEG
+  setting so it also affects saved captures). Resolution stays HD (locked).
+- **`/api/status` does a live SD free-space query**, but FATFS caches it after the
+  first call, so it's ~20 ms — not a latency source. (Ruled out during profiling.)
+- **Model deploy needs NO firmware update** — model is data on SD; upload +
+  select + reboot loads it; the reboot is not a reflash. Firmware only matters if
+  a model breaks the int8/op contract (`train.py` verifier catches that: PASS).
+- **Don't hammer the device with back-to-back requests** while the operator is
+  live-viewing — it competes for the httpd task + camera fb and worsens the feel.
 
 ## Known issues / deferred
 
-- **Visit log is monthly, not per-day (perf).** `visits-YYYY-MM.csv` is read in
-  full on every gallery load (~2.2 s SD-bound floor, independent of the day's
-  size) and rewritten whole on each relabel (~6.5 s). The fix is **per-day files
-  `visits-YYYY-MM-DD.csv`** so no operation touches a month of unrelated rows —
-  deferred (documented in FSD v1.98) because it also touches stats / export /
-  reset / recheck, **and now the Phase B iNat batch** (which scans the monthly
-  file for candidates). Bigger structural change; still open.
 - **frameroi sidecar not pruned** — `/log/frameroi-YYYY-MM-DD.csv` (0.70.9) grows
-  append-only and isn't cleaned when old captures age out (small, deferred; FSD
-  v2.03).
-- **iNat batch is coarse** — holds the run mutex for a bounded (25-frame) cycle,
-  skips if live events are queued; fine as an opt-in booster, but a busy period
-  during a batch delays live ID. Acceptable given it's off by default.
+  append-only, not cleaned when old captures age out (small; FSD v2.03).
+- **Socket-fix verification pending** — watch Debug "HTTP sockets N / 12" over a
+  day: if it stays a low handful → root cause confirmed fixed; if it creeps toward
+  12 → sockets are leaking somewhere and we chase the leak itself.
+- **`recv/send_wait_timeout` cut to 3 s** — ample for LAN uploads, but a
+  marginal-WiFi OTA/model upload has slightly less slack; bump back if uploads
+  start failing.
 
 ## Device / next steps
 
-- Device: 192.168.1.111, fw **0.70.12**, `nordic-v0.6.tflite`, iNat batch off,
-  Claude off (no key). Region persists.
-- **Staged, not run:** `train.py` is ready for `nordic-v0.7`; `export-labels.ps1`
-  run this session to pull confirmed labels into `dataset/`. Next: `python
-  train.py` when ready (iNat-init stays off — ImageNet backbone).
-- Not yet updated: README model registry (no v0.7 row until built); the
-  `training-data/` model artifacts + logs remain uncommitted (dataset gitignored).
+- Device: 192.168.1.111, fw **0.72.1**, `nordic-v0.8.tflite`, **cloud Active
+  provider OFF** (Gemini key stored + verified, model `gemini-flash-lite-latest`),
+  **TTA off**, detect_zoom ON.
+- **Watch over the coming day:** (1) UI responsiveness + the HTTP-sockets count
+  (sluggishness fix); (2) nordic-v0.8 on live birds — confirm/correct misses in
+  the Gallery to feed the next retrain; (3) the live-view species overlay.
+- To enable live cloud ID later: Settings → Cloud Identification → Active provider
+  → Google Gemini → Save (costs a fraction of a cent per escalated event).
+- `training-data/` model artifacts + logs remain uncommitted by convention
+  (dataset gitignored; only scripts/README tracked).
