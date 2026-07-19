@@ -539,6 +539,12 @@ static const char INDEX_HTML[] =
 "<button class='act' style='margin-left:0' id='stInatTest' onclick='inatTest()'>&#128268; Test token</button>"
 "<button class='act' style='display:none' id='stIkeyClr' onclick='ikeyClear()'>&#128465; Forget token</button>"
 "<div class='sts' id='stInatSts' style='margin-top:4px'></div>"
+"<label class='wl' style='margin-top:12px'><input type='checkbox' id='stOndev'> Use the on-device model (nordic) as a fallback</label>"
+"<p class='sts' style='margin-top:2px'>When on, the on-device model classifies events the primary "
+"(iNaturalist) can't identify, before the paid cloud tier. Turn <b>off</b> to skip it &mdash; events go "
+"straight from iNaturalist to the cloud, or stay <i>Unidentified</i> if the cloud is off (i.e. iNaturalist "
+"as the sole classifier). The model stays on the card and the Gallery's &#128269; button still uses it; "
+"this only removes it from automatic live classification.</p>"
 "<h3 class='sh'>Cloud Identification (secondary classifier)</h3>"
 "<p class='sts' style='margin-top:2px'>When the on-device model can't identify a new motion event, "
 "send its best photo to a cloud vision model and use that answer (restricted to your 30 "
@@ -1368,6 +1374,7 @@ static const char INDEX_HTML[] =
 "$g('stFshut').checked=c.fshut==1;"
 "$g('stTta').checked=c.tta==1;"
 "$g('stInat').checked=c.inat==1;$g('stInatv').value=c.inatv;"
+"$g('stOndev').checked=c.ondev==1;"
 "$g('stInatCv').checked=c.inatcv==1;"
 "$g('stIkey').value='';"
 "$g('stIkey').placeholder=c.ikey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -1443,6 +1450,7 @@ static const char INDEX_HTML[] =
 "+'&fshut='+($g('stFshut').checked?1:0)"
 "+'&tta='+($g('stTta').checked?1:0)"
 "+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
+"+'&ondev='+($g('stOndev').checked?1:0)"
 "+'&inatcv='+($g('stInatCv').checked?1:0)"
 "+'&loc='+encodeURIComponent($g('stLoc').value)"
 "+($g('stIkey').value?'&ikey='+encodeURIComponent($g('stIkey').value):'')"
@@ -3163,7 +3171,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
-        "\"inatcv\":%u,\"ikey_set\":%s,\"loc\":\"%s\",\"models\":[",
+        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"loc\":\"%s\",\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3188,6 +3196,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.claude_key[0] ? "true" : "false",
         g_settings.gemini_key[0] ? "true" : "false",
         g_settings.gemini_model,   /* [a-z0-9.-] only (validated on save) — JSON-safe */
+        (unsigned) g_settings.ondevice_enabled,
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_key[0] ? "true" : "false",
         g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
@@ -3349,6 +3358,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * handling as the cloud keys: an absent ikey keeps the stored JWT; an
      * explicit ikeyclear=1 forgets it (and turns the tier off). The JWT is long
      * (~300-800 chars), so extract it into a heap buffer, not the httpd stack. */
+    g_settings.ondevice_enabled = field_num(body, "ondev=", 0, 1, g_settings.ondevice_enabled);
     g_settings.inat_cv_enabled = field_num(body, "inatcv=", 0, 1, g_settings.inat_cv_enabled);
     if (field_num(body, "ikeyclear=", 0, 1, 0) == 1) {
         g_settings.inat_key[0] = '\0';
@@ -3416,7 +3426,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
-        "&inatcv=%u&loc=%s",
+        "&ondev=%u&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3432,6 +3442,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.gemini_model,
+        (unsigned) g_settings.ondevice_enabled,
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_loc);
     httpd_resp_set_type(req, "application/octet-stream");

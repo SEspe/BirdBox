@@ -723,7 +723,7 @@ static void classify_task(void *arg)
             }
         }
 
-        if (!have_best && s_available) {
+        if (!have_best && s_available && g_settings.ondevice_enabled) {
             have_best = aggregate_frames(job.paths, job.rois, job.path_count,
                                          &scored, &best, &win);
             if (have_best) source = "nordic";
@@ -1434,7 +1434,8 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
     /* Either classifier will do — with a cloud provider on, events are labelled
      * with no model on the card at all (§3.2.3). Only when neither is available
      * does this decline, leaving capture.c to write the "unclassified" row. */
-    if ((!s_available && !cloud_enabled() && !inat_cv_enabled()) ||
+    bool ondev = s_available && g_settings.ondevice_enabled;
+    if ((!ondev && !cloud_enabled() && !inat_cv_enabled()) ||
         path_count <= 0 || !s_jobq) return false;
     cls_job_t job = {};
     job.frames = frames;
