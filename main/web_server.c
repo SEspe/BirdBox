@@ -253,6 +253,8 @@ static const char INDEX_HTML[] =
 "pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,.4)}"
 ".livesp.on{display:inline-flex}"
 ".livesp .spc{font-weight:500;color:#a8d8bb;font-size:.82rem}"
+".livesp .splogo{display:inline-block;width:1.15em;height:1.15em;border-radius:50%;"
+"background:url('" BIRD_LOGO "') center/cover;flex:0 0 auto}"
 ".livesp.pop{animation:livesppop .55s ease}"
 "@keyframes livesppop{0%{transform:scale(.8)}55%{transform:scale(1.07)}100%{transform:scale(1)}}"
 ".pausebadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
@@ -801,14 +803,18 @@ static const char INDEX_HTML[] =
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
-/* Species overlay in the live view: last event's species + confidence; pops on a
- * new decision (dataset.v holds the last rendered value so it only re-animates
- * when it actually changes). */
+/* Species overlay in the live view: the last event's species + confidence with a
+ * Dompap avatar. Shown (and pops) on a NEW event — keyed to the events count, so
+ * two events of the same species still re-trigger — then AUTO-HIDES after
+ * SP_TTL_MS (3 min) so it doesn't linger forever. dataset.v guards re-rendering. */
 "var sp=$g('livesp');"
 "if(sp){if(s.species){"
-"var h='\\uD83D\\uDC26 '+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
-"if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;sp.classList.remove('pop');void sp.offsetWidth;sp.classList.add('pop');}"
-"sp.classList.add('on');}else{sp.classList.remove('on');sp.dataset.v='';}}"
+"var h='<span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+"if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;}"
+"if(s.events!==g_spEv){g_spEv=s.events;g_spAt=Date.now();"
+"sp.classList.add('on');sp.classList.remove('pop');void sp.offsetWidth;sp.classList.add('pop');}"
+"else if(g_spAt&&Date.now()-g_spAt>180000)sp.classList.remove('on');"
+"}else{sp.classList.remove('on');sp.dataset.v='';g_spAt=0;}}"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
@@ -821,7 +827,7 @@ static const char INDEX_HTML[] =
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
-"var g_motN=-1;"
+"var g_motN=-1,g_spEv=-1,g_spAt=0;"   /* g_spEv/g_spAt: live species-overlay event id + shown-at (auto-hide) */
 "function motGrid(){var g=$g('motgrid');if(!g)return null;"
 "if(g.children.length!==64){g.innerHTML='';"
 "for(var c=0;c<64;c++){var d=document.createElement('div');d.className='mcell';g.appendChild(d);}}return g;}"
