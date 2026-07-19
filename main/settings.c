@@ -44,6 +44,7 @@ settings_t g_settings = {
     .claude_key         = "",
     .gemini_key         = "",
     .gemini_model       = "",   /* "" => gemini.c's GEMINI_MODEL_DEFAULT */
+    .ondevice_enabled   = 1,    /* on-device (nordic) model is the secondary tier */
     .inat_cv_enabled    = 0,    /* opt-in primary tier; needs a (24h) iNat JWT */
     .inat_key           = "",
     .inat_loc           = "",   /* iNat geo hint "lat,lng"; "" = no geo */
@@ -102,6 +103,7 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_gkey", g_settings.gemini_key, &l);
     l = sizeof(g_settings.gemini_model);
     nvs_get_str(h, "s_gmdl", g_settings.gemini_model, &l);
+    if (nvs_get_u8 (h, "s_ondev", &u8) == ESP_OK) g_settings.ondevice_enabled = u8;
     if (nvs_get_u8 (h, "s_inatcv", &u8) == ESP_OK) g_settings.inat_cv_enabled = u8;
     l = sizeof(g_settings.inat_key);
     nvs_get_str(h, "s_inatk", g_settings.inat_key, &l);
@@ -152,6 +154,7 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_ckey",  g_settings.claude_key);
     nvs_set_str(h, "s_gkey",  g_settings.gemini_key);
     nvs_set_str(h, "s_gmdl",  g_settings.gemini_model);
+    nvs_set_u8 (h, "s_ondev",  g_settings.ondevice_enabled);
     nvs_set_u8 (h, "s_inatcv", g_settings.inat_cv_enabled);
     nvs_set_str(h, "s_inatk",  g_settings.inat_key);
     nvs_set_str(h, "s_iloc",   g_settings.inat_loc);

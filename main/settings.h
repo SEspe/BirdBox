@@ -114,6 +114,13 @@ typedef struct {
                                        inat_key + WiFi; default 0. Distinct from
                                        inat_periodic_enabled (the on-device iNat
                                        batch) */
+    uint8_t  ondevice_enabled;      /* 1 = the on-device model (nordic) is the
+                                       SECONDARY tier in the live cascade (iNat →
+                                       nordic → cloud); 0 = skip it, so events go
+                                       iNat → cloud only. The model stays on the
+                                       card and the manual 🔍 button still uses it;
+                                       this only removes it from AUTOMATIC live
+                                       classification (FSD §3.2.3). default 1 */
     char     inat_loc[24];          /* iNaturalist geo hint "lat,lng" from the
                                        capital-city dropdown (e.g. "59.91,10.75").
                                        Sent to score_image so the CV favours
