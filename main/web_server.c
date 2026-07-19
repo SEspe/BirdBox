@@ -254,6 +254,12 @@ static const char INDEX_HTML[] =
 "align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
 "border-radius:4px}"
+/* SD-write-failure banner: full-width red bar across the top of the live frame,
+ * unmissable — a wedged card silently drops captures (FSD v2.14). */
+".sdbadge{position:absolute;top:0;left:0;right:0;z-index:5;display:none;"
+"background:rgba(200,40,40,.96);color:#fff;font-size:.74rem;font-weight:700;"
+"text-align:center;padding:5px 8px;letter-spacing:.03em}"
+".sdbadge.on{display:block}"
 ".livemsg{position:absolute;inset:0;z-index:4;display:none;flex-direction:column;"
 "align-items:center;justify-content:center;gap:10px;text-align:center;padding:18px;"
 "background:rgba(10,20,14,.9);color:#dfe8e2;font-size:.95rem}"
@@ -381,6 +387,7 @@ static const char INDEX_HTML[] =
 "<div class='zone' id='zone'></div>"
 "<div class='motgrid' id='motgrid'></div>"
 "<div class='livesp' id='livesp'></div>"
+"<div class='sdbadge' id='sdbadge'>&#9888; SD WRITE FAILING &mdash; captures are not being saved</div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
 "<button class='act' onclick='snap()'>&#128247; Snapshot to SD</button>"
@@ -797,6 +804,7 @@ static const char INDEX_HTML[] =
 "var h='\\uD83D\\uDC26 '+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
 "if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;sp.classList.remove('pop');void sp.offsetWidth;sp.classList.add('pop');}"
 "sp.classList.add('on');}else{sp.classList.remove('on');sp.dataset.v='';}}"
+"var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
 "if(lw)lw.classList.toggle('det',!!s.motion);"
@@ -1441,7 +1449,8 @@ static const char INDEX_HTML[] =
 "drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
 "$g('dSd').innerHTML=d.sdPresent?"
 "drow('Card',d.sdCard)+drow('Size',d.sdTotalMB+' MB total, '+d.sdFreeMB+' MB free')+"
-"drow('Last write',d.sdWriteOk?'OK':'FAILED',d.sdWriteOk?'ok':'bad'):"
+"drow('Last write',d.sdWriteOk?'OK':'FAILED',d.sdWriteOk?'ok':'bad')+"
+"drow('Auto-recoveries',(d.sdRemounts||0)+(d.sdRemounts?' \\u2014 card may be wearing':''),(d.sdRemounts?'':'ok')):"
 "drow('Status','no SD card','bad');"
 "$g('dCam').innerHTML=d.camPresent?"
 "drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
@@ -3340,7 +3349,7 @@ static esp_err_t h_status(httpd_req_t *req)
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
-        "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
+        "\"sdPresent\":%s,\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,\"sdWriteOk\":%s,"
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
@@ -3352,6 +3361,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned long) g_wifi_disconnect_count,
         storage_sd_present() ? "true" : "false",
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
+        storage_last_write_ok() ? "true" : "false",
         tstr, tsrc,
         motion_active() ? "true" : "false",
         motion_detection_enabled() ? "true" : "false",
@@ -3454,7 +3464,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld,\"mac\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"apSsid\":\"%s\",\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
-        "\"sdWriteOk\":%s,"
+        "\"sdWriteOk\":%s,\"sdRemounts\":%lu,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
@@ -3475,6 +3485,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         storage_sd_present() ? "true" : "false", card,
         sd_total / (1024 * 1024), sd_free / (1024 * 1024),
         storage_last_write_ok() ? "true" : "false",
+        (unsigned long) storage_remount_count(),
         camera_available() ? "true" : "false", camera_get_pid(),
         camera_framesize_str(), g_settings.stream_quality,
         (unsigned long) camera_recovery_count(), camera_last_recovery_ago_s(),

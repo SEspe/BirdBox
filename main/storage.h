@@ -31,6 +31,12 @@ void storage_get_card_name(char *out, size_t out_len);
  * equivalent; true (no news is good news) until a write actually fails. */
 bool storage_last_write_ok(void);
 
+/* SD write-error auto-recovery counters (FSD v2.14): how many times a failed
+ * write was cleared by an automatic unmount+remount, and seconds since the last
+ * one (-1 = never). A climbing count is an early sign the card is wearing out. */
+uint32_t storage_remount_count(void);
+int      storage_last_remount_ago_s(void);
+
 /* Saves a JPEG under /sd/captures/<date>/<time>.jpg (SNTP-synced clock, or
  * an uptime-based name under /sd/captures/no-date/ before first sync).
  * On success writes the web path (e.g. "/captures/2026-07-06/183501.jpg")
