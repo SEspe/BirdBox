@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "classify.h"
 #include "cloud.h"
+#include "inat.h"
 #include "logo_data.h"   /* BIRD_LOGO: Dompap header logo (data URI) */
 #include "species_i18n.h"
 #include "target_species.h"
@@ -514,6 +515,24 @@ static const char INDEX_HTML[] =
 "<p class='sts' style='margin-top:2px'>Classifies each frame together with its mirror image and "
 "averages the result, giving the model a second look that lifts confidence on hard poses "
 "(head-on, backlit). Roughly doubles identification time per frame; saved photos are unaffected.</p>"
+"<h3 class='sh'>iNaturalist online ID (primary, free)</h3>"
+"<label class='wl'><input type='checkbox' id='stInatCv'> Identify new birds with iNaturalist first</label>"
+"<p class='sts' style='margin-top:2px'>Sends each new motion event to iNaturalist's <b>online</b> Computer "
+"Vision model (the one that powers the iNat app) &mdash; current, region-aware, and far stronger on Nordic "
+"birds than the on-device iNaturalist model. When on it becomes the <b>primary</b> classifier: the "
+"on-device model is the fallback, and Claude/Gemini (if configured) are the last resort. <b>It's free</b> "
+"(no per-call fee), which is why it runs first. A failed call drops to the on-device model, so nothing is "
+"ever lost.</p>"
+"<label class='wl'>iNaturalist API token (JWT)</label>"
+"<input class='wi' type='password' id='stIkey' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'><b>Note &mdash; iNaturalist has no permanent API key.</b> Log in at "
+"inaturalist.org, open <b>inaturalist.org/users/api_token</b>, and paste the token here. It <b>expires "
+"after ~24 hours</b>, so for now it needs re-pasting daily (an automatic refresh is a possible later add). "
+"Stored on the device, sent only to api.inaturalist.org, and left out of the settings export. Leave blank "
+"to keep the current token.</p>"
+"<button class='act' style='margin-left:0' id='stInatTest' onclick='inatTest()'>&#128268; Test token</button>"
+"<button class='act' style='display:none' id='stIkeyClr' onclick='ikeyClear()'>&#128465; Forget token</button>"
+"<div class='sts' id='stInatSts' style='margin-top:4px'></div>"
 "<h3 class='sh'>Cloud Identification (secondary classifier)</h3>"
 "<p class='sts' style='margin-top:2px'>When the on-device model can't identify a new motion event, "
 "send its best photo to a cloud vision model and use that answer (restricted to your 30 "
@@ -940,8 +959,8 @@ static const char INDEX_HTML[] =
 "var bttl=st===2?(esc(nm)+' \\u2013 confirmed'):st===4?(esc(nm||'no bird')+' \\u2013 no bird (confirmed)'):st===5?'other / not a bird \\u2013 hard negative':st===6?'unknown / bad bird \\u2013 excluded from training':st===1?(esc(nm)+pc+' \\u2013 classified'):st===3?(esc(nm)+pc+' \\u2013 no bird (model \\u2013 review)'):'unclassified';"
 "if(prop){bcl='gprop';btxt='\\u2248 '+esc(pnm);bttl=esc(pnm)+' \\u2013 same visit (inherited label, not independently classified)';}"
 "var sc=o.src||0;"   /* provenance: 1 nordic, 2 Claude, 3 iNat, 4 Gemini */
-"var snm=sc===1?'nordic model':sc===2?'Claude':sc===3?'iNat':sc===4?'Gemini':'';"
-"var slt=sc===1?'N':sc===2?'C':sc===3?'I':sc===4?'G':'';"
+"var snm=sc===1?'nordic model':sc===2?'Claude':sc===3?'iNat':sc===4?'Gemini':sc===5?'iNaturalist CV':'';"
+"var slt=sc===1?'N':sc===2?'C':sc===3?'I':sc===4?'G':sc===5?'V':'';"
 "var sbg=sc?(' <span style=\"opacity:.6;font-size:9px\" title=\"labelled by '+snm+'\">['+slt+']</span>'):'';"
 "var bdg='<div class=\"glabel '+bcl+'\" title=\"'+bttl+'\">'+btxt+sbg+'</div>';"
 "var cfb=st===1?('<button class=\"gidbtn gcfb\" title=\"confirm this species\" data-d=\"'+d+'\" data-f=\"'+esc(o.f)+'\" onclick=\"confirmSp(this)\">\\u2713</button>')"
@@ -1338,6 +1357,10 @@ static const char INDEX_HTML[] =
 "$g('stFshut').checked=c.fshut==1;"
 "$g('stTta').checked=c.tta==1;"
 "$g('stInat').checked=c.inat==1;$g('stInatv').value=c.inatv;"
+"$g('stInatCv').checked=c.inatcv==1;"
+"$g('stIkey').value='';"
+"$g('stIkey').placeholder=c.ikey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
+"$g('stIkeyClr').style.display=c.ikey_set?'':'none';"
 "$g('stCloud').value=c.cprov;"
 "$g('stCkey').value='';"
 "$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -1409,6 +1432,8 @@ static const char INDEX_HTML[] =
 "+'&fshut='+($g('stFshut').checked?1:0)"
 "+'&tta='+($g('stTta').checked?1:0)"
 "+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
+"+'&inatcv='+($g('stInatCv').checked?1:0)"
+"+($g('stIkey').value?'&ikey='+encodeURIComponent($g('stIkey').value):'')"
 "+'&cprov='+$g('stCloud').value"
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
 /* An empty key field means "keep the stored key" — the handler treats an
@@ -1424,6 +1449,8 @@ static const char INDEX_HTML[] =
 "$g('stCkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "if(o.ok&&$g('stGkey').value){$g('stGkey').value='';"
 "$g('stGkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
+"if(o.ok&&$g('stIkey').value){$g('stIkey').value='';"
+"$g('stIkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
 "if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
@@ -1449,6 +1476,21 @@ static const char INDEX_HTML[] =
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:cf+'=1'})"
 ".then(r=>r.json()).then(function(o){$g('stSts').textContent=o.ok?'Key forgotten \\u2713':'Failed';"
+"stLoad();setTimeout(function(){$g('stSts').textContent='';},4000);})"
+".catch(function(){$g('stSts').textContent='Failed';});}"
+/* iNaturalist: save any typed token first, then validate it against /users/me. */
+"function inatTest(){var s=$g('stInatSts');s.textContent='\\u2026 testing';"
+"var pre=$g('stIkey').value?fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'ikey='+encodeURIComponent($g('stIkey').value)}).then(function(){stLoad();}):Promise.resolve();"
+"pre.then(function(){return fetch('/api/inat-test');}).then(r=>r.json()).then(function(o){"
+"s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';})"
+".catch(function(){s.textContent='\\u2717 test failed';s.style.color='#e66';});}"
+"function ikeyClear(){if(!confirm('Forget the stored iNaturalist token? iNat primary "
+"identification stops until you paste a new one.'))return;"
+"fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ikeyclear=1'})"
+".then(r=>r.json()).then(function(o){$g('stSts').textContent=o.ok?'Token forgotten \\u2713':'Failed';"
 "stLoad();setTimeout(function(){$g('stSts').textContent='';},4000);})"
 ".catch(function(){$g('stSts').textContent='Failed';});}"
 "function cfgExport(){window.location='/api/settings/export';}"
@@ -2132,7 +2174,8 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         t->l[count].src = strcmp(source, "nordic") == 0 ? 1
                         : strcmp(source, "claude") == 0 ? 2
                         : strcmp(source, "inat")   == 0 ? 3
-                        : strcmp(source, "gemini") == 0 ? 4 : 0;
+                        : strcmp(source, "gemini") == 0 ? 4
+                        : strcmp(source, "inatcv") == 0 ? 5 : 0;
         count++;
     }
     if (count >= GAL_MAX_LABELS)
@@ -3107,7 +3150,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
-        "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\",\"models\":[",
+        "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
+        "\"inatcv\":%u,\"ikey_set\":%s,\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3131,7 +3175,9 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.cloud_provider,
         g_settings.claude_key[0] ? "true" : "false",
         g_settings.gemini_key[0] ? "true" : "false",
-        g_settings.gemini_model);   /* [a-z0-9.-] only (validated on save) — JSON-safe */
+        g_settings.gemini_model,   /* [a-z0-9.-] only (validated on save) — JSON-safe */
+        (unsigned) g_settings.inat_cv_enabled,
+        g_settings.inat_key[0] ? "true" : "false");
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -3170,11 +3216,20 @@ static esp_err_t h_settings_post(httpd_req_t *req)
 {
     /* Sized with headroom: a body that overruns this is silently truncated,
      * which drops whichever fields land past the cut with no error anywhere.
-     * A full save is ~330 B (~460 with the zone mask and a Claude key — those
-     * keys are ~108 chars, which is most of the difference). */
-    char body[896] = {0};
-    int  len = MIN(req->content_len, (int) sizeof(body) - 1);
-    httpd_req_recv(req, body, len);
+     * A full save is ~330 B (~460 with the zone mask and a Claude key ~108
+     * chars); an iNaturalist JWT (ikey) is ~300-800 chars and lands LAST, so the
+     * buffer must clear it comfortably. Read with a LOOP — a >1 KB body spans
+     * TCP segments and a single recv would grab only the first (the v1.89
+     * empty-fields/partial-read class of bug). */
+    char body[2048] = {0};
+    int  cap = MIN(req->content_len, (int) sizeof(body) - 1), len = 0;
+    while (len < cap) {
+        int r = httpd_req_recv(req, body + len, cap - len);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) break;
+        len += r;
+    }
+    body[len] = '\0';
 
     char mode[12], tz[48], region[32], ntp[64];
     form_field(body, "mode=",   mode,   sizeof(mode));
@@ -3277,6 +3332,24 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         if (ok) strlcpy(g_settings.gemini_model, gmdl, sizeof(g_settings.gemini_model));
     }
 
+    /* iNaturalist online CV — the PRIMARY tier (§3.2.3). Same present-only token
+     * handling as the cloud keys: an absent ikey keeps the stored JWT; an
+     * explicit ikeyclear=1 forgets it (and turns the tier off). The JWT is long
+     * (~300-800 chars), so extract it into a heap buffer, not the httpd stack. */
+    g_settings.inat_cv_enabled = field_num(body, "inatcv=", 0, 1, g_settings.inat_cv_enabled);
+    if (field_num(body, "ikeyclear=", 0, 1, 0) == 1) {
+        g_settings.inat_key[0] = '\0';
+        g_settings.inat_cv_enabled = 0;
+    } else {
+        char *ikey = malloc(sizeof(g_settings.inat_key) + 64);
+        if (ikey) {
+            form_field(body, "ikey=", ikey, sizeof(g_settings.inat_key) + 64);
+            if (ikey[0] && !strchr(ikey, '"') && !strchr(ikey, '\\'))
+                strlcpy(g_settings.inat_key, ikey, sizeof(g_settings.inat_key));
+            free(ikey);
+        }
+    }
+
     settings_save();
 
     /* Apply live — no reboot (FSD §5) */
@@ -3319,7 +3392,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s",
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
+        "&inatcv=%u",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3334,7 +3408,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.inat_periodic_enabled,
         (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
-        g_settings.gemini_model);
+        g_settings.gemini_model,
+        (unsigned) g_settings.inat_cv_enabled);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
@@ -3791,6 +3866,7 @@ typedef enum {
     IDENT_MODEL_FILE,    /* GET  /api/classify-file — inference on an SD JPEG */
     IDENT_CLOUD_FILE,    /* GET  /api/cloud-file    — cloud round-trip on an SD JPEG */
     IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
+    IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
 } ident_kind_t;
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
                                 cloud_provider_t provider,
@@ -3977,6 +4053,18 @@ static void ident_task(void *arg)
         httpd_resp_sendstr(req, buf);
         break;
     }
+
+    case IDENT_INAT_TEST: {
+        char verdict[288] = "";
+        esp_err_t err = inat_test(verdict, sizeof(verdict));
+        char msg[384], buf[440];
+        json_escape(msg, sizeof(msg), verdict);
+        snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
+                 err == ESP_OK ? "true" : "false", msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, buf);
+        break;
+    }
     }
 
     httpd_req_async_handler_complete(req);   /* release the socket */
@@ -4064,6 +4152,14 @@ static esp_err_t h_cloud_test(httpd_req_t *req)
         return ESP_OK;
     }
     return ident_dispatch(req, IDENT_CLOUD_TEST, p, NULL, NULL, NULL, 0);
+}
+
+/* GET /api/inat-test — validate the stored iNaturalist JWT against the free
+ * /v1/users/me endpoint (no CV call). A 401 means the ~24 h token expired. Runs
+ * in the identify worker so it doesn't hold the httpd task. */
+static esp_err_t h_inat_test(httpd_req_t *req)
+{
+    return ident_dispatch(req, IDENT_INAT_TEST, CLOUD_OFF, NULL, NULL, NULL, 0);
 }
 
 /* GET /api/cloud-file?date=<day>&f=<file> — identify one saved photo with the
@@ -4410,6 +4506,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
         { .uri = "/api/cloud-file", .method = HTTP_GET, .handler = h_cloud_file },
         { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
+        { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
