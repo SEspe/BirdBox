@@ -41,6 +41,8 @@ extern "C" {          /* C headers without their own __cplusplus guards */
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "jpeg_decoder.h"
+#include "esp_camera.h"       /* pixformat_t / PIXFORMAT_RGB888 */
+#include "img_converters.h"   /* fmt2jpg — re-encode the ROI crop for iNat */
 
 #if CONFIG_IDF_TARGET_ESP32S3
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -344,6 +346,29 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
     }
     free(rgb);
     return ESP_OK;
+}
+
+/* Produce a JPEG of the ROI-cropped frame for the online iNaturalist tier: its
+ * CV wants the bird to fill the frame (it's trained on subject-filling
+ * observation photos), so a whole feeder scene with a small/distant bird
+ * classifies poorly. Reuses decode_to_input (decode → square-expand ROI crop →
+ * CLS_INPUT_SIDE, rotated upright) and re-encodes with fmt2jpg. Caller frees
+ * *out_jpg. `roi` must be non-empty; returns false on any failure (the caller
+ * then falls back to sending the whole frame). */
+static bool classify_roi_crop_jpeg(const uint8_t *jpeg, size_t len, roi_t roi,
+                                   uint8_t **out_jpg, size_t *out_len)
+{
+    if (roi_is_empty(roi)) return false;
+    uint8_t *crop = (uint8_t *) heap_caps_malloc(
+        (size_t) CLS_INPUT_SIDE * CLS_INPUT_SIDE * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!crop) return false;
+    esp_err_t e = decode_to_input(jpeg, len, crop, g_settings.rotation, roi, false);
+    if (e != ESP_OK) { free(crop); return false; }
+    bool ok = fmt2jpg(crop, (size_t) CLS_INPUT_SIDE * CLS_INPUT_SIDE * 3,
+                      CLS_INPUT_SIDE, CLS_INPUT_SIDE, PIXFORMAT_RGB888, 90,
+                      out_jpg, out_len);
+    free(crop);
+    return ok;
 }
 
 /* ── Decision logic (§3.2): threshold + background guard ────────────────── */
@@ -661,20 +686,50 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
     return true;
 }
 
-/* iNaturalist online CV — the PRIMARY tier when enabled. Whole first frame goes
- * up (context is signal, same reasoning as the cloud tier). Returns true ONLY on
- * a confident bird species (non-empty latin); an unsure/low-score iNat result
- * yields empty latin and returns false, so the event falls through to the
- * on-device nordic model (which also owns the "no bird" call — iNat has no
- * reliable empty-frame detection). Returns false on any failure too, so a
- * network hiccup never drops the event. */
+/* iNaturalist online CV — the PRIMARY tier when enabled. Unlike the cloud LLM
+ * tiers, this sends the ROI CROP (the motion box, square-expanded so the bird
+ * fills the frame) when the event has one — iNat's CV is trained on
+ * subject-filling observation photos, so a whole feeder scene with a small
+ * bird classifies poorly (a Bokfink at the far side reads as background). No
+ * ROI, or a crop/read failure, falls back to the whole frame. Returns true ONLY
+ * on a confident bird species (non-empty latin); an unsure/low-score result
+ * yields empty latin → false, so the event falls through to the nordic model
+ * (which also owns the "no bird" call — iNat has no reliable empty-frame
+ * detection). Any failure returns false too, so a hiccup never drops the event. */
 static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win)
 {
     if (!inat_cv_enabled()) return false;
 
     char full[128];
     snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[0]);
-    if (inat_classify_file(full, out) != ESP_OK) {
+    roi_t roi = job->rois[0];
+
+    esp_err_t r = ESP_FAIL;
+    if (!roi_is_empty(roi)) {
+        FILE *f = fopen(full, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            uint8_t *buf = sz > 0 ? (uint8_t *) heap_caps_malloc(
+                sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+            size_t got = buf ? fread(buf, 1, sz, f) : 0;
+            fclose(f);
+            if (buf && got == (size_t) sz) {
+                uint8_t *jpg = NULL;
+                size_t   jlen = 0;
+                if (classify_roi_crop_jpeg(buf, sz, roi, &jpg, &jlen)) {
+                    r = inat_classify_jpeg(jpg, jlen, out);
+                    free(jpg);
+                }
+            }
+            free(buf);
+        }
+    }
+    if (r != ESP_OK)                       /* no ROI, or crop path failed */
+        r = inat_classify_file(full, out); /* → send the whole frame */
+
+    if (r != ESP_OK) {
         ESP_LOGW(TAG, "iNat CV failed (%s) — falling back to the on-device model",
                  inat_last_error());
         return false;
