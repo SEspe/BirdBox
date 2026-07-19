@@ -1542,7 +1542,8 @@ static const char INDEX_HTML[] =
 "drow('WiFi reconnects',d.wifiDisc)+"
 "drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'))+"
 "drow('HTTP sockets',(d.httpdSock==null||d.httpdSock<0?'n/a':d.httpdSock+' / '+d.httpdSockMax),"
-"(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'');"
+"(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'')"
+"+((d.inatCooldown>0)?drow('iNaturalist','rate-limited \\u2014 cooling down '+d.inatCooldown+'s','bad'):'');"
 "$g('dWifi').innerHTML="
 "drow('Network',d.apSsid||'\\u2014')+"
 "drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
@@ -3616,7 +3617,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,"
-        "\"httpdSock\":%d,\"httpdSockMax\":%d}",
+        "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -3640,7 +3641,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
         classify_model_name(), classify_label_count(), classify_region_matches(),
-        httpd_sock, HTTPD_MAX_SOCKETS);
+        httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;

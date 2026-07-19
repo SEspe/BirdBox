@@ -21,6 +21,8 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "inat";
 
@@ -37,6 +39,24 @@ static const char *TAG = "inat";
 static char     s_last_error[96] = "";
 static int32_t  s_last_ms       = -1;
 static uint32_t s_calls         = 0;
+
+/* Rate-limit handling (iNat: 100 req/min hard 429; ~60/min = 1 req/s
+ * recommended; 10 000/day). BirdBox naturally paces itself — events are
+ * classified serially and each call takes seconds — but a burst of manual
+ * identifies or a very busy feeder could still trip it. On a 429 we rest for
+ * INAT_COOLDOWN so we don't hammer a throttled endpoint (that just extends the
+ * ban), and a min gap keeps the steady rate under the recommended target. */
+#define INAT_COOLDOWN_US   (60 * 1000000LL)     /* rest 60 s after a 429       */
+#define INAT_MIN_GAP_US    (1100 * 1000LL)      /* ~1 req/s (recommended pace) */
+static int64_t  s_cooldown_until_us = 0;        /* skip iNat until this time   */
+static int64_t  s_last_req_us       = 0;        /* pacing: previous request    */
+
+/* Seconds of rate-limit cooldown remaining (0 = none). For the Debug card. */
+int inat_cooldown_s(void)
+{
+    int64_t now = esp_timer_get_time();
+    return s_cooldown_until_us > now ? (int) ((s_cooldown_until_us - now) / 1000000) + 1 : 0;
+}
 
 static void fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void fail(const char *fmt, ...)
@@ -96,6 +116,21 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         fail("bad or oversized JPEG (%u B)", (unsigned) len);
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* Rate-limit cooldown: if a recent 429 put us in the sin bin, skip the call
+     * entirely (don't hammer a throttled endpoint) — the event falls through to
+     * the next tier / Unidentified. */
+    int cd = inat_cooldown_s();
+    if (cd > 0) {
+        fail("iNaturalist rate-limit cooldown — %d s left", cd);
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Pace to the recommended ~1 req/s so a burst of events/manual identifies
+     * doesn't trip the 100/min hard 429 in the first place. */
+    int64_t gap = esp_timer_get_time() - s_last_req_us;
+    if (s_last_req_us && gap < INAT_MIN_GAP_US)
+        vTaskDelay(pdMS_TO_TICKS((INAT_MIN_GAP_US - gap) / 1000));
+    s_last_req_us = esp_timer_get_time();
 
     char *resp = heap_caps_malloc(INAT_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     char *auth = heap_caps_malloc(900, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -159,6 +194,13 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     resp[rd] = '\0';
 
     int status = esp_http_client_get_status_code(c);
+    if (status == 429) {
+        /* Too Many Requests — enter cooldown so subsequent events skip iNat
+         * instead of piling onto the throttle (which only extends it). */
+        s_cooldown_until_us = esp_timer_get_time() + INAT_COOLDOWN_US;
+        fail("iNaturalist rate limit (429) — cooling down 60 s (keep under ~60 req/min, 10k/day)");
+        goto done;
+    }
     if (status != 200) {
         /* 401 = token missing/expired (the 24 h JWT); error body is
          * {"error":"...","status":401}. Surface it for the Debug card. */
