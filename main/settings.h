@@ -114,6 +114,13 @@ typedef struct {
                                        inat_key + WiFi; default 0. Distinct from
                                        inat_periodic_enabled (the on-device iNat
                                        batch) */
+    char     inat_loc[24];          /* iNaturalist geo hint "lat,lng" from the
+                                       capital-city dropdown (e.g. "59.91,10.75").
+                                       Sent to score_image so the CV favours
+                                       locally-plausible species — without it iNat
+                                       runs vision-only and picks geographically
+                                       absurd taxa at low confidence. "" = no geo.
+                                       Validated to [0-9.,-] on save (§3.2.3) */
     char     inat_key[800];         /* iNaturalist API JWT (sent as "Bearer …").
                                        iNat JWTs EXPIRE ~24 h after issue, so this
                                        needs periodic refresh (grabbed from

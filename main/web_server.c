@@ -16,6 +16,7 @@
 #include "cloud.h"
 #include "inat.h"
 #include "logo_data.h"   /* BIRD_LOGO: Dompap header logo (data URI) */
+#include "cities_data.h" /* CITIES_JS: capital-city dropdown for the iNat geo hint */
 #include "species_i18n.h"
 #include "target_species.h"
 #include "board_config.h"
@@ -530,6 +531,11 @@ static const char INDEX_HTML[] =
 "after ~24 hours</b>, so for now it needs re-pasting daily (an automatic refresh is a possible later add). "
 "Stored on the device, sent only to api.inaturalist.org, and left out of the settings export. Leave blank "
 "to keep the current token.</p>"
+"<label class='wl'>Location (nearest capital)</label>"
+"<select class='wi' id='stLoc'></select>"
+"<p class='sts' style='margin-top:2px'>iNaturalist's model is <b>much</b> more accurate with a location "
+"&mdash; it favours species that actually occur near you. Pick the capital nearest your feeder. Without "
+"it, iNat runs vision-only and can suggest birds from the wrong continent at low confidence.</p>"
 "<button class='act' style='margin-left:0' id='stInatTest' onclick='inatTest()'>&#128268; Test token</button>"
 "<button class='act' style='display:none' id='stIkeyClr' onclick='ikeyClear()'>&#128465; Forget token</button>"
 "<div class='sts' id='stInatSts' style='margin-top:4px'></div>"
@@ -1347,7 +1353,12 @@ static const char INDEX_HTML[] =
 "function $g(i){return document.getElementById(i)}"
 "var g_savedRes=1;"
 "function stSensShow(){$g('stSensV').textContent=$g('stSens').value;}"
+"var g_cities=" CITIES_JS ";"
+"function fillCities(){var s=$g('stLoc');if(!s||s.options.length>1)return;"
+"s.innerHTML='<option value=\"\">(no location \\u2013 weaker iNat results)</option>'+"
+"g_cities.map(function(c){return '<option value=\"'+c[1]+'\">'+esc(c[0])+'</option>';}).join('');}"
 "function stLoad(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
+"fillCities();$g('stLoc').value=c.loc||'';"
 "(c.mode===1?$g('stFeed'):$g('stNest')).checked=true;"
 "$g('stSens').value=c.sens;stSensShow();"
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
@@ -1433,6 +1444,7 @@ static const char INDEX_HTML[] =
 "+'&tta='+($g('stTta').checked?1:0)"
 "+'&inat='+($g('stInat').checked?1:0)+'&inatv='+($g('stInatv').value||60)"
 "+'&inatcv='+($g('stInatCv').checked?1:0)"
+"+'&loc='+encodeURIComponent($g('stLoc').value)"
 "+($g('stIkey').value?'&ikey='+encodeURIComponent($g('stIkey').value):'')"
 "+'&cprov='+$g('stCloud').value"
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
@@ -3151,7 +3163,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
-        "\"inatcv\":%u,\"ikey_set\":%s,\"models\":[",
+        "\"inatcv\":%u,\"ikey_set\":%s,\"loc\":\"%s\",\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3177,7 +3189,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.gemini_key[0] ? "true" : "false",
         g_settings.gemini_model,   /* [a-z0-9.-] only (validated on save) — JSON-safe */
         (unsigned) g_settings.inat_cv_enabled,
-        g_settings.inat_key[0] ? "true" : "false");
+        g_settings.inat_key[0] ? "true" : "false",
+        g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
      * users swap regions by dropping a file on the card or POSTing to
@@ -3349,6 +3362,16 @@ static esp_err_t h_settings_post(httpd_req_t *req)
             free(ikey);
         }
     }
+    /* iNat geo hint "lat,lng" from the capital dropdown. Present-only. Validated
+     * to [0-9.,-] so it is safe in the multipart request and the JSON echo. */
+    if (has_field(body, "loc=")) {
+        char loc[24];
+        form_field(body, "loc=", loc, sizeof(loc));
+        bool ok = true;
+        for (char *p = loc; *p; p++)
+            if (!((*p >= '0' && *p <= '9') || *p == '.' || *p == ',' || *p == '-')) { ok = false; break; }
+        if (ok) strlcpy(g_settings.inat_loc, loc, sizeof(g_settings.inat_loc));
+    }
 
     settings_save();
 
@@ -3393,7 +3416,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
-        "&inatcv=%u",
+        "&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -3409,7 +3432,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.gemini_model,
-        (unsigned) g_settings.inat_cv_enabled);
+        (unsigned) g_settings.inat_cv_enabled,
+        g_settings.inat_loc);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
