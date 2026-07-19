@@ -672,20 +672,95 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
  * to the nordic model (which also owns the "no bird" call — iNat has no reliable
  * empty-frame detection). Any failure returns false too, so a hiccup never drops
  * the event. */
-static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win)
+/* iNaturalist tier over EVERY saved frame, with a corroboration guard (v2.26).
+ * Score all of the event's frames and require the winning species to be seconded
+ * by at least TWO frames: the model can be confidently wrong on one view (a bird
+ * half-out of frame, an off-pose blur) but rarely on two independent ones, so a
+ * lone-frame hit — the false-positive class the single-best path let through —
+ * is discarded. Among the species that clear that ">=2 frames agree" bar, the
+ * most confident wins ("best seconded species"), logged from its strongest frame.
+ * If none is seconded we DECLINE (return false): with the nordic tier off (iNat-
+ * sole-source) that lands the event on Unidentified — its own row, or cloud when
+ * enabled — i.e. the "else Unidentified" fallback; with nordic on it still gets a
+ * shot. Corroboration needs >=2 frames of evidence, so a 1-frame event can never
+ * clear it and always declines — acceptable given capture_count defaults to 5.
+ * iNat's ~1 req/s pacing and 429 cooldown live inside inat_classify_* (v2.25),
+ * so this per-frame loop self-throttles and a cooldown fails every frame cleanly
+ * (scored==0 → decline), never hammering a throttled endpoint. `scored_out` gets
+ * the winning species' vote count for the visit-log "N/M frame(s)" line. */
+static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
+                       int *scored_out)
 {
     if (!inat_cv_enabled()) return false;
 
-    char full[128];
-    snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[0]);
-    if (inat_classify_file(full, out) != ESP_OK) {
-        ESP_LOGW(TAG, "iNat CV failed (%s) — falling back to the on-device model",
-                 inat_last_error());
-        return false;
+    /* Per distinct species (latin binomial): how many frames voted for it, and
+     * the single most-confident frame's full result + ROI — what we'd log. Held
+     * in PSRAM: an inat_classify_file() call runs a TLS handshake deep on this
+     * task's stack, so the candidate table must not also sit on it. */
+    typedef struct { char latin[64]; int votes; uint8_t peak;
+                     classify_result_t res; roi_t roi; } inat_cand_t;
+    inat_cand_t *cand = (inat_cand_t *) heap_caps_malloc(
+        (size_t) job->path_count * sizeof(inat_cand_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!cand) {
+        /* OOM → degrade to the pre-v2.26 single-best-frame path (frame 0). */
+        char full[128];
+        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[0]);
+        if (inat_classify_file(full, out) != ESP_OK || out->latin[0] == '\0')
+            return false;
+        *win = job->rois[0];
+        if (scored_out) *scored_out = 1;
+        return true;
     }
-    if (out->latin[0] == '\0') return false;   /* unsure → let nordic try */
-    *win = job->rois[0];
-    return true;
+
+    int ncand = 0, scored = 0;
+    for (int i = 0; i < job->path_count; i++) {
+        char full[128];
+        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
+        classify_result_t r;
+        if (inat_classify_file(full, &r) != ESP_OK) {
+            ESP_LOGW(TAG, "iNat CV frame %d failed (%s)", i, inat_last_error());
+            continue;                       /* 429 cooldown fails all → scored 0 */
+        }
+        scored++;
+        if (r.latin[0] == '\0') continue;   /* unsure frame casts no vote */
+
+        int slot = -1;
+        for (int k = 0; k < ncand; k++)
+            if (strcmp(cand[k].latin, r.latin) == 0) { slot = k; break; }
+        if (slot < 0) {
+            slot = ncand++;
+            strlcpy(cand[slot].latin, r.latin, sizeof(cand[slot].latin));
+            cand[slot].votes = 0;
+            cand[slot].peak  = 0;
+        }
+        cand[slot].votes++;
+        if (r.confidence_pct >= cand[slot].peak) {   /* keep the strongest view */
+            cand[slot].peak = r.confidence_pct;
+            cand[slot].res  = r;
+            cand[slot].roi  = job->rois[i];
+        }
+    }
+
+    /* Winner = most-confident species seconded by >=2 frames. */
+    int win_k = -1;
+    for (int k = 0; k < ncand; k++)
+        if (cand[k].votes >= 2 && (win_k < 0 || cand[k].peak > cand[win_k].peak))
+            win_k = k;
+
+    bool have = win_k >= 0;
+    if (have) {
+        *out = cand[win_k].res;
+        *win = cand[win_k].roi;
+        if (scored_out) *scored_out = cand[win_k].votes;
+        ESP_LOGI(TAG, "iNat: %s seconded by %d/%d frame(s) (%u%%)",
+                 out->species, cand[win_k].votes, scored, out->confidence_pct);
+    } else {
+        ESP_LOGI(TAG, "iNat: no species seconded across %d/%d frame(s) → decline",
+                 scored, job->path_count);
+    }
+    free(cand);
+    return have;
 }
 
 /* ── Event task: aggregate frames, then write the visit-log row (async) ── */
@@ -701,8 +776,9 @@ static void classify_task(void *arg)
         const char *source = "";   /* engine that produced the label (§3.2.3) */
 
         /* Three-tier cascade (§3.2.3), cheapest-good-answer first:
-         *   1. iNaturalist online CV (PRIMARY, free) — when enabled. A confident
-         *      bird species wins outright; an unsure result falls through.
+         *   1. iNaturalist online CV (PRIMARY, free) — when enabled. Scores all
+         *      of the event's frames; a species seconded by >=2 frames wins
+         *      outright (v2.26). An unsure/uncorroborated result falls through.
          *   2. on-device nordic model (SECONDARY / offline fallback) — runs when
          *      iNat didn't confidently ID (disabled, unsure, or failed). Owns the
          *      "no bird" call. A confident species or "no bird" is kept as-is.
@@ -717,8 +793,9 @@ static void classify_task(void *arg)
         if (inat_cv_enabled()) {
             classify_result_t ir;
             roi_t iw = roi_none();
-            if (inat_event(&job, &ir, &iw)) {
-                best = ir; win = iw; scored = 1;
+            int   isc = 0;
+            if (inat_event(&job, &ir, &iw, &isc)) {
+                best = ir; win = iw; scored = isc;
                 have_best = true; source = "inatcv";
             }
         }
@@ -1394,9 +1471,10 @@ esp_err_t classify_init(void)
      * writes its "unclassified" row exactly as before, so the task simply
      * never receives a job.
      *
-     * 16 deep (~7.5 KB): a best-of-3 job runs ~13 s (3 x ~4 s inference)
-     * while a busy visit produces an event every ~5 s — at 2 deep most of
-     * those overflowed to the "unclassified" fallback row. Classification is
+     * 16 deep (~20 KB now the job carries all frames, not 3): a job scores
+     * every captured frame while a busy visit produces an event every ~5 s —
+     * at 2 deep most of those overflowed to the "unclassified" fallback row.
+     * Classification is
      * async and a minutes-deep backlog is acceptable (rows are timestamped
      * with the event time, not the write time), so buffer a whole busy visit
      * rather than dropping events. */
@@ -1449,11 +1527,12 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
     job.path_count = n;
     /* A full queue means every buffered slot is a real visit waiting for a
      * label — giving up here writes a permanent "unclassified" row for a
-     * moment of transient pressure. Wait for a slot instead: one in-flight
-     * best-of-3 job takes ~13 s, so 15 s spans it. This runs in the motion
-     * task after the event's frames are safely on SD; the cost of blocking
-     * is a longer cooldown, not lost images. Bounded so a wedged classifier
-     * can't stall capture forever. */
+     * moment of transient pressure. Wait up to 15 s for a slot instead — the
+     * 16-deep queue is the real buffer (a job now scores every frame and can
+     * run tens of seconds, so this wait no longer spans a whole job, only
+     * bridges brief contention). This runs in the motion task after the event's
+     * frames are safely on SD; the cost of blocking is a longer cooldown, not
+     * lost images. Bounded so a wedged classifier can't stall capture forever. */
     if (xQueueSend(s_jobq, &job, pdMS_TO_TICKS(15000)) != pdTRUE) {
         ESP_LOGW(TAG, "classify queue full for 15 s — event logged unclassified");
         return false;

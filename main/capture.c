@@ -13,9 +13,9 @@ static const char *TAG = "capture";
 static char     s_last_event[96] = "";
 static uint32_t s_event_count = 0;
 
-/* Web-relative paths ("/captures/DAY/NAME.jpg") of this event's first
- * CLASSIFY_BEST_OF_N saved frames, handed to the classifier for best-of-N
- * species ID (FSD §3.2). Only the motion task touches these. */
+/* Web-relative paths ("/captures/DAY/NAME.jpg") of this event's saved frames
+ * (up to CLASSIFY_BEST_OF_N = all of them), handed to the classifier for
+ * multi-frame species ID (FSD §3.2). Only the motion task touches these. */
 static char  s_frame_paths[CLASSIFY_BEST_OF_N][96];
 static roi_t s_frame_rois[CLASSIFY_BEST_OF_N];   /* per-frame zoom regions */
 static int   s_frame_n = 0;
@@ -30,10 +30,10 @@ esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
         s_frame_n = 0;
         if (err == ESP_OK) strlcpy(path_out, path, path_out_len);
     }
-    /* Remember the first few frames' paths (and each frame's motion ROI, so
-     * the zoom tracks a bird that moves between frames) so the classifier can
-     * score them and keep the best; extra frames are still saved, just not
-     * classified. */
+    /* Remember every frame's path (and its motion ROI, so the zoom tracks a
+     * bird that moves between frames) so the classifier can score them all and
+     * cross-check; only frames past the CLASSIFY_BEST_OF_N capacity (a
+     * capture_count above the max, which settings clamps out) are skipped. */
     if (err == ESP_OK && s_frame_n < CLASSIFY_BEST_OF_N) {
         s_frame_rois[s_frame_n] = roi;
         strlcpy(s_frame_paths[s_frame_n++], path, sizeof(s_frame_paths[0]));
@@ -77,8 +77,8 @@ void capture_event_finish(int frames, const char *first_path)
     else
         strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tm_now);
 
-    /* Hand the event's frames to the classifier, which scores up to
-     * CLASSIFY_BEST_OF_N of them, keeps the most confident real species, and
+    /* Hand the event's frames to the classifier, which scores all of them (up
+     * to CLASSIFY_BEST_OF_N), cross-checks to the corroborated species, and
      * writes the visit-log row when done (§3.2 — asynchronous, capture never
      * waits). On any failure fall back to the pre-§3.2 direct "unclassified"
      * row so no event is ever unlogged. */
