@@ -51,6 +51,10 @@ esp_err_t inat_classify_file(const char *fs_path, classify_result_t *out);
  * rejected/expired", ...). Returns ESP_OK only when the token works. */
 esp_err_t inat_test(char *out, size_t osz);
 
+/* Seconds of rate-limit (429) cooldown remaining, 0 = none. While > 0, live
+ * events skip iNat (fall through) instead of hammering the throttle. */
+int inat_cooldown_s(void);
+
 /* Debug-card data (FSD §5). */
 const char *inat_last_error(void);       /* "" when the last call succeeded */
 int32_t     inat_last_duration_ms(void); /* -1 = no call yet */
