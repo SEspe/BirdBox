@@ -972,7 +972,7 @@ static const char INDEX_HTML[] =
 "<div class=\"gmeta\"><span>'+o.f+'</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
-"<button class=\"gidbtn\" title=\"identify bird (on-device model)\" "
+"<button class=\"gidbtn\" title=\"identify bird (primary: iNaturalist if on, else on-device model)\" "
 "onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
 "<button class=\"gidbtn\" title=\"identify bird with the cloud classifier\" "
 "onclick=\"cldBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#10024;</button>'+cfb+'"
@@ -1041,7 +1041,7 @@ static const char INDEX_HTML[] =
 "e.preventDefault();markNoBird($g('day').value,it.dataset.f,it,null);}"
 /* Both identify buttons render identically — same reply shape, same
  * confirmed-badge flip on save — so they differ only by endpoint. */
-"function idBird(btn,d,f){idRun(btn,d,f,'/api/classify-file');}"
+"function idBird(btn,d,f){idRun(btn,d,f,'/api/id-primary');}"
 "function cldBird(btn,d,f){idRun(btn,d,f,'/api/cloud-file');}"
 "function idRun(btn,d,f,url){var it=btn.closest('.gitem');"
 "var out=it.querySelector('.gid');"
@@ -3867,6 +3867,7 @@ typedef enum {
     IDENT_CLOUD_FILE,    /* GET  /api/cloud-file    — cloud round-trip on an SD JPEG */
     IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
     IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
+    IDENT_INAT_FILE,     /* GET  /api/id-primary    — iNat CV round-trip on an SD JPEG */
 } ident_kind_t;
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
                                 cloud_provider_t provider,
@@ -4035,6 +4036,25 @@ static void ident_task(void *arg)
         } else {
             classify_send_json(req, &r,
                 idfile_save(j->date, j->file, &r, cloud_source_tag(j->provider)));
+        }
+        break;
+    }
+
+    case IDENT_INAT_FILE: {
+        char path[160];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
+                 j->date, j->file);
+        if (inat_classify_file(path, &r) != ESP_OK) {
+            char e[128], msg[96];
+            json_escape(msg, sizeof(msg), inat_last_error());
+            snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
+            httpd_resp_set_status(req, "502 Bad Gateway");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, e);
+        } else {
+            /* classify_send_json emits latin+common, so a confident iNat ID here
+             * also seeds the Gallery's 📋 copy-last (idRun, §3.4/v2.17). */
+            classify_send_json(req, &r, idfile_save(j->date, j->file, &r, "inatcv"));
         }
         break;
     }
@@ -4213,6 +4233,34 @@ static esp_err_t h_classify_file(httpd_req_t *req)
     char date[24] = {0}, file[80] = {0};
     if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+    return ident_dispatch(req, IDENT_MODEL_FILE, CLOUD_OFF, date, file, NULL, 0);
+}
+
+/* GET /api/id-primary?date=<day>&f=<file> — identify a saved photo with the
+ * PRIMARY classifier: iNaturalist online CV when enabled (Settings), else the
+ * on-device model. This is the Gallery's 🔍 button, so a manual "identify" uses
+ * the same engine that leads the live cascade. A confident result feeds the
+ * copy-last fast-path (classify_send_json emits latin+common → idRun). */
+static esp_err_t h_id_primary(httpd_req_t *req)
+{
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
+        return ESP_OK;
+    }
+    char date[24] = {0}, file[80] = {0};
+    if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+    if (inat_cv_enabled())
+        return ident_dispatch(req, IDENT_INAT_FILE, CLOUD_OFF, date, file, NULL, 0);
+    if (!classify_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req,
+            "{\"error\":\"no classifier (no model on SD, and iNaturalist off)\"}");
         return ESP_OK;
     }
     return ident_dispatch(req, IDENT_MODEL_FILE, CLOUD_OFF, date, file, NULL, 0);
@@ -4504,6 +4552,7 @@ esp_err_t web_server_start(void)
         { .uri = "/ota/from-url", .method = HTTP_GET,  .handler = h_ota_from_url_status },
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
+        { .uri = "/api/id-primary", .method = HTTP_GET, .handler = h_id_primary },
         { .uri = "/api/cloud-file", .method = HTTP_GET, .handler = h_cloud_file },
         { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
         { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
