@@ -78,6 +78,14 @@ const char *inat_last_error(void)       { return s_last_error; }
 int32_t     inat_last_duration_ms(void) { return s_last_ms; }
 uint32_t    inat_call_count(void)       { return s_calls; }
 
+/* A freshly-entered token clears any leftover 429 cooldown + stale error string,
+ * so it takes effect on the very next event with no reboot (§3.2.3). */
+void inat_token_changed(void)
+{
+    s_cooldown_until_us = 0;
+    s_last_error[0] = '\0';
+}
+
 /* Multipart parts around the raw JPEG. When a geo hint is set, lat+lng parts are
  * prepended (see build_preamble) — iNat's CV is far stronger with location. */
 #define MP_IMG \

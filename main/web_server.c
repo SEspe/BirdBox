@@ -3269,6 +3269,31 @@ static long field_num(const char *body, const char *key, long lo, long hi, long 
     return n < lo ? lo : n > hi ? hi : n;
 }
 
+/* Make a pasted iNaturalist token robust (v2.35). The operator copies it from
+ * inaturalist.org/users/api_token, which serves {"api_token":"eyJ..."} — so
+ * accept the whole JSON (pull the value out) as well as the bare token, and
+ * strip stray whitespace/quotes a copy-paste drags along. Without this a wrapped
+ * or padded token is silently rejected (the '"' guard) and looks like it "won't
+ * take". Operates in place; a bare JWT (base64url, no quotes) passes untouched. */
+static void sanitize_inat_token(char *t)
+{
+    char *j = strstr(t, "\"api_token\"");     /* the quoted JSON key only */
+    if (j) {
+        j += strlen("\"api_token\"");
+        while (*j && *j != ':') j++;
+        if (*j == ':') j++;
+        while (*j == ' ' || *j == '\t' || *j == '"') j++;
+        memmove(t, j, strlen(j) + 1);
+    }
+    size_t n = strlen(t);                      /* trim trailing junk */
+    while (n && (t[n-1] == '\n' || t[n-1] == '\r' || t[n-1] == ' ' ||
+                 t[n-1] == '\t' || t[n-1] == '"'  || t[n-1] == '}' || t[n-1] == ','))
+        t[--n] = '\0';
+    char *s = t;                               /* trim leading junk */
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == '"') s++;
+    if (s != t) memmove(t, s, strlen(s) + 1);
+}
+
 static esp_err_t h_settings_post(httpd_req_t *req)
 {
     /* Sized with headroom: a body that overruns this is silently truncated,
@@ -3402,8 +3427,11 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         char *ikey = malloc(sizeof(g_settings.inat_key) + 64);
         if (ikey) {
             form_field(body, "ikey=", ikey, sizeof(g_settings.inat_key) + 64);
-            if (ikey[0] && !strchr(ikey, '"') && !strchr(ikey, '\\'))
+            sanitize_inat_token(ikey);   /* accept the {"api_token":".."} JSON + strip paste junk */
+            if (ikey[0] && !strchr(ikey, '"') && !strchr(ikey, '\\')) {
                 strlcpy(g_settings.inat_key, ikey, sizeof(g_settings.inat_key));
+                inat_token_changed();    /* new token → clear stale cooldown, take effect now */
+            }
             free(ikey);
         }
     }
