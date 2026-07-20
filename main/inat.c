@@ -13,6 +13,7 @@
 #include "version.h"
 
 #include <string.h>
+#include <strings.h>   /* strcasecmp — Set-Cookie header match is case-insensitive */
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -32,6 +33,8 @@ static const char *TAG = "inat";
 #define INAT_CV_URL    "https://" INAT_API_HOST "/v1/computervision/score_image"
 #define INAT_ME_URL    "https://" INAT_API_HOST "/v1/users/me"
 #define INAT_TOKEN_URL "https://" INAT_WEB_HOST "/users/api_token"
+#define INAT_LOGIN_URL "https://" INAT_WEB_HOST "/login"
+#define INAT_SESS_URL  "https://" INAT_WEB_HOST "/session"
 #define INAT_UA        "BirdBox/" FIRMWARE_VERSION " (ESP32 nest-box camera)"
 #define INAT_BOUNDARY  "----BirdBoxCVb0undaryX9f2"
 
@@ -131,9 +134,14 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
      * call uses a valid token. One event may be lost at the moment of expiry (the
      * 401 that sets the flag), then it recovers on the next. Clear the flag either
      * way so a dead cookie can't refresh-loop every event. */
-    if ((s_jwt_stale || !inat_have_token()) && g_settings.inat_session[0]) {
+    if (s_jwt_stale || !inat_have_token()) {
         char rb[96];
-        inat_refresh_jwt(rb, sizeof(rb));
+        esp_err_t rr = ESP_ERR_INVALID_STATE;
+        if (g_settings.inat_session[0]) rr = inat_refresh_jwt(rb, sizeof(rb));
+        /* Cookie missing or itself expired — log in from scratch when credentials
+         * are stored, so even the weeks-long cookie self-heals (v2.43). */
+        if (rr != ESP_OK && g_settings.inat_user[0] && g_settings.inat_pass[0])
+            inat_login(rb, sizeof(rb));
         s_jwt_stale = false;
     }
     if (!inat_have_token()) { fail("no iNaturalist token"); return ESP_ERR_INVALID_STATE; }
@@ -463,6 +471,197 @@ esp_err_t inat_refresh_jwt(char *out, size_t osz)
         snprintf(out, osz, "HTTP %d fetching token from %s", status, INAT_WEB_HOST);
     }
     free(resp); free(ck);
+    if (rc != ESP_OK) snprintf(s_last_error, sizeof(s_last_error), "%s", out);
+    return rc;
+}
+
+/* ---------------------------------------------------------------- login ----
+ * Self-service login (v2.43). iNat has no permanent API key, and OAuth needs a
+ * registered app (weeks of approval), so the box does what a browser does:
+ *   1. GET  /login   — collect the pre-login _inaturalist_session cookie and the
+ *                      Rails CSRF token from the log-in form.
+ *   2. POST /session — that token + cookie + username/password; a 302 means
+ *                      accepted and carries the LOGGED-IN session cookie.
+ *   3. store that cookie, then reuse inat_refresh_jwt() to mint the 24 h JWT.
+ * So the stored password renews everything indefinitely — nothing to paste.
+ * Verified against the live site before implementing: the form posts to
+ * /session with utf8, authenticity_token, user[email], user[password],
+ * user[remember_me] and commit; a wrong password re-renders the form (200). */
+
+typedef struct { char *val; size_t sz; } cookie_sink_t;
+
+/* Pull _inaturalist_session out of any Set-Cookie header into the sink. */
+static esp_err_t cookie_evt(esp_http_client_event_t *evt)
+{
+    if (evt->event_id != HTTP_EVENT_ON_HEADER || !evt->user_data) return ESP_OK;
+    if (strcasecmp(evt->header_key, "Set-Cookie") != 0) return ESP_OK;
+    const char *p = strstr(evt->header_value, "_inaturalist_session=");
+    if (!p) return ESP_OK;
+    p += strlen("_inaturalist_session=");
+    size_t n = strcspn(p, ";");
+    cookie_sink_t *s = (cookie_sink_t *) evt->user_data;
+    if (n > 0 && n < s->sz) { memcpy(s->val, p, n); s->val[n] = '\0'; }
+    return ESP_OK;
+}
+
+/* percent-encode for application/x-www-form-urlencoded (the CSRF token is
+ * base64 and carries +/=, which would otherwise decode as a space). */
+static void url_esc(const char *in, char *out, size_t osz)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *) in; *p && o + 4 < osz; p++) {
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+            (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.' || *p == '~')
+            out[o++] = (char) *p;
+        else { out[o++] = '%'; out[o++] = hex[*p >> 4]; out[o++] = hex[*p & 15]; }
+    }
+    out[o] = '\0';
+}
+
+/* The login page carries several authenticity_token inputs (search box, the
+ * social-auth button_to forms). Prefer the one inside the log-in form. */
+static bool scrape_csrf(const char *html, char *out, size_t osz)
+{
+    static const char needle[] = "name=\"authenticity_token\" value=\"";
+    const char *base = strstr(html, "class=\"log-in\"");
+    const char *p = base ? strstr(base, needle) : NULL;
+    if (!p) p = strstr(html, needle);
+    if (!p) return false;
+    p += sizeof(needle) - 1;
+    size_t n = strcspn(p, "\"");
+    if (n == 0 || n >= osz) return false;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return true;
+}
+
+esp_err_t inat_login(char *out, size_t osz)
+{
+    if (!g_settings.inat_user[0] || !g_settings.inat_pass[0]) {
+        snprintf(out, osz, "no username/password stored");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char *page = heap_caps_malloc(INAT_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *body = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *csrf = heap_caps_malloc(256,  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *hdr  = heap_caps_malloc(256,  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char pre[192] = "", post[192] = "";
+    if (!page || !body || !csrf || !hdr) {
+        free(page); free(body); free(csrf); free(hdr);
+        snprintf(out, osz, "out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* --- 1. GET /login: pre-login cookie + CSRF token --------------------- */
+    cookie_sink_t sink = { .val = pre, .sz = sizeof(pre) };
+    esp_http_client_config_t gcfg = {
+        .url                   = INAT_LOGIN_URL,
+        .method                = HTTP_METHOD_GET,
+        .crt_bundle_attach     = esp_crt_bundle_attach,
+        .timeout_ms            = 15000,
+        .buffer_size           = 4096,
+        .buffer_size_tx        = 1024,
+        .event_handler         = cookie_evt,
+        .user_data             = &sink,
+        .disable_auto_redirect = true,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&gcfg);
+    if (!c) { free(page); free(body); free(csrf); free(hdr);
+              snprintf(out, osz, "http client init failed"); return ESP_FAIL; }
+    esp_http_client_set_header(c, "User-Agent", INAT_UA);
+    int status = 0, rd = 0;
+    esp_err_t ret = esp_http_client_open(c, 0);
+    if (ret == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int r;
+        while (rd < INAT_RESP_MAX - 1 &&
+               (r = esp_http_client_read(c, page + rd, INAT_RESP_MAX - 1 - rd)) > 0)
+            rd += r;
+        page[rd] = '\0';
+        status = esp_http_client_get_status_code(c);
+    }
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+
+    esp_err_t rc = ESP_FAIL;
+    if (ret != ESP_OK) {
+        snprintf(out, osz, "connection to %s failed: %s", INAT_WEB_HOST, esp_err_to_name(ret));
+        goto done;
+    }
+    if (status != 200) { snprintf(out, osz, "HTTP %d fetching the login page", status); goto done; }
+    if (!pre[0])       { snprintf(out, osz, "no session cookie offered by the login page"); goto done; }
+    if (!scrape_csrf(page, csrf, 256)) {
+        snprintf(out, osz, "no CSRF token in the login page — iNat changed the form");
+        goto done;
+    }
+
+    /* --- 2. POST /session: the actual login ------------------------------ */
+    {
+        char eu[192], ep[192], et[512];
+        url_esc(g_settings.inat_user, eu, sizeof(eu));
+        url_esc(g_settings.inat_pass, ep, sizeof(ep));
+        url_esc(csrf, et, sizeof(et));
+        snprintf(body, 1024,
+                 "utf8=%%E2%%9C%%93&authenticity_token=%s"
+                 "&user%%5Bemail%%5D=%s&user%%5Bpassword%%5D=%s"
+                 "&user%%5Bremember_me%%5D=1&commit=Log+In", et, eu, ep);
+        snprintf(hdr, 256, "_inaturalist_session=%s", pre);
+    }
+    sink.val = post; sink.sz = sizeof(post);
+    esp_http_client_config_t pcfg = {
+        .url                   = INAT_SESS_URL,
+        .method                = HTTP_METHOD_POST,
+        .crt_bundle_attach     = esp_crt_bundle_attach,
+        .timeout_ms            = 20000,
+        .buffer_size           = 4096,
+        .buffer_size_tx        = 2048,
+        .event_handler         = cookie_evt,
+        .user_data             = &sink,
+        .disable_auto_redirect = true,   /* the 302 IS the success signal */
+    };
+    c = esp_http_client_init(&pcfg);
+    if (!c) { snprintf(out, osz, "http client init failed"); goto done; }
+    esp_http_client_set_header(c, "User-Agent", INAT_UA);
+    esp_http_client_set_header(c, "Content-Type", "application/x-www-form-urlencoded");
+    esp_http_client_set_header(c, "Cookie", hdr);
+    esp_http_client_set_header(c, "Referer", INAT_LOGIN_URL);
+    status = 0;
+    size_t blen = strlen(body);
+    ret = esp_http_client_open(c, blen);
+    if (ret == ESP_OK) {
+        if (cu_write(c, body, blen)) {
+            esp_http_client_fetch_headers(c);
+            status = esp_http_client_get_status_code(c);
+        } else {
+            ret = ESP_FAIL;
+        }
+    }
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+
+    if (ret != ESP_OK) { snprintf(out, osz, "login POST failed: %s", esp_err_to_name(ret)); goto done; }
+    if (status == 200) {
+        /* Devise re-renders the form instead of redirecting = credentials refused. */
+        snprintf(out, osz, "iNaturalist rejected the username/password");
+        goto done;
+    }
+    if (status != 302 && status != 303) {
+        snprintf(out, osz, "unexpected HTTP %d from the login POST", status);
+        goto done;
+    }
+    if (!post[0]) { snprintf(out, osz, "logged in (HTTP %d) but no session cookie returned", status); goto done; }
+
+    /* --- 3. keep the cookie, then mint the JWT from it -------------------- */
+    strlcpy(g_settings.inat_session, post, sizeof(g_settings.inat_session));
+    settings_save();
+    ESP_LOGI(TAG, "logged in as %s — fresh session cookie stored", g_settings.inat_user);
+    rc = inat_refresh_jwt(out, osz);
+    if (rc == ESP_OK) snprintf(out, osz, "OK - logged in as %s, fresh 24h token", g_settings.inat_user);
+
+done:
+    free(page); free(body); free(csrf); free(hdr);
     if (rc != ESP_OK) snprintf(s_last_error, sizeof(s_last_error), "%s", out);
     return rc;
 }

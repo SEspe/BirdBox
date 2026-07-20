@@ -61,6 +61,13 @@ esp_err_t inat_test(char *out, size_t osz);
  * cookie lasts weeks). Writes a human verdict into `out`. ESP_OK on success. */
 esp_err_t inat_refresh_jwt(char *out, size_t osz);
 
+/* Log in with the stored username/password the way a browser does (GET /login →
+ * CSRF → POST /session), store the resulting _inaturalist_session cookie, then
+ * mint a JWT from it. This is the deepest self-heal: with credentials stored,
+ * neither the 24 h JWT nor the weeks-long cookie ever needs a manual paste.
+ * Writes a human verdict into `out`. ESP_OK only when a JWT was obtained. */
+esp_err_t inat_login(char *out, size_t osz);
+
 /* Seconds of rate-limit (429) cooldown remaining, 0 = none. While > 0, live
  * events skip iNat (fall through) instead of hammering the throttle. */
 int inat_cooldown_s(void);

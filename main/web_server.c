@@ -523,21 +523,16 @@ static const char INDEX_HTML[] =
 "Vision model (the one that powers the iNat app) &mdash; current and region-aware. It's the <b>primary</b> "
 "classifier; Claude/Gemini (if configured) are the fallback. <b>It's free</b> (no per-call fee). Needs a "
 "token or a session cookie (below).</p>"
-"<label class='wl'>iNaturalist API token (JWT)</label>"
-"<input class='wi' type='password' id='stIkey' autocomplete='off' placeholder='(not set)'>"
-"<p class='sts' style='margin-top:2px'><b>Note &mdash; iNaturalist has no permanent API key.</b> The token "
-"<b>expires after ~24 h</b>. Easiest is the <b>Session cookie</b> field below &mdash; the box then auto-"
-"refreshes the token for you. To set one manually, log in at inaturalist.org, open "
-"<b>inaturalist.org/users/api_token</b>, and paste it here (the whole "
-"<code>{&quot;api_token&quot;:&quot;...&quot;}</code> JSON is fine &mdash; the box extracts it). Stored on "
-"the device, left out of the settings export. Leave blank to keep the current token.</p>"
-"<label class='wl' style='margin-top:10px'>Session cookie (auto-refresh &mdash; skip the daily paste)</label>"
-"<input class='wi' type='password' id='stIsess' autocomplete='off' placeholder='(not set)'>"
-"<p class='sts' style='margin-top:2px'><b>Recommended.</b> Paste your <b>_inaturalist_session</b> cookie once "
-"and the box re-fetches a fresh 24&nbsp;h token by itself &mdash; no more daily pasting. Get it after logging "
-"in at inaturalist.org: browser DevTools &rarr; Application &rarr; Cookies &rarr; inaturalist.org &rarr; copy "
-"the <b>_inaturalist_session</b> value. It lasts weeks; re-paste only when it finally expires. A login secret "
-"&mdash; kept out of the export.</p>"
+"<label class='wl'>iNaturalist username</label>"
+"<input class='wi' type='text' id='stIuser' autocomplete='off' placeholder='(not set)'>"
+"<label class='wl'>Password</label>"
+"<input class='wi' type='password' id='stIpass' autocomplete='new-password' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'><b>Recommended &mdash; set this and you never paste anything again.</b> "
+"iNaturalist has no permanent API key: its tokens die after ~24&nbsp;h. With your login stored, the box signs "
+"in by itself (the way a browser does), mints its own session and keeps its token fresh indefinitely &mdash; "
+"press <b>Log in now</b> after saving to test it. <b>Security:</b> the password is stored on the device in "
+"plain text (a flash dump would reveal it) and is never shown back or exported; use the fallback fields below "
+"if you'd rather not store it.</p>"
 "<label class='wl'>Location (nearest capital)</label>"
 "<select class='wi' id='stLoc'></select>"
 "<p class='sts' style='margin-top:2px'>iNaturalist's model is <b>much</b> more accurate with a location "
@@ -545,8 +540,24 @@ static const char INDEX_HTML[] =
 "it, iNat runs vision-only and can suggest birds from the wrong continent at low confidence.</p>"
 "<button class='act' style='margin-left:0' id='stInatTest' onclick='inatTest()'>&#128268; Test token</button>"
 "<button class='act' style='margin-left:0' id='stInatRefresh' onclick='inatRefresh()'>&#128260; Refresh token now</button>"
+"<button class='act' style='margin-left:0' id='stInatLogin' onclick='inatLogin()'>&#128273; Log in now</button>"
 "<button class='act' style='display:none' id='stIkeyClr' onclick='ikeyClear()'>&#128465; Forget token</button>"
 "<div class='sts' id='stInatSts' style='margin-top:4px'></div>"
+"<p class='sts' style='margin-top:10px'><b>Advanced &mdash; manual fallback.</b> Only needed if the automatic "
+"login stops working (iNaturalist can change its login page at any time). Either field below gets "
+"identification running again without reflashing the box; both are kept out of the settings export.</p>"
+"<label class='wl'>Session cookie (mints tokens for weeks)</label>"
+"<input class='wi' type='password' id='stIsess' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'>Paste <b>_inaturalist_session</b> and the box re-fetches a fresh 24&nbsp;h "
+"token from it. Get it after logging in at inaturalist.org: DevTools &rarr; Application &rarr; Cookies &rarr; "
+"inaturalist.org &rarr; copy the value. Lasts weeks. This is also what the automatic login produces for "
+"itself.</p>"
+"<label class='wl'>iNaturalist API token (JWT, ~24 h)</label>"
+"<input class='wi' type='password' id='stIkey' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'>The shortest-lived option &mdash; a hand-pasted token stops working the "
+"next day. From <b>inaturalist.org/users/api_token</b>; the whole "
+"<code>{&quot;api_token&quot;:&quot;...&quot;}</code> JSON is fine, the box extracts it. Leave blank to keep "
+"the current token.</p>"
 "<h3 class='sh'>Cloud Identification (secondary classifier)</h3>"
 "<p class='sts' style='margin-top:2px'>When iNaturalist can't identify a new motion event, "
 "send its best photo to a cloud vision model and use that answer instead &mdash; iNaturalist stays "
@@ -1391,6 +1402,9 @@ static const char INDEX_HTML[] =
 "$g('stIkeyClr').style.display=c.ikey_set?'':'none';"
 "$g('stIsess').value='';"
 "$g('stIsess').placeholder=c.isess_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
+"$g('stIuser').value=c.iuser||'';"
+"$g('stIpass').value='';"
+"$g('stIpass').placeholder=c.ipass_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stCloud').value=c.cprov;"
 "$g('stCkey').value='';"
 "$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -1452,6 +1466,8 @@ static const char INDEX_HTML[] =
 "+'&inatcv='+($g('stInatCv').checked?1:0)"
 "+'&loc='+encodeURIComponent($g('stLoc').value)"
 "+($g('stIkey').value?'&ikey='+encodeURIComponent($g('stIkey').value):'')"
+"+'&iuser='+encodeURIComponent($g('stIuser').value)"
+"+($g('stIpass').value?'&ipass='+encodeURIComponent($g('stIpass').value):'')"
 "+'&cprov='+$g('stCloud').value"
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
 /* An empty key field means "keep the stored key" — the handler treats an
@@ -1513,6 +1529,16 @@ static const char INDEX_HTML[] =
 "pre.then(function(){return fetch('/api/inat-refresh',{method:'POST'});}).then(r=>r.json()).then(function(o){"
 "s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';stLoad();})"
 ".catch(function(){s.textContent='\\u2717 refresh failed';s.style.color='#e66';});}"
+/* Save any typed username/password first, then log in and mint a JWT (v2.43). */
+"function inatLogin(){var s=$g('stInatSts');s.textContent='\\u2026 logging in';"
+"var b=[];if($g('stIuser').value)b.push('iuser='+encodeURIComponent($g('stIuser').value));"
+"if($g('stIpass').value)b.push('ipass='+encodeURIComponent($g('stIpass').value));"
+"var pre=b.length?fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.join('&')}).then(function(){"
+"$g('stIpass').value='';$g('stIpass').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}):Promise.resolve();"
+"pre.then(function(){return fetch('/api/inat-login',{method:'POST'});}).then(r=>r.json()).then(function(o){"
+"s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';stLoad();})"
+".catch(function(){s.textContent='\\u2717 login failed';s.style.color='#e66';});}"
 "function ikeyClear(){if(!confirm('Forget the stored iNaturalist token? iNat primary "
 "identification stops until you paste a new one.'))return;"
 "fetch('/api/settings',{method:'POST',"
@@ -3195,7 +3221,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
-        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,\"loc\":\"%s\",\"models\":[",
+        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
+        "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\",\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3224,6 +3251,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_key[0] ? "true" : "false",
         g_settings.inat_session[0] ? "true" : "false",
+        g_settings.inat_user,   /* quote/backslash/control chars rejected on save — JSON-safe */
+        g_settings.inat_pass[0] ? "true" : "false",
         g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
@@ -3455,6 +3484,27 @@ static esp_err_t h_settings_post(httpd_req_t *req)
             if (isess[0] && !strchr(isess, '\r') && !strchr(isess, '\n'))
                 strlcpy(g_settings.inat_session, isess, sizeof(g_settings.inat_session));
             free(isess);
+        }
+    }
+    /* iNaturalist account credentials for the self-service login (v2.43). The
+     * username is echoed back in the settings GET, so reject anything that would
+     * break the JSON or an HTTP header; the password is write-only (never echoed,
+     * only an ipass_set flag). iuserclear=1 forgets both. */
+    if (field_num(body, "iuserclear=", 0, 1, 0) == 1) {
+        g_settings.inat_user[0] = '\0';
+        g_settings.inat_pass[0] = '\0';
+    } else {
+        if (has_field(body, "iuser=")) {
+            char u[64];
+            form_field(body, "iuser=", u, sizeof(u));
+            if (!strchr(u, '"') && !strchr(u, '\\') && !strchr(u, '\r') && !strchr(u, '\n'))
+                strlcpy(g_settings.inat_user, u, sizeof(g_settings.inat_user));
+        }
+        if (has_field(body, "ipass=")) {
+            char p[64];
+            form_field(body, "ipass=", p, sizeof(p));
+            if (p[0] && !strchr(p, '\r') && !strchr(p, '\n'))
+                strlcpy(g_settings.inat_pass, p, sizeof(g_settings.inat_pass));
         }
     }
     /* iNat geo hint "lat,lng" from the capital dropdown. Present-only. Validated
@@ -3992,6 +4042,7 @@ typedef enum {
     IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
     IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
     IDENT_INAT_REFRESH,  /* POST /api/inat-refresh  — mint a fresh JWT from the session cookie */
+    IDENT_INAT_LOGIN,    /* POST /api/inat-login    — log in with username/password, then mint a JWT */
     IDENT_INAT_FILE,     /* GET  /api/id-primary    — iNat CV round-trip on an SD JPEG */
     IDENT_INAT_FILE_DBG, /* GET  /api/id-frame-debug — iNat CV round-trip, READ-ONLY (never saves) */
     IDENT_INAT_FILE_DBG_CROP, /* GET /api/id-frame-debug?crop=1 — same, but on a native-res ROI crop */
@@ -4312,6 +4363,18 @@ static void ident_task(void *arg)
         break;
     }
 
+    case IDENT_INAT_LOGIN: {
+        char verdict[224] = "";
+        esp_err_t err = inat_login(verdict, sizeof(verdict));
+        char msg[288], buf[352];
+        json_escape(msg, sizeof(msg), verdict);
+        snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
+                 err == ESP_OK ? "true" : "false", msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, buf);
+        break;
+    }
+
     case IDENT_INAT_REFRESH: {
         char verdict[224] = "";
         esp_err_t err = inat_refresh_jwt(verdict, sizeof(verdict));
@@ -4426,6 +4489,14 @@ static esp_err_t h_inat_test(httpd_req_t *req)
 static esp_err_t h_inat_refresh(httpd_req_t *req)
 {
     return ident_dispatch(req, IDENT_INAT_REFRESH, CLOUD_OFF, NULL, NULL, NULL, 0);
+}
+
+/* POST /api/inat-login — log in with the stored username/password and mint a JWT
+ * (v2.43). Two round-trips to inaturalist.org, so it goes to the identify worker
+ * like the refresh above. Credentials come from Settings, never from this body. */
+static esp_err_t h_inat_login(httpd_req_t *req)
+{
+    return ident_dispatch(req, IDENT_INAT_LOGIN, CLOUD_OFF, NULL, NULL, NULL, 0);
 }
 
 /* GET /api/cloud-file?date=<day>&f=<file> — identify one saved photo with the
@@ -4834,6 +4905,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
         { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
         { .uri = "/api/inat-refresh", .method = HTTP_POST, .handler = h_inat_refresh },
+        { .uri = "/api/inat-login",   .method = HTTP_POST, .handler = h_inat_login   },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };

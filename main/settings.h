@@ -140,6 +140,18 @@ typedef struct {
                                        re-fetches a fresh JWT from /users/api_token
                                        with it — no daily re-paste. A login secret,
                                        omitted from the export. Paste once. */
+    char     inat_user[64];         /* iNaturalist username (or email) for the
+                                       self-service login (v2.43): the box logs in
+                                       like a browser (GET /login → CSRF → POST
+                                       /session) to mint its OWN session cookie, so
+                                       even the weeks-long cookie never needs
+                                       re-pasting. "" = feature off. */
+    char     inat_pass[64];         /* iNaturalist account password. A full account
+                                       credential — write-only in the settings API
+                                       (present-only flag in GET) and omitted from
+                                       the export, but stored PLAINTEXT in NVS: a
+                                       flash dump reveals it. Only set it if that
+                                       trade is acceptable (§3.2.3). */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x
