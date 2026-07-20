@@ -3927,6 +3927,7 @@ typedef enum {
     IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
     IDENT_INAT_FILE,     /* GET  /api/id-primary    — iNat CV round-trip on an SD JPEG */
     IDENT_INAT_FILE_DBG, /* GET  /api/id-frame-debug — iNat CV round-trip, READ-ONLY (never saves) */
+    IDENT_INAT_FILE_DBG_CROP, /* GET /api/id-frame-debug?crop=1 — same, but on a native-res ROI crop */
 } ident_kind_t;
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
                                 cloud_provider_t provider,
@@ -3992,6 +3993,34 @@ static bool idfile_params(httpd_req_t *req, char *date, size_t dsz,
     return date[0] && file[0] &&
            !strstr(date, "..") && !strchr(date, '/') && !strchr(date, '\\') &&
            !strstr(file, "..") && !strchr(file, '/') && !strchr(file, '\\');
+}
+
+/* Look up a saved frame's motion box from the per-day frame-ROI sidecar
+ * (/log/frameroi-DATE.csv, "file,x0-y0-x1-y1" per line, §3.4). Used by the crop
+ * debug path to centre the crop on the real detection box. False if not found. */
+static bool frame_roi_lookup(const char *date, const char *file, roi_t *out)
+{
+    char path[80];
+    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/frameroi-%.10s.csv", date);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char line[128];
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        char *comma = strchr(line, ',');
+        if (!comma) continue;
+        *comma = '\0';
+        if (strcmp(line, file) == 0) {
+            float a, b, c, d;
+            if (sscanf(comma + 1, "%f-%f-%f-%f", &a, &b, &c, &d) == 4) {
+                out->x0 = a; out->y0 = b; out->x1 = c; out->y1 = d;
+                found = !roi_is_empty(*out);
+            }
+            break;
+        }
+    }
+    fclose(f);
+    return found;
 }
 
 /* Persist an identify result as the row's confirmed label (§3.4/v1.58), the
@@ -4128,6 +4157,55 @@ static void ident_task(void *arg)
         snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
                  j->date, j->file);
         if (inat_classify_file(path, &r) != ESP_OK) {
+            char e[128], msg[96];
+            json_escape(msg, sizeof(msg), inat_last_error());
+            snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
+            httpd_resp_set_status(req, "502 Bad Gateway");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, e);
+        } else {
+            classify_send_json(req, &r, false);   /* read-only: never saved */
+        }
+        break;
+    }
+
+    case IDENT_INAT_FILE_DBG_CROP: {
+        /* Read-only A/B (v2.30): re-score iNat on a native-res crop centred on the
+         * frame's logged motion box, to test whether a subject-filling crop beats
+         * the whole frame on small/off-centre birds. Never saves. */
+        roi_t roi;
+        if (!frame_roi_lookup(j->date, j->file, &roi)) {
+            httpd_resp_set_status(req, "404 Not Found");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, "{\"error\":\"no ROI logged for this frame\"}");
+            break;
+        }
+        char path[160];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
+                 j->date, j->file);
+        FILE *f = fopen(path, "rb");
+        long sz = 0;
+        if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET); }
+        if (!f) { httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found"); break; }
+        uint8_t *buf = (sz > 0 && sz <= CLASSIFY_MAX_BODY)
+                     ? heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+        size_t rd = buf ? fread(buf, 1, sz, f) : 0;
+        fclose(f);
+        if (!buf || rd != (size_t) sz) {
+            free(buf);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+            break;
+        }
+        uint8_t *cj = NULL; size_t cl = 0;
+        esp_err_t ce = classify_crop_jpeg(buf, sz, roi, &cj, &cl);
+        free(buf);
+        if (ce != ESP_OK || !cj) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "crop failed");
+            break;
+        }
+        esp_err_t ie = inat_classify_jpeg(cj, cl, &r);
+        free(cj);
+        if (ie != ESP_OK) {
             char e[128], msg[96];
             json_escape(msg, sizeof(msg), inat_last_error());
             snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
@@ -4370,7 +4448,11 @@ static esp_err_t h_id_frame_debug(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-    return ident_dispatch(req, IDENT_INAT_FILE_DBG, CLOUD_OFF, date, file, NULL, 0);
+    char q[160] = {0}, crop[4] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "crop", crop, sizeof(crop));
+    ident_kind_t kind = (crop[0] == '1') ? IDENT_INAT_FILE_DBG_CROP : IDENT_INAT_FILE_DBG;
+    return ident_dispatch(req, kind, CLOUD_OFF, date, file, NULL, 0);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model

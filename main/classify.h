@@ -73,6 +73,13 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
 esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len,
                             classify_result_t *out);
 
+/* Decode `jpeg`, crop a square centred on `roi` (padded ~1.4x) at native decode
+ * resolution and re-encode JPEG into *out_jpg (caller frees). For feeding the
+ * online iNat tier a subject-filling, still-sharp crop of a small/off-centre
+ * bird. Returns ESP_ERR_INVALID_ARG for an empty ROI. (v2.30) */
+esp_err_t classify_crop_jpeg(const uint8_t *jpeg, size_t len, roi_t roi,
+                             uint8_t **out_jpg, size_t *out_len);
+
 /* Re-check one day (FSD §3.4): re-runs species ID over every visit-log row
  * of `date` ("YYYY-MM-DD") with the current model/settings, rewriting each
  * row in place as it completes (timestamp/frames/first_frame are preserved;

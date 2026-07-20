@@ -41,6 +41,7 @@ extern "C" {          /* C headers without their own __cplusplus guards */
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "jpeg_decoder.h"
+#include "img_converters.h"   /* fmt2jpg — re-encode a native-res ROI crop for iNat */
 
 #if CONFIG_IDF_TARGET_ESP32S3
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -346,6 +347,71 @@ static esp_err_t decode_to_input(const uint8_t *jpeg, size_t len, uint8_t *dst22
     }
     free(rgb);
     return ESP_OK;
+}
+
+/* Crop a square centred on `roi` (expanded ~1.4x for context) at the NATIVE
+ * decode resolution — NOT the 224² model input — and re-encode as JPEG. For the
+ * online iNat tier: a small/off-centre bird then FILLS the frame while staying
+ * sharp, unlike the reverted v2.22 crop that downscaled to 224² and measured
+ * worse. Decode is capped at CLS_DECODE_MAX (so HD halves to 640x360), which
+ * bounds the crop's absolute pixels. Rotation is not applied (saved frames are
+ * in native camera orientation). Caller frees *out_jpg. (v2.30, test path.) */
+esp_err_t classify_crop_jpeg(const uint8_t *jpeg, size_t len, roi_t roi,
+                             uint8_t **out_jpg, size_t *out_len)
+{
+    if (roi_is_empty(roi) || !out_jpg || !out_len) return ESP_ERR_INVALID_ARG;
+
+    esp_jpeg_image_cfg_t cfg = {};
+    cfg.indata = (uint8_t *) jpeg; cfg.indata_size = len;
+    cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
+    esp_jpeg_image_output_t info = {};
+    if (esp_jpeg_get_image_info(&cfg, &info) != ESP_OK || !info.width || !info.height)
+        return ESP_FAIL;
+
+    int scale = 0, w = info.width, h = info.height;
+    while (scale < 3 && (size_t) w * h * 3 > CLS_DECODE_MAX) { w >>= 1; h >>= 1; scale++; }
+    if ((size_t) w * h * 3 > CLS_DECODE_MAX) return ESP_ERR_NO_MEM;
+
+    size_t   rgb_sz = (size_t) w * h * 3 + 16;
+    uint8_t *rgb = (uint8_t *) heap_caps_malloc(rgb_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb) return ESP_ERR_NO_MEM;
+    cfg.outbuf = rgb; cfg.outbuf_size = rgb_sz; cfg.out_scale = (esp_jpeg_image_scale_t) scale;
+    esp_jpeg_image_output_t out = {};
+    if (esp_jpeg_decode(&cfg, &out) != ESP_OK) { free(rgb); return ESP_FAIL; }
+    w = out.width; h = out.height;
+
+    int rx0 = (int) (roi.x0 * w + 0.5f), ry0 = (int) (roi.y0 * h + 0.5f);
+    int rw  = (int) ((roi.x1 - roi.x0) * w + 0.5f);
+    int rh  = (int) ((roi.y1 - roi.y0) * h + 0.5f);
+    if (rx0 < 0) rx0 = 0;
+    if (ry0 < 0) ry0 = 0;
+    if (rw < 1)  rw = 1;
+    if (rh < 1)  rh = 1;
+    int side = (rw > rh ? rw : rh);
+    side = (int) (side * 1.4f);            /* pad the box with context */
+    int fmin = (w < h ? w : h);
+    if (side > fmin) side = fmin;
+    int x0 = rx0 + rw / 2 - side / 2, y0 = ry0 + rh / 2 - side / 2;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x0 + side > w) x0 = w - side;
+    if (y0 + side > h) y0 = h - side;
+
+    uint8_t *crop = (uint8_t *) heap_caps_malloc((size_t) side * side * 3,
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!crop) { free(rgb); return ESP_ERR_NO_MEM; }
+    for (int y = 0; y < side; y++)
+        memcpy(crop + (size_t) y * side * 3,
+               rgb + ((size_t) (y0 + y) * w + x0) * 3, (size_t) side * 3);
+    free(rgb);
+
+    bool ok = fmt2jpg(crop, (size_t) side * side * 3, side, side,
+                      PIXFORMAT_RGB888, 90, out_jpg, out_len);
+    free(crop);
+    ESP_LOGI(TAG, "crop %dx%d from roi [%.2f,%.2f]-[%.2f,%.2f] -> %s (%u B)",
+             side, side, roi.x0, roi.y0, roi.x1, roi.y1,
+             ok ? "ok" : "encode-failed", ok ? (unsigned) *out_len : 0);
+    return ok ? ESP_OK : ESP_FAIL;
 }
 
 /* ── Decision logic (§3.2): threshold + background guard ────────────────── */
