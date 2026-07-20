@@ -59,7 +59,10 @@ static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classifica
  * 3 MB (full-res decode → bigger crop) on the theory that more pixels help iNat;
  * MEASURED to NOT help — iNat's score_image resizes every upload to ~299² anyway,
  * so a 360² crop already saturates its input, and the larger crop only forced a
- * lower JPEG quality (and iNat 500s on a big high-quality crop). Don't re-raise. */
+ * so a 360² crop already saturates its input, and the larger crop only forced a
+ * lower JPEG quality (and iNat 500s on a big high-quality crop). Re-tested 0.74.4
+ * on a small corner-bird box: full-res bumped it 4→7% but still Unidentified/wrong
+ * species — no useful gain. Don't re-raise. */
 #define CLS_DECODE_MAX   (1536 * 1024)
 
 typedef struct {
