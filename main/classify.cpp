@@ -47,10 +47,20 @@ static char             s_last_latin[64] = "";
 static uint8_t          s_last_conf = 0;      /* confidence % of the last event */
 static volatile bool    s_last_event_ided = false; /* did the MOST RECENT event get a real
                                                        species? gates the live badge (v2.29) */
+static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classification RESULT
+                                             lands (v2.40). The live-view "Current" badge keys
+                                             on this, not the capture-time event count — the
+                                             result arrives seconds after capture. */
 
 #if CONFIG_IDF_TARGET_ESP32S3
 
-#define CLS_DECODE_MAX   (1536 * 1024)   /* cap on the RGB888 decode buffer (crop) */
+/* RGB888 decode cap for the ROI crop (classify_crop_jpeg). Kept at 1.5 MB so an
+ * HD frame halves to 640x360 for the crop. A v2.39 experiment lifted this to
+ * 3 MB (full-res decode → bigger crop) on the theory that more pixels help iNat;
+ * MEASURED to NOT help — iNat's score_image resizes every upload to ~299² anyway,
+ * so a 360² crop already saturates its input, and the larger crop only forced a
+ * lower JPEG quality (and iNat 500s on a big high-quality crop). Don't re-raise. */
+#define CLS_DECODE_MAX   (1536 * 1024)
 
 typedef struct {
     char     ts[24];
@@ -473,6 +483,7 @@ static void classify_task(void *arg)
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
+        s_cls_seq = s_cls_seq + 1;   /* result landed — wakes the "Current" badge (v2.40) */
     }
 }
 
@@ -885,6 +896,7 @@ const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
+uint32_t    classify_result_seq(void)       { return s_cls_seq; }
 
 /* The relabel picker's vocabulary is now the curated Norway target-species list
  * (target_species.h) — there's no model label file any more (v2.36). Returns
