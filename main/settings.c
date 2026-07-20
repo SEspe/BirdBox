@@ -107,6 +107,8 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_inatcv", &u8) == ESP_OK) g_settings.inat_cv_enabled = u8;
     l = sizeof(g_settings.inat_key);
     nvs_get_str(h, "s_inatk", g_settings.inat_key, &l);
+    l = sizeof(g_settings.inat_session);
+    nvs_get_str(h, "s_inatses", g_settings.inat_session, &l);
     l = sizeof(g_settings.inat_loc);
     nvs_get_str(h, "s_iloc", g_settings.inat_loc, &l);
     if (nvs_get_u8 (h, "s_inat", &u8)  == ESP_OK) g_settings.inat_periodic_enabled = u8;
@@ -157,6 +159,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_ondev",  g_settings.ondevice_enabled);
     nvs_set_u8 (h, "s_inatcv", g_settings.inat_cv_enabled);
     nvs_set_str(h, "s_inatk",  g_settings.inat_key);
+    nvs_set_str(h, "s_inatses", g_settings.inat_session);
     nvs_set_str(h, "s_iloc",   g_settings.inat_loc);
     nvs_set_u8 (h, "s_inat",  g_settings.inat_periodic_enabled);
     nvs_set_u16(h, "s_inatv", g_settings.inat_periodic_interval_min);

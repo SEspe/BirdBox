@@ -133,7 +133,13 @@ typedef struct {
                                        needs periodic refresh (grabbed from
                                        inaturalist.org/users/api_token). A billable-
                                        grade secret — omitted from the settings
-                                       export (§5). Sized for a long JWT */
+                                       export (§5). Sized for a long JWT.
+                                       Auto-refreshed from inat_session (v2.36). */
+    char     inat_session[1024];    /* _inaturalist_session browser cookie (§3.2.3).
+                                       Lasts weeks (vs the 24 h JWT), so the device
+                                       re-fetches a fresh JWT from /users/api_token
+                                       with it — no daily re-paste. A login secret,
+                                       omitted from the export. Paste once. */
     uint8_t  tta;                   /* 1 = test-time augmentation: classify each
                                        frame plus its horizontal mirror and
                                        average the scores (FSD §3.2/v1.55) at ~2x

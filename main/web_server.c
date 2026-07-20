@@ -539,13 +539,22 @@ static const char INDEX_HTML[] =
 "inaturalist.org, open <b>inaturalist.org/users/api_token</b>, and paste the token here. It <b>expires "
 "after ~24 hours</b>, so for now it needs re-pasting daily (an automatic refresh is a possible later add). "
 "Stored on the device, sent only to api.inaturalist.org, and left out of the settings export. Leave blank "
-"to keep the current token.</p>"
+"to keep the current token. <b>Or paste the whole <code>{&quot;api_token&quot;:&quot;...&quot;}</code> JSON "
+"&mdash; the box extracts the token itself.</b></p>"
+"<label class='wl' style='margin-top:10px'>Session cookie (auto-refresh &mdash; skip the daily paste)</label>"
+"<input class='wi' type='password' id='stIsess' autocomplete='off' placeholder='(not set)'>"
+"<p class='sts' style='margin-top:2px'><b>Recommended.</b> Paste your <b>_inaturalist_session</b> cookie once "
+"and the box re-fetches a fresh 24&nbsp;h token by itself &mdash; no more daily pasting. Get it after logging "
+"in at inaturalist.org: browser DevTools &rarr; Application &rarr; Cookies &rarr; inaturalist.org &rarr; copy "
+"the <b>_inaturalist_session</b> value. It lasts weeks; re-paste only when it finally expires. A login secret "
+"&mdash; kept out of the export.</p>"
 "<label class='wl'>Location (nearest capital)</label>"
 "<select class='wi' id='stLoc'></select>"
 "<p class='sts' style='margin-top:2px'>iNaturalist's model is <b>much</b> more accurate with a location "
 "&mdash; it favours species that actually occur near you. Pick the capital nearest your feeder. Without "
 "it, iNat runs vision-only and can suggest birds from the wrong continent at low confidence.</p>"
 "<button class='act' style='margin-left:0' id='stInatTest' onclick='inatTest()'>&#128268; Test token</button>"
+"<button class='act' style='margin-left:0' id='stInatRefresh' onclick='inatRefresh()'>&#128260; Refresh token now</button>"
 "<button class='act' style='display:none' id='stIkeyClr' onclick='ikeyClear()'>&#128465; Forget token</button>"
 "<div class='sts' id='stInatSts' style='margin-top:4px'></div>"
 "<label class='wl' style='margin-top:12px'><input type='checkbox' id='stOndev'> Use the on-device model (nordic) as a fallback</label>"
@@ -1397,6 +1406,8 @@ static const char INDEX_HTML[] =
 "$g('stIkey').value='';"
 "$g('stIkey').placeholder=c.ikey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stIkeyClr').style.display=c.ikey_set?'':'none';"
+"$g('stIsess').value='';"
+"$g('stIsess').placeholder=c.isess_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stCloud').value=c.cprov;"
 "$g('stCkey').value='';"
 "$g('stCkey').placeholder=c.ckey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -1524,6 +1535,15 @@ static const char INDEX_HTML[] =
 "pre.then(function(){return fetch('/api/inat-test');}).then(r=>r.json()).then(function(o){"
 "s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';})"
 ".catch(function(){s.textContent='\\u2717 test failed';s.style.color='#e66';});}"
+/* Save any typed session cookie first, then mint a fresh JWT from it. */
+"function inatRefresh(){var s=$g('stInatSts');s.textContent='\\u2026 refreshing token';"
+"var pre=$g('stIsess').value?fetch('/api/settings',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'isess='+encodeURIComponent($g('stIsess').value)}).then(function(){"
+"$g('stIsess').value='';$g('stIsess').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}):Promise.resolve();"
+"pre.then(function(){return fetch('/api/inat-refresh',{method:'POST'});}).then(r=>r.json()).then(function(o){"
+"s.textContent=(o.ok?'\\u2713 ':'\\u2717 ')+o.msg;s.style.color=o.ok?'#3c3':'#e66';stLoad();})"
+".catch(function(){s.textContent='\\u2717 refresh failed';s.style.color='#e66';});}"
 "function ikeyClear(){if(!confirm('Forget the stored iNaturalist token? iNat primary "
 "identification stops until you paste a new one.'))return;"
 "fetch('/api/settings',{method:'POST',"
@@ -3206,7 +3226,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
-        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"loc\":\"%s\",\"models\":[",
+        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,\"loc\":\"%s\",\"models\":[",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3234,6 +3254,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.ondevice_enabled,
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_key[0] ? "true" : "false",
+        g_settings.inat_session[0] ? "true" : "false",
         g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
     httpd_resp_send_chunk(req, buf, n);
     /* The region choices are whatever model files sit in /sd/model (§3.2 —
@@ -3292,6 +3313,24 @@ static void sanitize_inat_token(char *t)
     char *s = t;                               /* trim leading junk */
     while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == '"') s++;
     if (s != t) memmove(t, s, strlen(s) + 1);
+}
+
+/* Normalise a pasted _inaturalist_session cookie (v2.36): accept either the bare
+ * value or a "_inaturalist_session=…" (or a full "a=b; _inaturalist_session=…")
+ * copy, keep just the value, and drop any trailing "; other=…" and whitespace so
+ * it is safe in a Cookie header. In place. */
+static void sanitize_inat_cookie(char *c)
+{
+    char *k = strstr(c, "_inaturalist_session=");
+    if (k) { k += strlen("_inaturalist_session="); memmove(c, k, strlen(k) + 1); }
+    char *semi = strchr(c, ';');
+    if (semi) *semi = '\0';
+    size_t n = strlen(c);
+    while (n && (c[n-1] == '\n' || c[n-1] == '\r' || c[n-1] == ' ' || c[n-1] == '\t'))
+        c[--n] = '\0';
+    char *s = c;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    if (s != c) memmove(c, s, strlen(s) + 1);
 }
 
 static esp_err_t h_settings_post(httpd_req_t *req)
@@ -3433,6 +3472,20 @@ static esp_err_t h_settings_post(httpd_req_t *req)
                 inat_token_changed();    /* new token → clear stale cooldown, take effect now */
             }
             free(ikey);
+        }
+    }
+    /* iNaturalist session cookie (v2.36): present-only, like the keys. Used to
+     * auto-refresh the JWT (POST /api/inat-refresh). isessclear=1 forgets it. */
+    if (field_num(body, "isessclear=", 0, 1, 0) == 1) {
+        g_settings.inat_session[0] = '\0';
+    } else if (has_field(body, "isess=")) {
+        char *isess = malloc(sizeof(g_settings.inat_session) + 64);
+        if (isess) {
+            form_field(body, "isess=", isess, sizeof(g_settings.inat_session) + 64);
+            sanitize_inat_cookie(isess);
+            if (isess[0] && !strchr(isess, '\r') && !strchr(isess, '\n'))
+                strlcpy(g_settings.inat_session, isess, sizeof(g_settings.inat_session));
+            free(isess);
         }
     }
     /* iNat geo hint "lat,lng" from the capital dropdown. Present-only. Validated
@@ -3968,6 +4021,7 @@ typedef enum {
     IDENT_CLOUD_FILE,    /* GET  /api/cloud-file    — cloud round-trip on an SD JPEG */
     IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
     IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
+    IDENT_INAT_REFRESH,  /* POST /api/inat-refresh  — mint a fresh JWT from the session cookie */
     IDENT_INAT_FILE,     /* GET  /api/id-primary    — iNat CV round-trip on an SD JPEG */
     IDENT_INAT_FILE_DBG, /* GET  /api/id-frame-debug — iNat CV round-trip, READ-ONLY (never saves) */
     IDENT_INAT_FILE_DBG_CROP, /* GET /api/id-frame-debug?crop=1 — same, but on a native-res ROI crop */
@@ -4287,6 +4341,18 @@ static void ident_task(void *arg)
         httpd_resp_sendstr(req, buf);
         break;
     }
+
+    case IDENT_INAT_REFRESH: {
+        char verdict[224] = "";
+        esp_err_t err = inat_refresh_jwt(verdict, sizeof(verdict));
+        char msg[288], buf[352];
+        json_escape(msg, sizeof(msg), verdict);
+        snprintf(buf, sizeof(buf), "{\"ok\":%s,\"msg\":\"%s\"}",
+                 err == ESP_OK ? "true" : "false", msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, buf);
+        break;
+    }
     }
 
     httpd_req_async_handler_complete(req);   /* release the socket */
@@ -4382,6 +4448,14 @@ static esp_err_t h_cloud_test(httpd_req_t *req)
 static esp_err_t h_inat_test(httpd_req_t *req)
 {
     return ident_dispatch(req, IDENT_INAT_TEST, CLOUD_OFF, NULL, NULL, NULL, 0);
+}
+
+/* POST /api/inat-refresh — mint a fresh 24 h JWT from the stored session cookie
+ * (v2.36). Offloaded to the identify worker so the ~1-2 s round-trip doesn't
+ * block the httpd task, same as the token test. */
+static esp_err_t h_inat_refresh(httpd_req_t *req)
+{
+    return ident_dispatch(req, IDENT_INAT_REFRESH, CLOUD_OFF, NULL, NULL, NULL, 0);
 }
 
 /* GET /api/cloud-file?date=<day>&f=<file> — identify one saved photo with the
@@ -4789,6 +4863,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/cloud-file", .method = HTTP_GET, .handler = h_cloud_file },
         { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
         { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
+        { .uri = "/api/inat-refresh", .method = HTTP_POST, .handler = h_inat_refresh },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
