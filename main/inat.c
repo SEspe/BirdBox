@@ -255,6 +255,9 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     char raw_lab[3][132]; int raw_pct[3] = {0, 0, 0}; int nraw = 0;  /* "Latin (Common)", both up to 63 */
     char pick_latin[64] = "", pick_common[64] = "";
     int  pick_score = -1, first_bird_score = -1;
+    char top_ic[16] = ""; int top_sc = 0;   /* iconic group + score of the TOP result — a
+                                               non-Aves top (Plantae/Mammalia/…) means the
+                                               frame has no bird, not an unclear one (v2.42) */
     bool filter = g_settings.region_filter;
 
     int guard = 0;
@@ -267,6 +270,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         cu_json_str(v, "rank", rk, sizeof(rk));
         cu_json_str(v, "iconic_taxon_name", ic, sizeof(ic));
         cu_scrub(l); cu_scrub(c);
+        if (guard == 0) { strlcpy(top_ic, ic, sizeof(top_ic)); top_sc = sc; }  /* iNat's #1 */
         bool bird = strcmp(rk, "species") == 0 && strcmp(ic, "Aves") == 0 &&
                     l[0] && c[0];
 
@@ -286,6 +290,8 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
 
     if (pick_score >= 0)
         cu_to_result(out, true, pick_common, pick_latin, pick_score);
+    else if (top_ic[0] && strcmp(top_ic, "Aves") != 0)
+        cu_to_result(out, false, "", "", top_sc);   /* top guess is a plant/mammal/… → "no bird" (v2.42) */
     else
         cu_to_result(out, true, "", "", first_bird_score < 0 ? 0 : first_bird_score);
 
