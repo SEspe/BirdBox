@@ -2,7 +2,7 @@
 
 Open-source WiFi nest box / bird feeder camera on an **ESP32-S3**, built with
 **ESP-IDF** (no Arduino, no cloud). It detects bird visits, captures photos to
-microSD, identifies the species with an on-device AI model, and serves a live
+microSD, identifies the species via iNaturalist's online AI, and serves a live
 stream, gallery and visit statistics from its own built-in web page — entirely
 on your LAN.
 
@@ -25,13 +25,27 @@ gets a changelog entry there.
   follow-up frame count, cool-down, and a **boot detection quarantine** that
   suppresses false triggers from the camera's warm-up frames / not-yet-synced
   clock after a reboot.
-- **On-device species identification** — a quantized TFLite-Micro model
-  (default: Google's iNaturalist-birds, 965 species, Apache-2.0) runs on the
-  S3 itself, no cloud call. Multi-frame **evidence pooling** and optional
-  **test-time augmentation** squeeze extra confidence out of a hard pose;
-  an optional **Northern-Europe species filter** restricts results to ~80
-  regional garden/feeder birds so the global model can't return an
-  out-of-region false guess.
+- **Online species identification** — each visit is identified by
+  **iNaturalist's online Computer Vision API** (the model that powers the iNat
+  app): current, region-aware, and free. BirdBox scores every saved frame,
+  requires a **≥2-frame corroboration** (a single confident frame is accepted
+  only above a high bar), and applies a **Norway allowlist** so a
+  geographically-impossible guess (e.g. the American magpie *Pica hudsonia*) is
+  rejected in favour of the right local species (*Pica pica*). It also sends a
+  native-res **crop of the motion box** when the whole frame under-scores. An
+  optional **cloud tier** (Claude/Gemini) is a paid fallback and powers the
+  manual ✨ identify button. The 24 h iNat token **auto-refreshes** from a
+  stored session cookie — no daily re-paste.
+
+  > **Note — the on-device model was abandoned.** Earlier firmware ran a
+  > quantized TFLite-Micro classifier ("nordic") on the S3 itself. It was given
+  > up and removed (v0.74.0 / FSD §3.2): usable accuracy needed **per-species
+  > retraining**, and the only readily-available training images are glossy,
+  > subject-filling "hero" shots that **don't transfer** to a fixed, low-res
+  > feeder-cam view — features tuned to those photos measured *worse*, not
+  > better, on real captures. Removing it also freed ~6 MB of PSRAM and
+  > ~110 KB of flash. Classification is now online-only (iNaturalist + optional
+  > cloud).
 - **Gallery** — browse captures by day; each image carries a per-image
   **classification state** (unclassified / classified / human-confirmed /
   no-bird / confirmed-no-bird), colour-badged on the thumbnail. **Filter** by
@@ -50,8 +64,9 @@ gets a changelog entry there.
   **recheck** (re-run species ID over a day or a selection) and one-click
   **Reset Statistics** for clearing history without touching photos.
 - **Settings** — placement mode, motion tuning, confidence threshold, boot
-  quarantine, capture count/interval/cool-down, species set (global/regional),
-  extra-look (TTA) toggle, species-model region + SD-swappable model files,
+  quarantine, capture count/interval/cool-down, species set (all / Norway-only
+  region filter), motion-area zoom (best-of whole-vs-crop), iNaturalist token +
+  auto-refresh session cookie, optional cloud provider + keys,
   display language (English/Norwegian), retention cap, stream quality, camera
   **resolution** (VGA–SXGA) and **contrast**, image **rotation** (0/90/180/270°
   to correct how the camera is physically mounted), timezone, NTP server, IR
@@ -92,10 +107,13 @@ via the web UI's **OTA Update** tab).
 
 ## Species identification setup
 
-No model is baked into the firmware — install one once from microSD (or over
-the network via `POST /model/upload`). See
-[docs/MODEL.md](docs/MODEL.md) for the recommended model, the required int8
-conversion step, and the Northern-Europe region filter.
+Classification is **online, via iNaturalist** (no model to install). In
+**Settings → iNaturalist**: paste an API token, then paste your
+`_inaturalist_session` cookie once so the box **auto-refreshes** the 24 h token
+itself. Turn on **Norway only** (region filter) so out-of-region guesses are
+rejected. Optionally add a **cloud provider** (Claude/Gemini) key as a paid
+fallback. The old on-device model is gone — see the note under *Features* and
+[docs/MODEL.md](docs/MODEL.md) (kept for history).
 
 ## First startup
 

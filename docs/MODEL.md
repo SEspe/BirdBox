@@ -1,4 +1,19 @@
-# Species-ID model setup (FSD §3.2)
+# Species-ID model setup (FSD §3.2) — DEPRECATED
+
+> ⚠️ **This document is historical.** The on-device TFLite-Micro model was
+> **removed in firmware 0.74.0** (FSD §3.2/v2.37). BirdBox now classifies
+> **online via iNaturalist** (plus an optional cloud tier) — there is no model
+> file to install any more, and the `/sd/model` folder can be deleted.
+>
+> **Why the on-device model was abandoned.** Reaching usable accuracy on this
+> fixed, low-resolution feeder-cam view needed **retraining per species**, and
+> the only readily-available training images (GBIF / iNaturalist observation
+> photos) are glossy, subject-filling **"hero" shots**. Those don't transfer to
+> the domain: a backbone initialised from iNat-style images measured *worse*
+> than plain ImageNet init (≈80% vs ≈92% in A/B), and cropping/pose sensitivity
+> made live confidence unreliable. Online iNaturalist — current, region-aware,
+> and free — with a Norway allowlist and multi-frame corroboration proved far
+> more robust. The section below is kept only to document the historical setup.
 
 BirdBox classifies each visit's best frame on-device with a quantized
 TFLite image classifier loaded from the microSD card. No model is baked

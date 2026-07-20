@@ -121,11 +121,15 @@ ship tests). Verification is empirical, on real hardware:
 - **On the SD (FATFS), `rename()` across directories can delete the source
   without creating the dest.** Use copy-then-delete for cross-dir moves.
 
-- **Species-ID model is data on the SD card, not baked into firmware.** Modern
-  TFLM rejects uint8 models; conversion is per-channel symmetric int8 via
-  `tools/convert_model_int8.py`. The classifier input contract (`classify.cpp`)
-  expects `zero_point==0`, scale `1/128`, XOR-0x80. `esp_jpeg` decode is
-  baseline-JPEG only.
+- **Classification is ONLINE only (as of 0.74.0 / FSD v2.37).** The on-device
+  TFLite-Micro model was removed — no more `esp-tflite-micro`, no `/sd/model`, no
+  `convert_model_int8.py` (kept but obsolete). `classify.cpp` is now a thin
+  iNat+cloud orchestrator: the event task scores frames via `inat.c` (iNaturalist
+  online CV) with ≥2-frame corroboration + a Norway geo-filter + best-of-crop,
+  falling back to the cloud tier (`cloud.c`). The relabel-picker vocabulary is
+  `target_species.h`, not model labels. The 24 h iNat JWT auto-refreshes from a
+  stored `_inaturalist_session` cookie (`inat_refresh_jwt`). `esp_jpeg` decode
+  (still used by `classify_crop_jpeg`) is baseline-JPEG only.
 
 ## Layout
 
