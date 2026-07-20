@@ -839,22 +839,25 @@ static const char INDEX_HTML[] =
  * two events of the same species still re-trigger — then AUTO-HIDES after
  * SP_TTL_MS (3 min) so it doesn't linger forever. dataset.v guards re-rendering. */
 "var spC=$g('livesp'),spL=$g('livesp2');"
-/* CURRENT (left): the most recent event's outcome — the species, or "unclassified".
- * Cleared 3 min after the event OR the moment a new event starts (evStart, the
- * motion trigger count, rises). LAST IDENTIFIED (right): the last real species ID
- * (s.species is sticky on the device), always shown as a reference. (v2.32) */
+/* CURRENT (left): the last EVENT's classification RESULT. Keys on clsSeq, which
+ * increments when the ASYNC result lands (seconds after capture) — the old
+ * events-count trigger fired at capture time, before iNat replied, so a bird that
+ * classified showed a stale "unclassified" and never refreshed. A classified
+ * species shows for 3 min and is NOT wiped by an intervening unclassified event;
+ * "unclassified" shows only when no species is live. LAST IDENTIFIED (right): the
+ * last real species ID (s.species is sticky on the device). (v2.40) */
 "if(spC){"
-"if(s.events!==g_spEv){g_spEv=s.events;g_spAt=Date.now();var hc;"
-"if(s.spLive&&s.species){hc='<span class=splbl>current</span><span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');spC.classList.remove('uncl');}"
-"else{hc='<span class=splbl>current</span>unclassified';spC.classList.add('uncl');}"
-"spC.dataset.v=hc;spC.innerHTML=hc;spC.classList.add('on');spC.classList.remove('pop');void spC.offsetWidth;spC.classList.add('pop');}"
-"else if(g_evStart>=0&&s.evStart!==g_evStart){spC.classList.remove('on');spC.dataset.v='';g_spAt=0;}"
+"if(s.clsSeq!==g_clsSeq){g_clsSeq=s.clsSeq;"
+"if(s.spLive&&s.species){var hc='<span class=splbl>current</span><span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+"spC.classList.remove('uncl');spC.dataset.v=hc;spC.innerHTML=hc;g_spAt=Date.now();"
+"spC.classList.add('on');spC.classList.remove('pop');void spC.offsetWidth;spC.classList.add('pop');}"
+"else if(!spC.classList.contains('on')||!g_spAt||Date.now()-g_spAt>180000){"
+"spC.classList.add('uncl');spC.dataset.v='u';spC.innerHTML='<span class=splbl>current</span>unclassified';g_spAt=Date.now();spC.classList.add('on');}}"
 "else if(g_spAt&&Date.now()-g_spAt>180000)spC.classList.remove('on');"
 "}"
 "if(spL){if(s.species){var hl='<span class=splbl>last id</span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
 "if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
 "else spL.classList.remove('on');}"
-"g_evStart=s.evStart;"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
@@ -867,7 +870,7 @@ static const char INDEX_HTML[] =
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
-"var g_motN=-1,g_spEv=-1,g_spAt=0,g_evStart=-1;"   /* g_spEv/g_spAt: current-overlay event id + shown-at; g_evStart: last motion-trigger count (clear current on new event) */
+"var g_motN=-1,g_clsSeq=-1,g_spAt=0;"   /* g_clsSeq: last classification-result seq shown in the Current badge; g_spAt: its shown-at (3-min TTL) */
 "function motGrid(){var g=$g('motgrid');if(!g)return null;"
 "if(g.children.length!==64){g.innerHTML='';"
 "for(var c=0;c<64;c++){var d=document.createElement('div');d.className='mcell';g.appendChild(d);}}return g;}"
@@ -3583,7 +3586,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
-        "\"spLive\":%s,\"evStart\":%lu}",
+        "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3602,7 +3605,8 @@ static esp_err_t h_status(httpd_req_t *req)
         classify_last_species()[0] ? species : "",
         (unsigned) classify_last_confidence(),
         classify_last_event_identified() ? "true" : "false",
-        (unsigned long) motion_trigger_count());
+        (unsigned long) motion_trigger_count(),
+        (unsigned long) classify_result_seq());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
