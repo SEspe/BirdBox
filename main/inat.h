@@ -55,6 +55,12 @@ esp_err_t inat_classify_file(const char *fs_path, classify_result_t *out);
  * rejected/expired", ...). Returns ESP_OK only when the token works. */
 esp_err_t inat_test(char *out, size_t osz);
 
+/* Mint a fresh 24 h JWT from the stored _inaturalist_session cookie (the same
+ * GET the browser makes at inaturalist.org/users/api_token) and store it in
+ * inat_key + NVS — so the daily JWT expiry self-heals with no re-paste (the
+ * cookie lasts weeks). Writes a human verdict into `out`. ESP_OK on success. */
+esp_err_t inat_refresh_jwt(char *out, size_t osz);
+
 /* Seconds of rate-limit (429) cooldown remaining, 0 = none. While > 0, live
  * events skip iNat (fall through) instead of hammering the throttle. */
 int inat_cooldown_s(void);

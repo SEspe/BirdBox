@@ -28,8 +28,10 @@
 static const char *TAG = "inat";
 
 #define INAT_API_HOST  "api.inaturalist.org"
+#define INAT_WEB_HOST  "www.inaturalist.org"
 #define INAT_CV_URL    "https://" INAT_API_HOST "/v1/computervision/score_image"
 #define INAT_ME_URL    "https://" INAT_API_HOST "/v1/users/me"
+#define INAT_TOKEN_URL "https://" INAT_WEB_HOST "/users/api_token"
 #define INAT_UA        "BirdBox/" FIRMWARE_VERSION " (ESP32 nest-box camera)"
 #define INAT_BOUNDARY  "----BirdBoxCVb0undaryX9f2"
 
@@ -53,6 +55,8 @@ static uint32_t s_calls         = 0;
 #define INAT_MIN_GAP_US    (1100 * 1000LL)      /* ~1 req/s (recommended pace) */
 static int64_t  s_cooldown_until_us = 0;        /* skip iNat until this time   */
 static int64_t  s_last_req_us       = 0;        /* pacing: previous request    */
+static bool     s_jwt_stale         = false;    /* a 401 flags the JWT expired →
+                                                   refresh from the session cookie */
 
 /* Seconds of rate-limit cooldown remaining (0 = none). For the Debug card. */
 int inat_cooldown_s(void)
@@ -122,6 +126,16 @@ static void bearer(char *out, size_t osz)
 
 esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t *out)
 {
+    /* Self-healing daily refresh (v2.36): if the JWT is missing or a prior 401
+     * flagged it expired, mint a fresh one from the session cookie first, so this
+     * call uses a valid token. One event may be lost at the moment of expiry (the
+     * 401 that sets the flag), then it recovers on the next. Clear the flag either
+     * way so a dead cookie can't refresh-loop every event. */
+    if ((s_jwt_stale || !inat_have_token()) && g_settings.inat_session[0]) {
+        char rb[96];
+        inat_refresh_jwt(rb, sizeof(rb));
+        s_jwt_stale = false;
+    }
     if (!inat_have_token()) { fail("no iNaturalist token"); return ESP_ERR_INVALID_STATE; }
     if (!jpeg || len == 0 || len > INAT_MAX_JPEG) {
         fail("bad or oversized JPEG (%u B)", (unsigned) len);
@@ -214,7 +228,9 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     }
     if (status != 200) {
         /* 401 = token missing/expired (the 24 h JWT); error body is
-         * {"error":"...","status":401}. Surface it for the Debug card. */
+         * {"error":"...","status":401}. Flag it so the next event refreshes the
+         * JWT from the session cookie (v2.36). Surface it for the Debug card. */
+        if (status == 401) s_jwt_stale = true;
         char msg[80] = "";
         cu_json_str(resp, "error", msg, sizeof(msg));
         fail("iNat HTTP %d%s%s", status, msg[0] ? ": " : "", msg);
@@ -367,6 +383,82 @@ out:
     esp_http_client_cleanup(c);
     free(auth);
     return ret;
+}
+
+/* Mint a fresh 24 h JWT from the stored _inaturalist_session cookie (v2.36): the
+ * same GET the browser makes at inaturalist.org/users/api_token, which returns
+ * {"api_token":"eyJ..."} when the cookie is a logged-in session. Stores it in
+ * inat_key (+ NVS), so the daily expiry self-heals without a re-paste. The cookie
+ * itself lasts weeks; when it too expires, re-paste it. Writes a human status. */
+esp_err_t inat_refresh_jwt(char *out, size_t osz)
+{
+    if (!g_settings.inat_session[0]) {
+        snprintf(out, osz, "no session cookie stored");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char *resp = heap_caps_malloc(INAT_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *ck   = heap_caps_malloc(sizeof(g_settings.inat_session) + 32,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp || !ck) { free(resp); free(ck); snprintf(out, osz, "out of memory"); return ESP_ERR_NO_MEM; }
+    snprintf(ck, sizeof(g_settings.inat_session) + 32,
+             "_inaturalist_session=%s", g_settings.inat_session);
+
+    esp_http_client_config_t cfg = {
+        .url                  = INAT_TOKEN_URL,
+        .method               = HTTP_METHOD_GET,
+        .crt_bundle_attach    = esp_crt_bundle_attach,
+        .timeout_ms           = 15000,
+        .buffer_size          = 4096,
+        .buffer_size_tx       = 2048,
+        .disable_auto_redirect = true,     /* a 302 → /login means the cookie's dead */
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) { free(resp); free(ck); snprintf(out, osz, "http client init failed"); return ESP_FAIL; }
+    esp_http_client_set_header(c, "Cookie", ck);
+    esp_http_client_set_header(c, "User-Agent", INAT_UA);
+    esp_http_client_set_header(c, "Accept", "application/json");
+
+    int status = 0, rd = 0;
+    esp_err_t ret = esp_http_client_open(c, 0);
+    if (ret == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        int r;
+        while (rd < INAT_RESP_MAX - 1 &&
+               (r = esp_http_client_read(c, resp + rd, INAT_RESP_MAX - 1 - rd)) > 0)
+            rd += r;
+        resp[rd] = '\0';
+        status = esp_http_client_get_status_code(c);
+    }
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+
+    esp_err_t rc = ESP_FAIL;
+    if (ret != ESP_OK) {
+        snprintf(out, osz, "connection to %s failed: %s", INAT_WEB_HOST, esp_err_to_name(ret));
+    } else if (status == 200) {
+        char *jwt = heap_caps_malloc(sizeof(g_settings.inat_key), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (jwt && cu_json_str(resp, "api_token", jwt, sizeof(g_settings.inat_key)) && jwt[0]) {
+            strlcpy(g_settings.inat_key, jwt, sizeof(g_settings.inat_key));
+            settings_save();
+            s_cooldown_until_us = 0;
+            s_last_error[0] = '\0';
+            s_jwt_stale = false;
+            snprintf(out, osz, "OK - fresh 24h token fetched");
+            rc = ESP_OK;
+            ESP_LOGI(TAG, "JWT refreshed from session cookie");
+        } else {
+            snprintf(out, osz, "HTTP 200 but no api_token in reply — session cookie invalid?");
+        }
+        free(jwt);
+    } else if (status == 302 || status == 401 || status == 403) {
+        snprintf(out, osz, "not logged in (HTTP %d) — the session cookie has expired, re-paste it", status);
+    } else {
+        snprintf(out, osz, "HTTP %d fetching token from %s", status, INAT_WEB_HOST);
+    }
+    free(resp); free(ck);
+    if (rc != ESP_OK) snprintf(s_last_error, sizeof(s_last_error), "%s", out);
+    return rc;
 }
 
 esp_err_t inat_test(char *out, size_t osz)
