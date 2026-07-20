@@ -248,12 +248,18 @@ static const char INDEX_HTML[] =
 ".liveWrap.mot{outline:5px solid #ff2f2f;outline-offset:-5px;"   /* 1s per-trigger motion flash */
 "box-shadow:inset 0 0 18px rgba(255,47,47,.6)}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
-/* Live-view species overlay: the last classified event's species, bottom-left. */
+/* Live-view species overlays (v2.32): CURRENT (bottom-left) = the most recent
+ * event's outcome, ephemeral; LAST IDENTIFIED (bottom-right) = the last real
+ * species ID, sticky. Both share .livesp; #livesp2 flips to the right edge. */
 ".livesp{position:absolute;left:8px;bottom:8px;z-index:3;display:none;"
-"align-items:center;gap:6px;max-width:82%;background:rgba(16,22,18,.78);"
+"align-items:center;gap:6px;max-width:46%;background:rgba(16,22,18,.78);"
 "color:#eafaef;font-size:.9rem;font-weight:600;padding:5px 11px;border-radius:6px;"
 "pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,.4)}"
+"#livesp2{left:auto;right:8px}"
 ".livesp.on{display:inline-flex}"
+".livesp.uncl{opacity:.7;font-style:italic;font-weight:500}"
+".livesp .splbl{font-size:.6rem;letter-spacing:.05em;text-transform:uppercase;opacity:.55;"
+"font-weight:600;font-style:normal}"
 ".livesp .spc{font-weight:500;color:#a8d8bb;font-size:.82rem}"
 ".livesp .splogo{display:inline-block;width:1.15em;height:1.15em;border-radius:50%;"
 "background:url('" BIRD_LOGO "') center/cover;flex:0 0 auto}"
@@ -396,6 +402,7 @@ static const char INDEX_HTML[] =
 "<div class='zone' id='zone'></div>"
 "<div class='motgrid' id='motgrid'></div>"
 "<div class='livesp' id='livesp'></div>"
+"<div class='livesp' id='livesp2'></div>"
 "<div class='sdbadge' id='sdbadge'>&#9888; SD WRITE FAILING &mdash; captures are not being saved</div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
@@ -840,17 +847,23 @@ static const char INDEX_HTML[] =
  * Dompap avatar. Shown (and pops) on a NEW event — keyed to the events count, so
  * two events of the same species still re-trigger — then AUTO-HIDES after
  * SP_TTL_MS (3 min) so it doesn't linger forever. dataset.v guards re-rendering. */
-"var sp=$g('livesp');"
-/* Show the badge only when the LATEST event got a real species (s.spLive); a new
- * unclassified visit (spLive false) clears it, so a stale label never sits over
- * the current bird. s.species still holds the last-classified name for elsewhere. */
-"if(sp){if(s.species&&s.spLive){"
-"var h='<span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
-"if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;}"
-"if(s.events!==g_spEv){g_spEv=s.events;g_spAt=Date.now();"
-"sp.classList.add('on');sp.classList.remove('pop');void sp.offsetWidth;sp.classList.add('pop');}"
-"else if(g_spAt&&Date.now()-g_spAt>180000)sp.classList.remove('on');"
-"}else{sp.classList.remove('on');sp.dataset.v='';g_spAt=0;}}"
+"var spC=$g('livesp'),spL=$g('livesp2');"
+/* CURRENT (left): the most recent event's outcome — the species, or "unclassified".
+ * Cleared 3 min after the event OR the moment a new event starts (evStart, the
+ * motion trigger count, rises). LAST IDENTIFIED (right): the last real species ID
+ * (s.species is sticky on the device), always shown as a reference. (v2.32) */
+"if(spC){"
+"if(s.events!==g_spEv){g_spEv=s.events;g_spAt=Date.now();var hc;"
+"if(s.spLive&&s.species){hc='<span class=splbl>current</span><span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');spC.classList.remove('uncl');}"
+"else{hc='<span class=splbl>current</span>unclassified';spC.classList.add('uncl');}"
+"spC.dataset.v=hc;spC.innerHTML=hc;spC.classList.add('on');spC.classList.remove('pop');void spC.offsetWidth;spC.classList.add('pop');}"
+"else if(g_evStart>=0&&s.evStart!==g_evStart){spC.classList.remove('on');spC.dataset.v='';g_spAt=0;}"
+"else if(g_spAt&&Date.now()-g_spAt>180000)spC.classList.remove('on');"
+"}"
+"if(spL){if(s.species){var hl='<span class=splbl>last id</span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+"if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
+"else spL.classList.remove('on');}"
+"g_evStart=s.evStart;"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
 "var db=$g('detbadge'),lw=$g('liveWrap');"
 "if(db)db.classList.toggle('on',!!s.motion);"
@@ -863,7 +876,7 @@ static const char INDEX_HTML[] =
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
-"var g_motN=-1,g_spEv=-1,g_spAt=0;"   /* g_spEv/g_spAt: live species-overlay event id + shown-at (auto-hide) */
+"var g_motN=-1,g_spEv=-1,g_spAt=0,g_evStart=-1;"   /* g_spEv/g_spAt: current-overlay event id + shown-at; g_evStart: last motion-trigger count (clear current on new event) */
 "function motGrid(){var g=$g('motgrid');if(!g)return null;"
 "if(g.children.length!==64){g.innerHTML='';"
 "for(var c=0;c<64;c++){var d=document.createElement('div');d.className='mcell';g.appendChild(d);}}return g;}"
@@ -3523,7 +3536,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
-        "\"spLive\":%s}",
+        "\"spLive\":%s,\"evStart\":%lu}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3541,7 +3554,8 @@ static esp_err_t h_status(httpd_req_t *req)
         capture_last_event_path(),
         classify_last_species()[0] ? species : "",
         (unsigned) classify_last_confidence(),
-        classify_last_event_identified() ? "true" : "false");
+        classify_last_event_identified() ? "true" : "false",
+        (unsigned long) motion_trigger_count());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
