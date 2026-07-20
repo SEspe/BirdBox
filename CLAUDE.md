@@ -54,8 +54,8 @@ $env:IDF_PATH = "D:\esp\v6.0.1\esp-idf"
 
 ## Flash & OTA
 
-Reference unit is currently at **`192.168.10.236`** (relocated off the old
-`192.168.1.111` — always confirm with `GET /api/status` first, which reports
+Reference unit is currently at **`192.168.1.111`** (it has moved before — it
+briefly sat on `192.168.10.236` — always confirm with `GET /api/status` first, which reports
 `version`/`ip`/`heap`/`sdPresent`/`clockSrc`).
 
 **OTA (normal path, no cable):** `POST /ota/upload`, raw octet-stream body =
@@ -65,7 +65,7 @@ image fails to boot. Use `curl --data-binary` (via the Bash tool) — PowerShell
 
 ```sh
 curl -s -X POST -H "Content-Type: application/octet-stream" \
-  --data-binary @build/BirdBox.bin http://192.168.10.236/ota/upload
+  --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload
 # 200 "OK" -> device reboots; poll /api/status until version flips.
 ```
 

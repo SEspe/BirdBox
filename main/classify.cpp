@@ -317,7 +317,8 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         return true;
     }
 
-    int ncand = 0, scored = 0;
+    int ncand = 0, scored = 0, nobird = 0, unid = 0;
+    classify_result_t nobird_res; bool have_nobird = false;
     for (int i = 0; i < job->path_count; i++) {
         char full[128];
         snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
@@ -353,7 +354,15 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
             continue;                       /* 429 cooldown fails all → scored 0 */
         }
         scored++;
-        if (r.latin[0] == '\0') continue;   /* unsure frame casts no vote */
+        if (r.latin[0] == '\0') {           /* no species from this frame — but which kind? */
+            if (strcmp(r.species, "no bird") == 0) {   /* iNat's top guess was non-Aves */
+                nobird++;
+                if (!have_nobird) { nobird_res = r; have_nobird = true; }
+            } else {
+                unid++;                        /* a bird was seen, just not identifiable */
+            }
+            continue;
+        }
 
         int slot = -1;
         for (int k = 0; k < ncand; k++)
@@ -398,6 +407,17 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         ESP_LOGI(TAG, "iNat: %s %s %d/%d frame(s) (%u%%)",
                  out->species, cand[win_k].votes >= 2 ? "seconded by" : "solo high-conf",
                  cand[win_k].votes, scored, out->confidence_pct);
+    } else if (have_nobird && ncand == 0 && unid == 0) {
+        /* Every frame iNat scored had a non-Aves top guess (plant/mammal/…) — file
+         * the event as "no bird" (background) rather than unclassified, so
+         * vegetation/shadow triggers drop out of the review pile (v2.42). Requires
+         * ALL scored frames to agree, so a bird seen in any frame keeps it
+         * unclassified. A confident no-bird call, so it isn't escalated to cloud. */
+        *out = nobird_res;              /* species "no bird", top3 = the non-bird guesses */
+        *win = roi_none();
+        if (scored_out) *scored_out = nobird;
+        have = true;
+        ESP_LOGI(TAG, "iNat: no bird (%d/%d frames non-Aves)", nobird, scored);
     } else {
         ESP_LOGI(TAG, "iNat: no species seconded across %d/%d frame(s) → decline",
                  scored, job->path_count);
