@@ -4,5 +4,3 @@ dependencies:
   # WS2812 illuminator on the reference unit (GPIO48, found via Debug-tab GPIO probe) —
   # a raw gpio_set_level can't reliably light/clear it, needs the real bit-timed protocol
   espressif/led_strip: "*"
-  # TFLite-Micro with esp-nn S3 acceleration — species classifier (FSD §3.2)
-  espressif/esp-tflite-micro: "*"
