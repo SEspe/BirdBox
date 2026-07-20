@@ -740,6 +740,11 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
  * to the nordic model (which also owns the "no bird" call — iNat has no reliable
  * empty-frame detection). Any failure returns false too, so a hiccup never drops
  * the event. */
+/* A single confident frame may stand alone (skip the >=2-frame corroboration)
+ * only at/above this confidence — high enough that the lone-false-positive class
+ * the guard targets (a 50-70% wrong magpie) still needs a second frame. (v2.33) */
+#define INAT_SOLO_ACCEPT_PCT 90
+
 /* Score one frame with iNat, best-of whole-vs-crop (v2.31). Always scores the
  * whole frame; when detect_zoom is on and the frame has a motion ROI, also scores
  * a native-res crop centred on the bird (classify_crop_jpeg) and keeps the more
@@ -878,13 +883,26 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         if (cand[k].votes >= 2 && (win_k < 0 || cand[k].peak > cand[win_k].peak))
             win_k = k;
 
+    /* Solo accept (v2.33): a lone frame may stand alone only when it's VERY
+     * confident (>= INAT_SOLO_ACCEPT_PCT) — so an obvious bird that didn't linger
+     * for a second frame isn't dropped (a 98% Dompap on a 1-frame event was going
+     * to Unidentified), while the corroboration guard still applies to everything
+     * below that bar: a low-confidence lone hit (the false-positive class the
+     * guard targets, e.g. a 50-70% magpie) still needs a second frame to agree. */
+    if (win_k < 0)
+        for (int k = 0; k < ncand; k++)
+            if (cand[k].peak >= INAT_SOLO_ACCEPT_PCT &&
+                (win_k < 0 || cand[k].peak > cand[win_k].peak))
+                win_k = k;
+
     bool have = win_k >= 0;
     if (have) {
         *out = cand[win_k].res;
         *win = cand[win_k].roi;
         if (scored_out) *scored_out = cand[win_k].votes;
-        ESP_LOGI(TAG, "iNat: %s seconded by %d/%d frame(s) (%u%%)",
-                 out->species, cand[win_k].votes, scored, out->confidence_pct);
+        ESP_LOGI(TAG, "iNat: %s %s %d/%d frame(s) (%u%%)",
+                 out->species, cand[win_k].votes >= 2 ? "seconded by" : "solo high-conf",
+                 cand[win_k].votes, scored, out->confidence_pct);
     } else {
         ESP_LOGI(TAG, "iNat: no species seconded across %d/%d frame(s) → decline",
                  scored, job->path_count);

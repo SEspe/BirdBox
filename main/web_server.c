@@ -511,7 +511,7 @@ static const char INDEX_HTML[] =
 "<select class='wi' id='stRegion'></select>"
 "<div class='sts' id='stModels'></div>"
 "<label class='wl'>Confidence threshold (%)</label>"
-"<input class='wi' type='number' min='30' max='95' id='stConf'>"
+"<input class='wi' type='number' min='15' max='95' id='stConf'>"
 "<label class='wl'>Species set</label>"
 "<select class='wi' id='stRfilt'>"
 "<option value='0'>Global (full model)</option>"
