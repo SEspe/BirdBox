@@ -267,14 +267,46 @@ static bool detect_once(void)
         }
     }
     if (maxc >= minc && maxr >= minr && best_wt >= 0) {
-        if (--minc < 0) minc = 0;
-        if (--minr < 0) minr = 0;
-        if (++maxc > GRID_N - 1) maxc = GRID_N - 1;
-        if (++maxr > GRID_N - 1) maxr = GRID_N - 1;
-        s_roi.x0 = (float) minc / GRID_N;
-        s_roi.y0 = (float) minr / GRID_N;
-        s_roi.x1 = (float) (maxc + 1) / GRID_N;
-        s_roi.y1 = (float) (maxr + 1) / GRID_N;
+        /* Refine the ROI to the tight bounding box of the actually-changed PIXELS
+         * inside the winning cluster's cells (v2.31). The 160x90 diff we already
+         * computed has far finer detail than the 1/8 cell grid, so the crop handed
+         * to species ID hugs the bird instead of snapping to 12.5% cell lines —
+         * more reliable than a finer detection grid (too few px/cell) and free.
+         * Falls back to the padded cell bbox if somehow no pixel is flagged. */
+        int pminx = W, pminy = H, pmaxx = -1, pmaxy = -1;
+        for (int y = 0; y < H; y++) {
+            const int rb = (y * GRID_N / H) * GRID_N;
+            for (int x = 0; x < W; x++) {
+                if (!(best_cells & (1ULL << (rb + x * GRID_N / W)))) continue;
+                int idx = y * W + x;
+                if (abs(((int) s_cur[idx] - (int) s_bg[idx])      - shift_fast) > PIX_DIFF_THR ||
+                    abs(((int) s_cur[idx] - (int) s_bg_slow[idx]) - shift_slow) > PIX_DIFF_THR) {
+                    if (x < pminx) pminx = x;
+                    if (x > pmaxx) pmaxx = x;
+                    if (y < pminy) pminy = y;
+                    if (y > pmaxy) pmaxy = y;
+                }
+            }
+        }
+        if (pmaxx >= pminx && pmaxy >= pminy) {
+            pminx = pminx > 1     ? pminx - 2 : 0;      /* 2px safety pad; the crop */
+            pminy = pminy > 1     ? pminy - 2 : 0;      /* adds 1.4x context on top */
+            pmaxx = pmaxx < W - 2 ? pmaxx + 2 : W - 1;
+            pmaxy = pmaxy < H - 2 ? pmaxy + 2 : H - 1;
+            s_roi.x0 = (float) pminx / W;
+            s_roi.y0 = (float) pminy / H;
+            s_roi.x1 = (float) (pmaxx + 1) / W;
+            s_roi.y1 = (float) (pmaxy + 1) / H;
+        } else {
+            if (--minc < 0) minc = 0;
+            if (--minr < 0) minr = 0;
+            if (++maxc > GRID_N - 1) maxc = GRID_N - 1;
+            if (++maxr > GRID_N - 1) maxr = GRID_N - 1;
+            s_roi.x0 = (float) minc / GRID_N;
+            s_roi.y0 = (float) minr / GRID_N;
+            s_roi.x1 = (float) (maxc + 1) / GRID_N;
+            s_roi.y1 = (float) (maxr + 1) / GRID_N;
+        }
     } else {
         s_roi = roi_none();
     }

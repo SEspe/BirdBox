@@ -740,6 +740,40 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
  * to the nordic model (which also owns the "no bird" call — iNat has no reliable
  * empty-frame detection). Any failure returns false too, so a hiccup never drops
  * the event. */
+/* Score one frame with iNat, best-of whole-vs-crop (v2.31). Always scores the
+ * whole frame; when detect_zoom is on and the frame has a motion ROI, also scores
+ * a native-res crop centred on the bird (classify_crop_jpeg) and keeps the more
+ * confident real species (result_better). A small/off-centre bird that under-
+ * scores whole often clears threshold cropped (measured: Bokfink 17→34%, magpie
+ * 35→82%), while a messy crop can't drag the result below the whole-frame score.
+ * The crop call fires ONLY when the whole frame couldn't identify the bird
+ * (empty latin) — that's where it helps, and it keeps a confident whole ID as-is,
+ * so a feeder of easy birds pays ~no extra cost and only the hard frames get the
+ * second (paced/cooled) iNat call. */
+static esp_err_t score_frame_best(const char *full, roi_t roi, classify_result_t *r)
+{
+    size_t len = 0;
+    uint8_t *buf = load_file_psram(full, &len);
+    if (!buf) return ESP_FAIL;
+
+    esp_err_t e = inat_classify_jpeg(buf, len, r);
+    if (e == ESP_OK && r->latin[0] == '\0' &&
+        g_settings.detect_zoom && !roi_is_empty(roi)) {
+        uint8_t *cj = NULL; size_t cl = 0;
+        if (classify_crop_jpeg(buf, len, roi, &cj, &cl) == ESP_OK && cj) {
+            classify_result_t rc;
+            if (inat_classify_jpeg(cj, cl, &rc) == ESP_OK && result_better(&rc, r)) {
+                ESP_LOGI(TAG, "crop beat whole: %s %u%% > %s %u%%",
+                         rc.species, rc.confidence_pct, r->species, r->confidence_pct);
+                *r = rc;
+            }
+            free(cj);
+        }
+    }
+    free(buf);
+    return e;
+}
+
 /* iNaturalist tier over EVERY saved frame, with a corroboration guard (v2.26).
  * Score all of the event's frames and require the winning species to be seconded
  * by at least TWO frames: the model can be confidently wrong on one view (a bird
@@ -788,7 +822,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         char full[128];
         snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
         classify_result_t r;
-        esp_err_t e = inat_classify_file(full, &r);
+        esp_err_t e = score_frame_best(full, job->rois[i], &r);
 
         /* Record this frame's contribution for the visit-log per-frame column:
          * "<binomial>=<pct>" for a decided species, "<binomial>?=<pct>" when the
