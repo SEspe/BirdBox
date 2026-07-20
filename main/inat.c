@@ -9,6 +9,7 @@
 #include "inat.h"
 #include "cloud_util.h"
 #include "settings.h"
+#include "species_i18n.h"   /* species_in_region() — the Norway region allowlist */
 #include "version.h"
 
 #include <string.h>
@@ -33,8 +34,10 @@ static const char *TAG = "inat";
 #define INAT_BOUNDARY  "----BirdBoxCVb0undaryX9f2"
 
 #define INAT_MAX_JPEG  (300 * 1024)
-#define INAT_RESP_MAX  16384    /* CV replies are large (taxon + ancestors); the
-                                   top result (all we read) is well inside this */
+#define INAT_RESP_MAX  32768    /* CV replies are large (each result carries the
+                                   taxon + its ancestors). We now walk several
+                                   results for the region filter (v2.28), not just
+                                   the top one, so the buffer holds more of them */
 
 static char     s_last_error[96] = "";
 static int32_t  s_last_ms       = -1;
@@ -210,26 +213,69 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         goto done;
     }
 
-    /* Top result: results[0].combined_score + results[0].taxon.{name,
-     * preferred_common_name, rank, iconic_taxon_name}. cu_json_* find the FIRST
-     * occurrence, which is results[0] (first in the array). Only a bird
-     * (iconic Aves) at species rank counts as a confident ID; anything else
-     * yields empty latin so classify.cpp falls through to the nordic tier. */
-    char latin[64] = "", common[64] = "", rank[24] = "", iconic[16] = "";
-    cu_json_str(resp, "name", latin, sizeof(latin));
-    cu_json_str(resp, "preferred_common_name", common, sizeof(common));
-    cu_json_str(resp, "rank", rank, sizeof(rank));
-    cu_json_str(resp, "iconic_taxon_name", iconic, sizeof(iconic));
-    int score = (int) cu_json_num(resp, "combined_score", 0);
-    cu_scrub(latin);
-    cu_scrub(common);
+    /* score_image returns results[] sorted by combined_score (desc), each with a
+     * taxon {name, preferred_common_name, rank, iconic_taxon_name}. Walk them —
+     * cu_json_seek returns the VALUE after a key, so each step's `v` sits at this
+     * result's combined_score and its taxon fields are the first occurrences
+     * after it (the same match the old single-result parse relied on):
+     *   • capture the RAW top-3 candidates into out->top_label[] for the debug
+     *     view / visit-log top3 — what iNat proposed, before filtering; and
+     *   • DECIDE the result: the highest-scoring bird (rank species, iconic Aves)
+     *     that passes the region allowlist when region_filter is on — so a
+     *     geographically-impossible top hit (e.g. Pica hudsonia, the North-
+     *     American magpie, for a Norwegian Skjære) is skipped for the best
+     *     in-region candidate (Pica pica) instead of being logged (v2.28).
+     *     Filter off ⇒ the top bird wins (pre-v2.28 behaviour). No acceptable
+     *     bird ⇒ empty latin ⇒ "Unidentified bird" — an all-out-of-region reply
+     *     is itself the signal that iNat guessed outside the region. */
+    char raw_lab[3][132]; int raw_pct[3] = {0, 0, 0}; int nraw = 0;  /* "Latin (Common)", both up to 63 */
+    char pick_latin[64] = "", pick_common[64] = "";
+    int  pick_score = -1, first_bird_score = -1;
+    bool filter = g_settings.region_filter;
 
-    bool bird_species = strcmp(rank, "species") == 0 && strcmp(iconic, "Aves") == 0 &&
-                        latin[0] && common[0];
-    if (bird_species)
-        cu_to_result(out, true, common, latin, score);   /* threshold applied inside */
+    int guard = 0;
+    for (const char *v = cu_json_seek(resp, "combined_score");
+         v && guard < 24; v = cu_json_seek(v, "combined_score"), guard++) {
+        int sc = (int) strtol(v, NULL, 10);
+        char l[64] = "", c[64] = "", rk[24] = "", ic[16] = "";
+        cu_json_str(v, "name", l, sizeof(l));
+        cu_json_str(v, "preferred_common_name", c, sizeof(c));
+        cu_json_str(v, "rank", rk, sizeof(rk));
+        cu_json_str(v, "iconic_taxon_name", ic, sizeof(ic));
+        cu_scrub(l); cu_scrub(c);
+        bool bird = strcmp(rk, "species") == 0 && strcmp(ic, "Aves") == 0 &&
+                    l[0] && c[0];
+
+        if (nraw < 3) {                         /* raw top-3 for display/debug */
+            if (bird) snprintf(raw_lab[nraw], sizeof(raw_lab[0]), "%s (%s)", l, c);
+            else      strlcpy(raw_lab[nraw], ic[0] ? ic : "?", sizeof(raw_lab[0]));
+            raw_pct[nraw++] = sc;
+        }
+        if (bird && first_bird_score < 0) first_bird_score = sc;
+        if (pick_score < 0 && bird && (!filter || species_in_region(l))) {
+            strlcpy(pick_latin,  l, sizeof(pick_latin));
+            strlcpy(pick_common, c, sizeof(pick_common));
+            pick_score = sc;
+        }
+        if (pick_score >= 0 && nraw >= 3) break;
+    }
+
+    if (pick_score >= 0)
+        cu_to_result(out, true, pick_common, pick_latin, pick_score);
     else
-        cu_to_result(out, true, "", "", score);           /* -> "Unidentified bird" */
+        cu_to_result(out, true, "", "", first_bird_score < 0 ? 0 : first_bird_score);
+
+    /* Show the RAW iNat ranking (not the filtered pick) in the top-3, so the
+     * debug view reveals how the chosen species compared to what iNat led with. */
+    for (int k = 0; k < 3; k++) {
+        if (k < nraw) {
+            strlcpy(out->top_label[k], raw_lab[k], sizeof(out->top_label[k]));
+            out->top_pct[k] = (uint8_t)(raw_pct[k] < 0 ? 0 : raw_pct[k] > 100 ? 100 : raw_pct[k]);
+        } else {
+            out->top_label[k][0] = '\0';
+            out->top_pct[k] = 0;
+        }
+    }
 
     out->duration_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
     s_last_ms = out->duration_ms;

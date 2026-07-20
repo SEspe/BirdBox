@@ -141,6 +141,49 @@ static const no_name_t NO_NAMES[] = {
     { "Pluvialis apricaria",        "Heilo" },
     { "Eremophila alpestris",       "Fjellerke" },
     { "Luscinia svecica",           "Blåstrupe" },
+
+    /* Region allowlist extension (2026-07-20, FSD v2.28) — the online-iNat era's
+     * geo-filter rejects any binomial NOT in this table, so it needs to cover the
+     * plausible Norwegian avifauna, not just the model's old class set. Added
+     * species use iNat's CURRENT binomials (e.g. Linaria flavirostris) so the
+     * allowlist matches what score_image returns. Extend as new species appear at
+     * the feeder / in the area. */
+    { "Plectrophenax nivalis",      "Snøspurv" },
+    { "Calcarius lapponicus",       "Lappspurv" },
+    { "Emberiza rustica",           "Vierspurv" },
+    { "Emberiza pusilla",           "Dvergspurv" },
+    { "Emberiza hortulana",         "Hortulan" },
+    { "Linaria flavirostris",       "Bergirisk" },
+    { "Acanthis hornemanni",        "Polarsisik" },
+    { "Serinus serinus",            "Gulirisk" },
+    { "Phylloscopus trochilus",     "Løvsanger" },
+    { "Phylloscopus sibilatrix",    "Bøksanger" },
+    { "Sylvia borin",               "Hagesanger" },
+    { "Curruca curruca",            "Møller" },
+    { "Acrocephalus schoenobaenus", "Sivsanger" },
+    { "Turdus torquatus",           "Ringtrost" },
+    { "Luscinia luscinia",          "Nattergal" },
+    { "Ficedula parva",             "Dvergfluesnapper" },
+    { "Anthus trivialis",           "Trepiplerke" },
+    { "Anthus cervinus",            "Lappiplerke" },
+    { "Anthus spinoletta",          "Vannpiplerke" },
+    { "Jynx torquilla",             "Vendehals" },
+    { "Dendrocopos leucotos",       "Hvitryggspett" },
+    { "Strix aluco",                "Kattugle" },
+    { "Asio otus",                  "Hornugle" },
+    { "Asio flammeus",              "Jordugle" },
+    { "Bubo bubo",                  "Hubro" },
+    { "Pandion haliaetus",          "Fiskeørn" },
+    { "Pernis apivorus",            "Vepsevåk" },
+    { "Milvus milvus",              "Glente" },
+    { "Falco rusticolus",           "Jaktfalk" },
+    { "Circus cyaneus",             "Myrhauk" },
+    { "Lagopus lagopus",            "Lirype" },
+    { "Lagopus muta",               "Fjellrype" },
+    { "Perdix perdix",              "Rapphøne" },
+    { "Cinclus cinclus",            "Fossekall" },
+    { "Alcedo atthis",              "Isfugl" },
+    { "Riparia riparia",            "Sandsvale" },
 };
 #define NO_NAMES_N (sizeof(NO_NAMES) / sizeof(NO_NAMES[0]))
 
