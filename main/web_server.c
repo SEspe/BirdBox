@@ -840,7 +840,10 @@ static const char INDEX_HTML[] =
  * two events of the same species still re-trigger — then AUTO-HIDES after
  * SP_TTL_MS (3 min) so it doesn't linger forever. dataset.v guards re-rendering. */
 "var sp=$g('livesp');"
-"if(sp){if(s.species){"
+/* Show the badge only when the LATEST event got a real species (s.spLive); a new
+ * unclassified visit (spLive false) clears it, so a stale label never sits over
+ * the current bird. s.species still holds the last-classified name for elsewhere. */
+"if(sp){if(s.species&&s.spLive){"
 "var h='<span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
 "if(sp.dataset.v!==h){sp.dataset.v=h;sp.innerHTML=h;}"
 "if(s.events!==g_spEv){g_spEv=s.events;g_spAt=Date.now();"
@@ -2087,6 +2090,12 @@ static esp_err_t h_days(httpd_req_t *req)
  * block is ~550 KB). GAL_SPI_NONE = no name (pool full): state still stands. */
 #define GAL_MAX_SPECIES 96
 #define GAL_SPI_NONE    0xFF
+/* Per-frame iNat scores ("latin=pct;...") for an event's primary row (v2.29),
+ * held out-of-line so the 6000-entry label table doesn't grow by the string —
+ * only the ~event-count rows carry one. Longer (10-frame) strings truncate. */
+#define GAL_MAX_PF      512
+#define GAL_PF_LEN      176
+#define GAL_PF_NONE     0xFFFF
 /* base holds the capture filename ("YYYY-MM-DD_HH-MM-SS-mmm.jpg", 27 chars);
  * it was [16] — sized for the pre-v1.30 "HHMMSS.jpg" names — so every
  * millisecond-era basename truncated to 15 chars and never matched its file,
@@ -2097,10 +2106,12 @@ static esp_err_t h_days(httpd_req_t *req)
  * whether the user accepted the model's guess or typed their own). §3.4/v1.59 */
 /* src: engine that produced the label — 0 none/legacy, 1 nordic, 2 claude,
  * 3 iNat (§3.2.3 cascade provenance). */
-typedef struct { char base[32]; uint8_t spi; uint8_t pct; uint8_t state; uint8_t src; } gal_label_t;
+typedef struct { char base[32]; uint8_t spi; uint8_t pct; uint8_t state; uint8_t src;
+                 uint16_t pfi; } gal_label_t;
 typedef struct {
-    int n, nsp;
+    int n, nsp, npf;
     char sp[GAL_MAX_SPECIES][72];
+    char pf[GAL_MAX_PF][GAL_PF_LEN];
     gal_label_t l[GAL_MAX_LABELS];
 } gal_tab_t;
 
@@ -2144,8 +2155,8 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
     snprintf(match, sizeof(match), "/captures/%.20s/", date);
 
     int count = 0;
-    char line[400];   /* past the longest row incl. roi/top3 — a split row's
-                         tail would otherwise parse as a bogus extra row */
+    char line[768];   /* past the longest row incl. roi/top3/per-frame (v2.29) — a
+                         split row's tail would otherwise parse as a bogus extra row */
     bool header = true;
     while (fgets(line, sizeof(line), fp) && count < GAL_MAX_LABELS) {
         if (header) { header = false; continue; }
@@ -2161,6 +2172,7 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         gal_next_field(&p);                        /* roi (col 8) */
         gal_next_field(&p);                        /* top3 (col 9, ';'-separated, no comma) */
         char *source    = gal_next_field(&p);      /* provenance (col 10, may be empty) */
+        char *pf        = gal_next_field(&p);      /* per-frame scores (col 11, may be empty) */
         if (!species[0] || !first[0]) continue;
         char *base = strstr(first, match);         /* only this day's frames */
         if (!base) continue;
@@ -2198,6 +2210,11 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
                         : strcmp(source, "inat")   == 0 ? 3
                         : strcmp(source, "gemini") == 0 ? 4
                         : strcmp(source, "inatcv") == 0 ? 5 : 0;
+        t->l[count].pfi = GAL_PF_NONE;
+        if (pf[0] && t->npf < GAL_MAX_PF) {        /* stash the per-frame scores */
+            strlcpy(t->pf[t->npf], pf, sizeof(t->pf[0]));
+            t->l[count].pfi = (uint16_t) t->npf++;
+        }
         count++;
     }
     if (count >= GAL_MAX_LABELS)
@@ -2259,6 +2276,7 @@ static esp_err_t h_events(httpd_req_t *req)
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
         const char *sp = "";
+        const char *pf = "";
         int pct = 0;
         bool confirmed = false;
         int state = 0;
@@ -2267,19 +2285,20 @@ static esp_err_t h_events(httpd_req_t *req)
         for (int i = 0; i < nlabels; i++)
             if (strcmp(tab->l[i].base, e->d_name) == 0) {
                 if (tab->l[i].spi != GAL_SPI_NONE) sp = tab->sp[tab->l[i].spi];
+                if (tab->l[i].pfi != GAL_PF_NONE)  pf = tab->pf[tab->l[i].pfi];
                 pct = tab->l[i].pct;
                 state = tab->l[i].state;
                 src = tab->l[i].src;
                 confirmed = gal_confirmed(tab->l[i].state);
                 labelled = true; break;
             }
-        char item[256];
+        char item[480];   /* + the per-frame "pf" field (up to GAL_PF_LEN) */
         int len;
         if (labelled)
             len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d,\"src\":%d}",
+                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d,\"src\":%d,\"pf\":\"%s\"}",
                            first ? "" : ",", e->d_name, sp, pct,
-                           confirmed ? "true" : "false", state, src);
+                           confirmed ? "true" : "false", state, src, pf);
         else
             len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"st\":0}",
                            first ? "" : ",", e->d_name);
@@ -2401,7 +2420,7 @@ static esp_err_t h_labels_confirmed(httpd_req_t *req)
             snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", e->d_name);
             FILE *fp = fopen(path, "r");
             if (!fp) continue;
-            char line[400];
+            char line[768];
             bool header = true;
             while (fgets(line, sizeof(line), fp)) {
                 if (header) { header = false; continue; }
@@ -2570,7 +2589,7 @@ static esp_err_t h_roi_todo(httpd_req_t *req)
 
     httpd_resp_send_chunk(req, "[", 1);
     bool first = true;
-    char line[400];
+    char line[768];
     bool header = true;
     while (fgets(line, sizeof(line), fp)) {
         if (header) { header = false; continue; }
@@ -3502,7 +3521,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"time\":\"%s\",\"clockSrc\":\"%s\","
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
-        "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u}",
+        "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
+        "\"spLive\":%s}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3519,7 +3539,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned long) capture_event_count(),
         capture_last_event_path(),
         classify_last_species()[0] ? species : "",
-        (unsigned) classify_last_confidence());
+        (unsigned) classify_last_confidence(),
+        classify_last_event_identified() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

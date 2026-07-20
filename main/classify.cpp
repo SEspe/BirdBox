@@ -65,6 +65,8 @@ static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
 static char             s_last_latin[64] = "";
 static uint8_t          s_last_conf = 0;      /* confidence % of the last event */
+static volatile bool    s_last_event_ided = false; /* did the MOST RECENT event get a real
+                                                       species? gates the live badge (v2.29) */
 
 #if CONFIG_IDF_TARGET_ESP32S3
 
@@ -689,9 +691,11 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
  * (scored==0 → decline), never hammering a throttled endpoint. `scored_out` gets
  * the winning species' vote count for the visit-log "N/M frame(s)" line. */
 static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
-                       int *scored_out)
+                       int *scored_out, char *pf, size_t pf_len)
 {
     if (!inat_cv_enabled()) return false;
+    if (pf && pf_len) pf[0] = '\0';       /* per-frame scores for the visit log (v2.29) */
+    size_t pfo = 0;
 
     /* Per distinct species (latin binomial): how many frames voted for it, and
      * the single most-confident frame's full result + ROI — what we'd log. Held
@@ -718,7 +722,33 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         char full[128];
         snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
         classify_result_t r;
-        if (inat_classify_file(full, &r) != ESP_OK) {
+        esp_err_t e = inat_classify_file(full, &r);
+
+        /* Record this frame's contribution for the visit-log per-frame column:
+         * "<binomial>=<pct>" for a decided species, "<binomial>?=<pct>" when the
+         * frame was unsure/sub-threshold (binomial from the raw top-1), or "err"
+         * on a failed call — so a table can show the true % per image (v2.29). */
+        if (pf && pfo + 48 < pf_len) {
+            if (e != ESP_OK) {
+                pfo += snprintf(pf + pfo, pf_len - pfo, "%serr", pfo ? ";" : "");
+            } else {
+                char lat[48] = "";
+                if (r.latin[0]) {
+                    strlcpy(lat, r.latin, sizeof(lat));
+                } else {                    /* binomial from the raw top-1 label */
+                    const char *op = strchr(r.top_label[0], '(');
+                    size_t ll = op ? (size_t)(op - r.top_label[0]) : strlen(r.top_label[0]);
+                    while (ll && r.top_label[0][ll - 1] == ' ') ll--;
+                    if (ll >= sizeof(lat)) ll = sizeof(lat) - 1;
+                    memcpy(lat, r.top_label[0], ll); lat[ll] = '\0';
+                }
+                pfo += snprintf(pf + pfo, pf_len - pfo, "%s%s%s=%u",
+                                pfo ? ";" : "", lat, r.latin[0] ? "" : "?",
+                                r.confidence_pct);
+            }
+        }
+
+        if (e != ESP_OK) {
             ESP_LOGW(TAG, "iNat CV frame %d failed (%s)", i, inat_last_error());
             continue;                       /* 429 cooldown fails all → scored 0 */
         }
@@ -774,6 +804,7 @@ static void classify_task(void *arg)
         roi_t win = roi_none();
         int   scored = 0;
         const char *source = "";   /* engine that produced the label (§3.2.3) */
+        char  pf_detail[320] = ""; /* per-frame iNat scores for the visit log (v2.29) */
 
         /* Three-tier cascade (§3.2.3), cheapest-good-answer first:
          *   1. iNaturalist online CV (PRIMARY, free) — when enabled. Scores all
@@ -794,7 +825,7 @@ static void classify_task(void *arg)
             classify_result_t ir;
             roi_t iw = roi_none();
             int   isc = 0;
-            if (inat_event(&job, &ir, &iw, &isc)) {
+            if (inat_event(&job, &ir, &iw, &isc, pf_detail, sizeof(pf_detail))) {
                 best = ir; win = iw; scored = isc;
                 have_best = true; source = "inatcv";
             }
@@ -833,7 +864,12 @@ static void classify_task(void *arg)
             snprintf(roi_s, sizeof(roi_s), "%.2f-%.2f-%.2f-%.2f",
                      log_roi.x0, log_roi.y0, log_roi.x1, log_roi.y1);
 
-        char line[400];
+        /* The MOST RECENT event drives the live badge: true only when it got a
+         * real species, so a new unclassified visit clears the last-shown one
+         * (v2.29) instead of leaving a stale label over the current bird. */
+        s_last_event_ided = have_best && best.latin[0] != '\0';
+
+        char line[720];   /* roomy: + the per-frame column (up to ~10 frames) */
         if (have_best) {
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
             strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
@@ -843,12 +879,12 @@ static void classify_task(void *arg)
                      scored, job.path_count, (long) best.duration_ms);
             char top3[112];
             top3_field(&best, top3, sizeof(top3));
-            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s,%s",
+            snprintf(line, sizeof(line), "%s,%s,%u,%d,%s,,%s,%s,%s,%s,%s",
                      job.ts, best.species, best.confidence_pct, job.frames,
-                     job.first_path, best.latin, roi_s, top3, source);
+                     job.first_path, best.latin, roi_s, top3, source, pf_detail);
         } else {
-            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,%s,,%s",
-                     job.ts, job.frames, job.first_path, roi_s, source);
+            snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,%s,,%s,%s",
+                     job.ts, job.frames, job.first_path, roi_s, source, pf_detail);
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
@@ -972,7 +1008,7 @@ static bool rc_rewrite_row(const char *csv, const recheck_row_t *row,
     if (!in) { storage_write_unlock(); return false; }
     FILE *out = fopen(tmp, "w");
     if (!out) { fclose(in); storage_write_unlock(); return false; }
-    char line[400];
+    char line[768];
     bool swapped = false;
     while (fgets(line, sizeof(line), in)) {
         if (!swapped &&
@@ -1005,7 +1041,7 @@ static void recheck_task(void *arg)
         storage_write_lock();          /* stable scan vs concurrent appends */
         FILE *f = fopen(csv, "r");
         if (f) {
-            char line[400];
+            char line[768];
             bool header = true;
             while (n < RECHECK_MAX_ROWS && fgets(line, sizeof(line), f)) {
                 if (header) { header = false; continue; }
@@ -1370,7 +1406,7 @@ static void inat_batch_task(void *arg)
         int nc = 0;
         FILE *fp = fopen(csv, "r");
         if (fp) {
-            char line[400];
+            char line[768];
             bool header = true;
             while (fgets(line, sizeof(line), fp) && nc < INAT_BATCH_MAX) {
                 if (header) { header = false; continue; }
@@ -1614,6 +1650,7 @@ int         classify_region_matches(void)   { return s_region_matches; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
+bool        classify_last_event_identified(void) { return s_last_event_ided; }
 
 const char *classify_label(int i)
 {
