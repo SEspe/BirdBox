@@ -741,9 +741,12 @@ static bool cloud_event(const cls_job_t *job, classify_result_t *out, roi_t *win
  * empty-frame detection). Any failure returns false too, so a hiccup never drops
  * the event. */
 /* A single confident frame may stand alone (skip the >=2-frame corroboration)
- * only at/above this confidence — high enough that the lone-false-positive class
- * the guard targets (a 50-70% wrong magpie) still needs a second frame. (v2.33) */
-#define INAT_SOLO_ACCEPT_PCT 90
+ * only at/above this confidence. 75 catches an obvious lone bird that didn't
+ * linger (an 81% Dompap / 78% Bokfink were being dropped at 90) while staying
+ * ABOVE the 47-72% band where iNat flip-flops between look-alikes (the magpie
+ * Pica pica/hudsonia case the guard targets), so those still need a 2nd frame.
+ * (v2.33, lowered 90→75 v2.34.) */
+#define INAT_SOLO_ACCEPT_PCT 75
 
 /* Score one frame with iNat, best-of whole-vs-crop (v2.31). Always scores the
  * whole frame; when detect_zoom is on and the frame has a motion ROI, also scores
