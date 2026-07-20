@@ -11,7 +11,7 @@ project's requirements document *and* change record; every functional change
 gets a changelog entry there.
 
 > **Status: v1 functionally complete.** WiFi provisioning, live streaming,
-> microSD storage + retention pruning, motion-triggered capture, on-device
+> microSD storage + retention pruning, motion-triggered capture, online
 > species ID, and the full seven-tab web UI (Live, Gallery, Stats, Settings,
 > Debug, WiFi, OTA Update) are all implemented and verified live on the
 > reference hardware. See the [FSD changelog](FSD_BirdBox.md) for the
@@ -37,6 +37,15 @@ gets a changelog entry there.
   manual ✨ identify button. The 24 h iNat token **auto-refreshes** from a
   stored session cookie — no daily re-paste.
 
+  **Background triggers are filed automatically.** A swaying branch or a shadow
+  is not a missed bird, and iNaturalist says so: it tags every guess with an
+  *iconic taxon*, and on an empty scene its top guess is a plant or a mammal
+  rather than a bird. When that holds for **every** frame of an event, BirdBox
+  files it as **"no bird"** instead of leaving it unclassified — so the review
+  pile stays down to genuinely unidentified birds. It is deliberately
+  conservative: a bird spotted in *any* frame keeps the event unclassified for
+  you to look at.
+
   > **Note — the on-device model was abandoned.** Earlier firmware ran a
   > quantized TFLite-Micro classifier ("nordic") on the S3 itself. It was given
   > up and removed (v0.74.0 / FSD §3.2): usable accuracy needed **per-species
@@ -48,12 +57,13 @@ gets a changelog entry there.
   > cloud).
 - **Gallery** — browse captures by day; each image carries a per-image
   **classification state** (unclassified / classified / human-confirmed /
-  no-bird / confirmed-no-bird), colour-badged on the thumbnail. **Filter** by
+  no-bird / confirmed-no-bird / other-not-a-bird / unknown), colour-badged on
+  the thumbnail. **Filter** by
   state, including a **Near threshold** view that surfaces under-scored birds
   (top guess just below the confidence setting) for quick review. Delete a
   single photo, multi-select delete, delete a whole day, or **wipe a day**
   (photos + that day's stats together).
-- **Human-in-the-loop classification** — accept the model's guess with one
+- **Human-in-the-loop classification** — accept the guess with one
   click (**✓ confirm**), correct it (**✎ relabel**, with autocomplete + a
   free-text/"No bird" option), or re-run **identify** on a saved photo (which
   now persists its result). Confirmed labels become the authoritative tag *and*
@@ -72,7 +82,7 @@ gets a changelog entry there.
   to correct how the camera is physically mounted), timezone, NTP server, IR
   LED mode.
 - **Debug tab** — heap/uptime/WiFi health, SD card status, camera sensor info,
-  species-ID model/label counts.
+  the active classifier + its species-list counts, and open-HTTP-socket count.
 - **WiFi tab** — network scan + credential save, DHCP or static IP.
 - **OTA Update** — upload a `.bin` from the browser; dual OTA partitions with
   automatic bootloader rollback if an image fails to boot cleanly.
@@ -83,7 +93,7 @@ gets a changelog entry there.
 
 | Part | Notes |
 |---|---|
-| ESP32-S3 camera board | Primary target — reference unit is a generic "ESP32-S3-CAM" (N16R8, OV2640). 8 MB PSRAM required for species ID. |
+| ESP32-S3 camera board | Primary target — reference unit is a generic "ESP32-S3-CAM" (N16R8, OV2640). 8 MB PSRAM for the HD framebuffers. |
 | AI-Thinker ESP32-CAM | Works, but without species identification (FSD §3.2) |
 | microSD card, FAT32 | Capture storage + visit log |
 | PIR sensor *(optional)* | First-stage motion trigger |
