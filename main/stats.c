@@ -124,7 +124,7 @@ static void stats_ingest_file(stats_t *out, const char *fname)
     if (!fp) return;
     /* Sized past the longest possible row (~330 with roi/top3, v1.33): an
      * fgets split would surface the row's tail as a bogus extra row. */
-    char line[400];
+    char line[768];
     bool header = true;
     while (fgets(line, sizeof(line), fp)) {
         if (header) { header = false; continue; }
@@ -229,7 +229,7 @@ int stats_list_images(const char *want, stats_img_t *out, int max)
         snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/log/%.40s", names[f]);
         FILE *fp = fopen(path, "r");
         if (!fp) continue;
-        char line[400];
+        char line[768];
         bool header = true;
         while (fgets(line, sizeof(line), fp)) {
             if (header) { header = false; continue; }

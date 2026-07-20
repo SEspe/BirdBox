@@ -375,7 +375,7 @@ static void storage_migrate_perday(void)
         /* (2) split rows into per-day files (verbatim — ROI column untouched) */
         FILE *in = fopen(mpath, "r");
         if (!in) continue;
-        char line[400];
+        char line[768];
         bool header = true;
         char cur[11] = "";
         FILE *out = NULL;
@@ -531,7 +531,7 @@ int storage_reset_stats_day(const char *date)
 
     /* Sized past the longest possible row (~330 with roi/top3) — an fgets
      * split would misjudge the row's tail as a separate (kept) line. */
-    char line[400];
+    char line[768];
     bool header = true;
     int kept = 0;
     while (fgets(line, sizeof(line), in)) {
@@ -577,7 +577,7 @@ esp_err_t storage_set_roi(const char *date, const char *file, const char *roi)
         ESP_LOGE(TAG, "set_roi: temp open failed"); return ESP_FAIL; }
 
     bool found = false;
-    char line[400];
+    char line[768];
     bool header = true;
     while (fgets(line, sizeof(line), in)) {
         if (header) { fputs(line, out); header = false; continue; }
@@ -635,7 +635,7 @@ esp_err_t storage_confirm(const char *date, const char *file)
         ESP_LOGE(TAG, "confirm: temp open failed"); return ESP_FAIL; }
 
     bool found = false;
-    char line[400];
+    char line[768];
     bool header = true;
     while (fgets(line, sizeof(line), in)) {
         if (header) { fputs(line, out); header = false; continue; }
@@ -762,7 +762,7 @@ esp_err_t storage_relabel(const char *date, const char *file,
 
     bool found = false;
     if (in) {
-        char line[400];
+        char line[768];
         bool header = true;
         while (fgets(line, sizeof(line), in)) {
             if (header) { fputs(line, out); header = false; continue; }
@@ -852,7 +852,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
 
     int applied_n = 0;
     if (in) {
-        char line[400];
+        char line[768];
         bool header = true;
         while (fgets(line, sizeof(line), in)) {
             if (header) { fputs(line, out); header = false; continue; }
