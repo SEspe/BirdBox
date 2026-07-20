@@ -33,6 +33,10 @@ bool inat_have_token(void);
  * motion events with iNat online first. Cheap; the live-cascade primary gate. */
 bool inat_cv_enabled(void);
 
+/* Call after storing a new token so any leftover rate-limit cooldown / error is
+ * cleared and the fresh token is used on the next event (no reboot). */
+void inat_token_changed(void);
+
 /* Identify the bird in a JPEG via score_image. Blocks the caller for the
  * round-trip (~1-4 s: TLS + multipart upload + inference). Same species-decision
  * contract as classify.cpp: a confident bird species fills species+latin; an
