@@ -3904,6 +3904,7 @@ typedef enum {
     IDENT_CLOUD_TEST,    /* GET  /api/cloud-test    — reachability/key probe */
     IDENT_INAT_TEST,     /* GET  /api/inat-test     — iNat token/reachability probe */
     IDENT_INAT_FILE,     /* GET  /api/id-primary    — iNat CV round-trip on an SD JPEG */
+    IDENT_INAT_FILE_DBG, /* GET  /api/id-frame-debug — iNat CV round-trip, READ-ONLY (never saves) */
 } ident_kind_t;
 static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
                                 cloud_provider_t provider,
@@ -4091,6 +4092,28 @@ static void ident_task(void *arg)
             /* classify_send_json emits latin+common, so a confident iNat ID here
              * also seeds the Gallery's 📋 copy-last (idRun, §3.4/v2.17). */
             classify_send_json(req, &r, idfile_save(j->date, j->file, &r, "inatcv"));
+        }
+        break;
+    }
+
+    case IDENT_INAT_FILE_DBG: {
+        /* Read-only reclassify (debug): identical iNat round-trip to id-primary,
+         * but it NEVER writes the visit log — no relabel, no confirm, no state
+         * change. Lets an event be re-scored to inspect the per-frame result
+         * (and top-3 candidate spread, e.g. Pica pica vs the geo-wrong Pica
+         * hudsonia) without touching ground truth. `saved` is always false. */
+        char path[160];
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
+                 j->date, j->file);
+        if (inat_classify_file(path, &r) != ESP_OK) {
+            char e[128], msg[96];
+            json_escape(msg, sizeof(msg), inat_last_error());
+            snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
+            httpd_resp_set_status(req, "502 Bad Gateway");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, e);
+        } else {
+            classify_send_json(req, &r, false);   /* read-only: never saved */
         }
         break;
     }
@@ -4300,6 +4323,32 @@ static esp_err_t h_id_primary(httpd_req_t *req)
         return ESP_OK;
     }
     return ident_dispatch(req, IDENT_MODEL_FILE, CLOUD_OFF, date, file, NULL, 0);
+}
+
+/* GET /api/id-frame-debug?date=<day>&f=<file> — re-run iNaturalist CV on a saved
+ * frame and return the result WITHOUT saving it (no relabel/confirm/state change).
+ * Purely for debugging: redo an "unclassified" or geo-wrong event to inspect what
+ * iNat says per frame (species + top-3 candidates) without mutating ground truth.
+ * Requires iNat online to be enabled (there is no read-only debug for the other
+ * tiers — cloud costs money, the model has /api/classify-file). */
+static esp_err_t h_id_frame_debug(httpd_req_t *req)
+{
+    if (!storage_sd_present()) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no SD card");
+        return ESP_OK;
+    }
+    if (!inat_cv_enabled()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"iNaturalist online is off\"}");
+        return ESP_OK;
+    }
+    char date[24] = {0}, file[80] = {0};
+    if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
+        return ESP_OK;
+    }
+    return ident_dispatch(req, IDENT_INAT_FILE_DBG, CLOUD_OFF, date, file, NULL, 0);
 }
 
 /* POST /model/upload?name=<file> — write a model/labels file into /sd/model
@@ -4589,6 +4638,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/classify",  .method = HTTP_POST, .handler = h_classify_run },
         { .uri = "/api/classify-file", .method = HTTP_GET, .handler = h_classify_file },
         { .uri = "/api/id-primary", .method = HTTP_GET, .handler = h_id_primary },
+        { .uri = "/api/id-frame-debug", .method = HTTP_GET, .handler = h_id_frame_debug },
         { .uri = "/api/cloud-file", .method = HTTP_GET, .handler = h_cloud_file },
         { .uri = "/api/cloud-test", .method = HTTP_GET, .handler = h_cloud_test },
         { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
