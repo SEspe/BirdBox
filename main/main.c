@@ -62,8 +62,16 @@ int64_t  g_heap_min_ts_us = 0;
  * a handshake) and nothing is in flight: no motion, no recheck, no OTA. The
  * threshold sits well above the ~29 KB failure point so we act while TLS still
  * works, and the reboot costs ~20 s of a quiet moment. */
-#define HEAP_GUARD_MIN_BLOCK   40000
+/* 40000 was badly wrong and caused a reboot LOOP (v2.52): the box sits happily
+ * at 31744 for hours — that is a normal plateau, not a warning — and TLS only
+ * fails at ~28672. A few handshakes step the largest block down past 40 KB
+ * within a minute of boot, so the guard fired immediately, and since every
+ * reboot restarts the 60 s detection quarantine the box stopped capturing
+ * entirely while classifying nothing. Trip just above the real failure point,
+ * and never within MIN_UPTIME of a boot so a guard reboot can't chain. */
+#define HEAP_GUARD_MIN_BLOCK   30000
 #define HEAP_GUARD_STRIKES     3
+#define HEAP_GUARD_MIN_UPTIME_S 1800
 
 static void housekeeping_task(void *arg)
 {
@@ -74,6 +82,10 @@ static void housekeeping_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10000));
         uint32_t cur = esp_get_free_heap_size();
         if (cur < g_heap_min) { g_heap_min = cur; g_heap_min_ts_us = esp_timer_get_time(); }
+
+        /* Never inside the settle window — a guard reboot must not be able to
+         * trigger the next one, and a fresh boot has a backlog to classify. */
+        if (esp_timer_get_time() < (int64_t) HEAP_GUARD_MIN_UPTIME_S * 1000000) continue;
 
         size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (big >= HEAP_GUARD_MIN_BLOCK) { strikes = 0; continue; }
