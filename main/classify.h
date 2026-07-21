@@ -105,6 +105,9 @@ int         classify_region_matches(void);     /* loaded labels in the N-Euro
                                                   set; 0 = region filter N/A */
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
+bool        classify_busy(void);               /* an event is being scored right now (queue
+                                                  non-empty or a job in flight) — drives the
+                                                  live view's CLASSIFYING state (v2.54) */
 const char *classify_last_file(void);          /* web-relative path of the frame that
                                                   scored the last ID's peak confidence —
                                                   the "best image" of that event; "" if

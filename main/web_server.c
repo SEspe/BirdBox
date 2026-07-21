@@ -248,6 +248,17 @@ static const char INDEX_HTML[] =
 ".detbadge .dot{width:9px;height:9px;border-radius:50%;background:#fff;"
 "animation:detpulse 1s ease-in-out infinite}"
 ".liveWrap.det{outline:3px solid rgba(220,60,60,.9);outline-offset:-3px}"
+/* CLASSIFYING (v2.54): red = frames being captured, yellow = iNat scoring them.
+ * Same slot as DETECTING since the two never overlap — capture finishes before
+ * the job is queued — so the badge reads as one state machine, not two lamps. */
+".clsbadge{position:absolute;top:8px;left:8px;z-index:3;display:none;"
+"align-items:center;gap:6px;background:rgba(212,160,23,.92);color:#1b1500;"
+"font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
+"border-radius:4px}"
+".clsbadge.on{display:inline-flex}"
+".clsbadge .dot{width:9px;height:9px;border-radius:50%;background:#1b1500;"
+"animation:detpulse 1s ease-in-out infinite}"
+".liveWrap.cls{outline:3px solid rgba(212,160,23,.9);outline-offset:-3px}"
 ".liveWrap.mot{outline:5px solid #ff2f2f;outline-offset:-5px;"   /* 1s per-trigger motion flash */
 "box-shadow:inset 0 0 18px rgba(255,47,47,.6)}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
@@ -266,8 +277,12 @@ static const char INDEX_HTML[] =
 ".livesp .spc{font-weight:500;color:#a8d8bb;font-size:.82rem}"
 /* Last ID is a link to that event's best frame — inherit the badge's look so it
  * reads as a badge, with a subtle underline as the only affordance (v2.53). */
-".livesp .splink{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:.35em}"
+/* The badge itself is pointer-events:none so it never blocks the video, which
+ * also made the anchor inert — re-enable input on the LINK alone (v2.54). */
+".livesp .splink{color:inherit;text-decoration:none;display:inline-flex;align-items:center;"
+"gap:.35em;pointer-events:auto;cursor:pointer}"
 ".livesp .splink:hover{text-decoration:underline}"
+"#livesp2:has(.splink){pointer-events:auto}"
 ".livesp .splogo{display:inline-block;width:1.15em;height:1.15em;border-radius:50%;"
 "background:url('" BIRD_LOGO "') center/cover;flex:0 0 auto}"
 ".livesp.pop{animation:livesppop .55s ease}"
@@ -402,6 +417,7 @@ static const char INDEX_HTML[] =
 "</select></div>"
 "<div class='liveWrap' id='liveWrap'>"
 "<div class='detbadge' id='detbadge'><span class='dot'></span>DETECTING</div>"
+"<div class='clsbadge' id='clsbadge'><span class='dot'></span>CLASSIFYING</div>"
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror='liveErr()' onload='liveOk()'>"
@@ -888,9 +904,15 @@ static const char INDEX_HTML[] =
 "if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
 "else spL.classList.remove('on');}"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
-"var db=$g('detbadge'),lw=$g('liveWrap');"
+/* Two-stage state (v2.54): RED "detecting" while frames are being captured,
+ * then YELLOW "classifying" until iNat's verdict lands. Capture always finishes
+ * before the job is queued, so they never overlap — motion wins if they ever do,
+ * keeping exactly one lamp lit. */
+"var db=$g('detbadge'),cb=$g('clsbadge'),lw=$g('liveWrap');"
+"var busyCls=!!s.clsBusy&&!s.motion;"
 "if(db)db.classList.toggle('on',!!s.motion);"
-"if(lw)lw.classList.toggle('det',!!s.motion);"
+"if(cb)cb.classList.toggle('on',busyCls);"
+"if(lw){lw.classList.toggle('det',!!s.motion);lw.classList.toggle('cls',busyCls);}"
 "if(s.quarantineS>0){var pb=$g('pausebadge');"
 "if(pb){pb.innerHTML='\\u23F3 BOOT QUARANTINE '+s.quarantineS+'s';pb.classList.add('on');}}"
 "else if(typeof s.detect!=='undefined')detApply(!!s.detect);"
@@ -3654,7 +3676,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
-        "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\"}",
+        "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\","
+        "\"clsBusy\":%s}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3675,7 +3698,8 @@ static esp_err_t h_status(httpd_req_t *req)
         classify_last_event_identified() ? "true" : "false",
         (unsigned long) motion_trigger_count(),
         (unsigned long) classify_result_seq(),
-        classify_last_file());   /* "/captures/DATE/FILE.jpg" — device-generated, JSON-safe */
+        classify_last_file(),   /* "/captures/DATE/FILE.jpg" — device-generated, JSON-safe */
+        classify_busy() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
