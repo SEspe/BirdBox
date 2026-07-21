@@ -786,8 +786,9 @@ static void recheck_task(void *arg)
         classify_result_t best;
         roi_t win_roi = roi_none();
         char  pf[320] = "";
+        int   scored    = 0;
         bool  have_best = inat_cv_enabled() &&
-                          inat_event(&job, &best, &win_roi, NULL, pf, sizeof(pf));
+                          inat_event(&job, &best, &win_roi, &scored, pf, sizeof(pf));
         if (have_best) {
             char roi_s[24] = "";
             if (!roi_is_empty(win_roi))   /* always log the motion ROI (see above) */
@@ -806,8 +807,14 @@ static void recheck_task(void *arg)
             } else {
                 rc_rewrite_row(csv, row, nl);
             }
-        } else if (!row->add) {
-            /* iNat declined this time. Previously the row was left untouched, so a
+        } else if (!row->add && scored > 0) {
+            /* iNat ANSWERED and declined (scored > 0 — at least one frame really
+             * got a verdict). A decline with scored == 0 means the calls never got
+             * through (TLS dead, rate limit, no network), which is emphatically NOT
+             * evidence the label was wrong — clearing it there would let one outage
+             * wipe good labels off a whole day, and a long recheck is exactly when
+             * the cert-bundle leak (v2.50) kills TLS mid-run. Those rows are left
+             * alone (v2.51). Previously the row was left untouched, so a
              * recheck could only ever REPLACE a label with a better one and could
              * never clear a wrong one — a stale "no bird" (or a since-fixed bad ID)
              * survived every re-run, which is exactly what masked the v2.46/v2.47
