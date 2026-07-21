@@ -37,6 +37,9 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#if CONFIG_HEAP_TRACING
+#include "esp_heap_trace.h"   /* leak hunt for the outbound-HTTPS leak (v2.50) */
+#endif
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_camera.h"
@@ -4491,6 +4494,182 @@ static esp_err_t h_inat_refresh(httpd_req_t *req)
     return ident_dispatch(req, IDENT_INAT_REFRESH, CLOUD_OFF, NULL, NULL, NULL, 0);
 }
 
+/* GET /api/heapdbg — internal-DRAM forensics for the slow leak that kills TLS
+ * after ~6 h (§7). /api/sysinfo only reports free bytes and the largest block,
+ * which cannot separate a leak from fragmentation. This adds the deciding
+ * numbers: `allocBlocks` counts live allocations, so a steady climb IS the leak
+ * (and blocks-per-event says how many each event leaks), while allocBlocks flat
+ * with largestFree falling means fragmentation instead. `tasks` tests the
+ * task-stack theory — FreeRTOS stacks come out of internal DRAM, so a task that
+ * never exits shows here (count only; per-task names need
+ * CONFIG_FREERTOS_USE_TRACE_FACILITY, which is off). Read-only. */
+/* Internal-DRAM block count — the metric that exposes this leak. Free BYTES
+ * barely move (the leaked blocks are ~35 B each), so only the count shows it. */
+static unsigned dbg_blocks(void)
+{
+    multi_heap_info_t h = {0};
+    heap_caps_get_info(&h, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    return (unsigned) h.allocated_blocks;
+}
+
+#if CONFIG_HEAP_TRACING
+/* GET /api/heaptrace?a=start|stop|dump — standalone heap tracing in LEAKS mode
+ * (v2.50). `start` records every allocation with its call stack and DROPS the
+ * record when it is freed, so whatever remains after a stop is exactly what
+ * leaked. `dump` returns those survivors as JSON — size plus the caller PCs,
+ * which resolve to function names off-device with:
+ *     xtensa-esp32s3-elf-addr2line -pfiaC -e build/BirdBox.elf <pc> ...
+ * 128 records is ample: the hunt is a handful of HTTPS calls, not a whole run.
+ * Tracing costs time on every malloc, so it is opt-in and left off. */
+#define TRACE_RECORDS 128
+static heap_trace_record_t s_trace[TRACE_RECORDS];
+static bool s_trace_ready = false;
+
+static esp_err_t h_heaptrace(httpd_req_t *req)
+{
+    char q[48] = {0}, a[12] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "a", a, sizeof(a));
+
+    if (strcmp(a, "start") == 0) {
+        if (!s_trace_ready) {
+            if (heap_trace_init_standalone(s_trace, TRACE_RECORDS) != ESP_OK) {
+                httpd_resp_sendstr(req, "{\"ok\":false,\"msg\":\"trace init failed\"}");
+                return ESP_OK;
+            }
+            s_trace_ready = true;
+        }
+        esp_err_t e = heap_trace_start(HEAP_TRACE_LEAKS);
+        char b[64];
+        snprintf(b, sizeof(b), "{\"ok\":%s,\"mode\":\"leaks\"}", e == ESP_OK ? "true" : "false");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, b);
+        return ESP_OK;
+    }
+    if (strcmp(a, "stop") == 0) {
+        esp_err_t e = heap_trace_stop();
+        char b[80];
+        snprintf(b, sizeof(b), "{\"ok\":%s,\"live\":%u}",
+                 e == ESP_OK ? "true" : "false", (unsigned) heap_trace_get_count());
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, b);
+        return ESP_OK;
+    }
+    if (strcmp(a, "dump") == 0) {
+        size_t n = heap_trace_get_count();
+        httpd_resp_set_type(req, "application/json");
+        char b[224];
+        snprintf(b, sizeof(b), "{\"live\":%u,\"records\":[", (unsigned) n);
+        httpd_resp_send_chunk(req, b, strlen(b));
+        bool first = true;
+        for (size_t i = 0; i < n; i++) {
+            heap_trace_record_t r;
+            if (heap_trace_get(i, &r) != ESP_OK) continue;
+            int o = snprintf(b, sizeof(b), "%s{\"size\":%u,\"addr\":\"0x%08x\",\"pc\":[",
+                             first ? "" : ",", (unsigned) r.size, (unsigned) (uintptr_t) r.address);
+            first = false;
+            for (int k = 0; k < CONFIG_HEAP_TRACING_STACK_DEPTH; k++) {
+                if (!r.alloced_by[k]) break;
+                o += snprintf(b + o, sizeof(b) - o, "%s\"0x%08x\"", k ? "," : "",
+                              (unsigned) (uintptr_t) r.alloced_by[k]);
+            }
+            o += snprintf(b + o, sizeof(b) - o, "]}");
+            httpd_resp_send_chunk(req, b, o);
+        }
+        httpd_resp_send_chunk(req, "]}", 2);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "a=start|stop|dump");
+    return ESP_OK;
+}
+
+#endif /* CONFIG_HEAP_TRACING */
+
+/* GET /api/heapdbg?probe=1 — run ONE outbound HTTPS request stage by stage and
+ * report the live block count after each, so the leak is attributed to a
+ * specific call instead of guessed at. Stages: init, set_header x4, open,
+ * fetch+read, close, cleanup. A well-behaved client returns to `b0` at the end;
+ * whatever the residual is, and wherever it first appears, is the bug. */
+static void tls_probe(char *out, size_t osz)
+{
+    unsigned b0 = dbg_blocks();
+    esp_http_client_config_t cfg = {
+        .url               = "https://api.inaturalist.org/v1/users/me",
+        .method            = HTTP_METHOD_GET,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 15000,
+        .buffer_size       = 2048,
+        .buffer_size_tx    = 1024,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    unsigned b1 = dbg_blocks();
+    if (!c) { snprintf(out, osz, "\"probe\":\"init failed\""); return; }
+    esp_http_client_set_header(c, "User-Agent", "BirdBox-probe");
+    esp_http_client_set_header(c, "Accept", "application/json");
+    esp_http_client_set_header(c, "X-Probe-A", "1");
+    esp_http_client_set_header(c, "X-Probe-B", "2");
+    unsigned b2 = dbg_blocks();
+    esp_err_t e = esp_http_client_open(c, 0);
+    unsigned b3 = dbg_blocks();
+    int status = 0;
+    if (e == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        char sink[256];
+        while (esp_http_client_read(c, sink, sizeof(sink)) > 0) { }
+        status = esp_http_client_get_status_code(c);
+    }
+    unsigned b4 = dbg_blocks();
+    esp_http_client_close(c);
+    unsigned b5 = dbg_blocks();
+    esp_http_client_cleanup(c);
+    unsigned b6 = dbg_blocks();
+    snprintf(out, osz,
+             "\"probe\":{\"open\":\"%s\",\"status\":%d,"
+             "\"b0_start\":%u,\"b1_init\":%u,\"b2_headers\":%u,\"b3_open\":%u,"
+             "\"b4_read\":%u,\"b5_close\":%u,\"b6_cleanup\":%u,\"residual\":%d}",
+             esp_err_to_name(e), status, b0, b1, b2, b3, b4, b5, b6,
+             (int) b6 - (int) b0);
+}
+
+static esp_err_t h_heapdbg(httpd_req_t *req)
+{
+    multi_heap_info_t in = {0}, ps = {0};
+    heap_caps_get_info(&in, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    heap_caps_get_info(&ps, MALLOC_CAP_SPIRAM  | MALLOC_CAP_8BIT);
+    char buf[900];   /* base JSON ~300 B; ?probe=1 appends ~300 B more */
+    int n = snprintf(buf, sizeof(buf),
+        "{\"uptime\":%lu,\"tasks\":%u,"
+        "\"int\":{\"free\":%u,\"alloc\":%u,\"largestFree\":%u,\"minFree\":%u,"
+        "\"allocBlocks\":%u,\"freeBlocks\":%u,\"totalBlocks\":%u},"
+        "\"psram\":{\"free\":%u,\"largestFree\":%u,\"allocBlocks\":%u},"
+        "\"events\":%lu}",
+        (unsigned long) (esp_timer_get_time() / 1000000),
+        (unsigned) uxTaskGetNumberOfTasks(),
+        (unsigned) in.total_free_bytes, (unsigned) in.total_allocated_bytes,
+        (unsigned) in.largest_free_block, (unsigned) in.minimum_free_bytes,
+        (unsigned) in.allocated_blocks, (unsigned) in.free_blocks,
+        (unsigned) in.total_blocks,
+        (unsigned) ps.total_free_bytes, (unsigned) ps.largest_free_block,
+        (unsigned) ps.allocated_blocks,
+        (unsigned long) capture_event_count());
+
+    /* ?probe=1 appends a staged HTTPS run (several seconds — it goes to the
+     * network, so it is opt-in and never part of a plain heapdbg poll). */
+    char q[48] = {0}, pv[8] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    if (httpd_query_key_value(q, "probe", pv, sizeof(pv)) == ESP_OK && pv[0] == '1' &&
+        n > 0 && n < (int) sizeof(buf) - 320) {
+        char pr[300] = "";
+        tls_probe(pr, sizeof(pr));
+        n--;                                   /* drop the closing brace */
+        n += snprintf(buf + n, sizeof(buf) - n, ",%s}", pr);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 /* GET /api/frameroi?date=<day>&f=<file> — report the motion box the frame-ROI
  * sidecar holds for one frame, resolved through the SAME storage_frameroi_*
  * helpers the recheck path uses (v2.47). Read-only diagnostic: it answers "does
@@ -4855,7 +5034,7 @@ esp_err_t web_server_start(void)
     if (s_httpd) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 56;     /* headroom above route count (44 as of v1.93) — an
+    cfg.max_uri_handlers = 64;     /* headroom above route count (56 as of v2.50) — an
                                       exact-fit cap silently drops later registrations,
                                       404ing whichever routes land last (RemoteStart v1.27;
                                       hit again at v1.51 when the count crossed 32) */
@@ -4930,6 +5109,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/inat-refresh", .method = HTTP_POST, .handler = h_inat_refresh },
         { .uri = "/api/inat-login",   .method = HTTP_POST, .handler = h_inat_login   },
         { .uri = "/api/frameroi",     .method = HTTP_GET,  .handler = h_frameroi     },
+        { .uri = "/api/heapdbg",      .method = HTTP_GET,  .handler = h_heapdbg      },
+#if CONFIG_HEAP_TRACING
+        { .uri = "/api/heaptrace",    .method = HTTP_GET,  .handler = h_heaptrace    },
+#endif
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };

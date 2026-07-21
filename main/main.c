@@ -24,6 +24,8 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_ota_ops.h"
+#include "esp_heap_caps.h"   /* heap guard: largest-free-block watch (v2.50) */
+#include "esp_system.h"      /* esp_restart */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -45,14 +47,52 @@ static const char *TAG = "main";
 uint32_t g_heap_min       = UINT32_MAX;
 int64_t  g_heap_min_ts_us = 0;
 
+/* Heap guard (FSD v2.50). ESP-IDF's certificate-bundle CA callback
+ * (esp_crt_copy_asn1 → esp_crt_ca_cb_callback) leaks ~7 small INTERNAL-DRAM
+ * blocks per TLS handshake — confirmed by heap trace, and outside our code. The
+ * bytes are negligible but the holes shatter free space, and once the largest
+ * contiguous block falls under ~29 KB, every HTTPS handshake fails: iNaturalist
+ * classification stops dead while capture carries on, so events pile up
+ * unclassified and only a reboot fixes it. Measured ~6 h on a normal day.
+ *
+ * Silently losing classification is the one outcome this project won't accept
+ * (§3.2 never-drop-work), so a reboot is preferable to a box that looks alive
+ * and identifies nothing. Reboot when the largest internal block sits below the
+ * threshold on THREE consecutive checks (~30 s — never on a transient dip during
+ * a handshake) and nothing is in flight: no motion, no recheck, no OTA. The
+ * threshold sits well above the ~29 KB failure point so we act while TLS still
+ * works, and the reboot costs ~20 s of a quiet moment. */
+#define HEAP_GUARD_MIN_BLOCK   40000
+#define HEAP_GUARD_STRIKES     3
+
 static void housekeeping_task(void *arg)
 {
     g_heap_min       = esp_get_free_heap_size();
     g_heap_min_ts_us = esp_timer_get_time();
+    int strikes = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(10000));
         uint32_t cur = esp_get_free_heap_size();
         if (cur < g_heap_min) { g_heap_min = cur; g_heap_min_ts_us = esp_timer_get_time(); }
+
+        size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (big >= HEAP_GUARD_MIN_BLOCK) { strikes = 0; continue; }
+        strikes++;
+        ESP_LOGW(TAG, "heap guard: largest internal block %u B (strike %d/%d)",
+                 (unsigned) big, strikes, HEAP_GUARD_STRIKES);
+        if (strikes < HEAP_GUARD_STRIKES) continue;
+        /* An OTA cannot be checked (no busy flag) but is safe to interrupt —
+         * dual partitions plus rollback mean a killed upload just fails. */
+        bool rc_busy = false;
+        classify_recheck_status(&rc_busy, NULL, NULL, NULL, 0);
+        if (motion_active() || rc_busy) {
+            ESP_LOGW(TAG, "heap guard: work in flight — deferring reboot");
+            continue;
+        }
+        ESP_LOGE(TAG, "heap guard: internal DRAM fragmented (largest block %u B) — "
+                      "HTTPS would fail; rebooting to restore classification", (unsigned) big);
+        vTaskDelay(pdMS_TO_TICKS(500));      /* let the log drain */
+        esp_restart();
     }
 }
 

@@ -51,3 +51,18 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 # 16 allows the httpd pool of 12 that stops fresh requests stalling to purge a
 # stale socket. Requires deleting the generated sdkconfig to take effect.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Standalone heap tracing (FSD v2.50), for the outbound-HTTPS leak: every TLS
+# handshake leaves ~10-15 small INTERNAL-DRAM blocks that neither close() nor
+# cleanup() returns, shattering free space until the handshake can no longer get
+# a contiguous buffer and ALL classification stops after ~6 h. Byte-level stats
+# cannot name the culprit; HEAP_TRACE_LEAKS keeps a record of every still-live
+# allocation WITH its call stack, which does. Stack depth 6 so the trace reaches
+# past the mbedTLS/esp-tls wrappers into the actual caller.
+# Left OFF: tracing costs ~20 KB of internal DRAM (record buffer + per-malloc
+# bookkeeping), which is exactly the resource under investigation. To hunt a
+# leak again, uncomment these three, delete sdkconfig, rebuild, then drive
+# /api/heaptrace?a=start|stop|dump (the endpoint compiles only with tracing on).
+#CONFIG_HEAP_TRACING_STANDALONE=y
+#CONFIG_HEAP_TRACING=y
+#CONFIG_HEAP_TRACING_STACK_DEPTH=6
