@@ -105,6 +105,10 @@ int         classify_region_matches(void);     /* loaded labels in the N-Euro
                                                   set; 0 = region filter N/A */
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
+const char *classify_last_file(void);          /* web-relative path of the frame that
+                                                  scored the last ID's peak confidence —
+                                                  the "best image" of that event; "" if
+                                                  nothing has been identified (v2.53) */
 uint8_t     classify_last_confidence(void);    /* confidence % of last event */
 bool        classify_last_event_identified(void); /* did the most recent event get a real
                                                      species? false ⇒ clear the live badge */

@@ -45,6 +45,9 @@ static volatile int32_t s_last_ms = -1;
 static char             s_last_species[64] = "";
 static char             s_last_latin[64] = "";
 static uint8_t          s_last_conf = 0;      /* confidence % of the last event */
+static char             s_last_file[96] = "";  /* frame that scored the last ID's peak —
+                                                  the "best image" the live-view Last ID
+                                                  badge links to (v2.53) */
 static volatile bool    s_last_event_ided = false; /* did the MOST RECENT event get a real
                                                        species? gates the live badge (v2.29) */
 static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classification RESULT
@@ -302,7 +305,8 @@ static esp_err_t score_frame_best(const char *full, roi_t roi, classify_result_t
  * (scored==0 → decline), never hammering a throttled endpoint. `scored_out` gets
  * the winning species' vote count for the visit-log "N/M frame(s)" line. */
 static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
-                       int *scored_out, char *pf, size_t pf_len)
+                       int *scored_out, char *pf, size_t pf_len, char *best_out = NULL,
+                       size_t best_len = 0)
 {
     if (!inat_cv_enabled()) return false;
     if (pf && pf_len) pf[0] = '\0';       /* per-frame scores for the visit log (v2.29) */
@@ -313,7 +317,8 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
      * in PSRAM: an inat_classify_file() call runs a TLS handshake deep on this
      * task's stack, so the candidate table must not also sit on it. */
     typedef struct { char latin[64]; int votes; uint8_t peak;
-                     classify_result_t res; roi_t roi; } inat_cand_t;
+                     classify_result_t res; roi_t roi;
+                     char best[96]; } inat_cand_t;   /* frame that scored `peak` (v2.53) */
     inat_cand_t *cand = (inat_cand_t *) heap_caps_malloc(
         (size_t) job->path_count * sizeof(inat_cand_t),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -389,6 +394,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
             cand[slot].peak = r.confidence_pct;
             cand[slot].res  = r;
             cand[slot].roi  = job->rois[i];
+            strlcpy(cand[slot].best, job->paths[i], sizeof(cand[slot].best));
         }
     }
 
@@ -415,6 +421,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         *out = cand[win_k].res;
         *win = cand[win_k].roi;
         if (scored_out) *scored_out = cand[win_k].votes;
+        if (best_out && best_len) strlcpy(best_out, cand[win_k].best, best_len);
         ESP_LOGI(TAG, "iNat: %s %s %d/%d frame(s) (%u%%)",
                  out->species, cand[win_k].votes >= 2 ? "seconded by" : "solo high-conf",
                  cand[win_k].votes, scored, out->confidence_pct);
@@ -460,13 +467,17 @@ static void classify_task(void *arg)
          * Each tier degrades to the next on failure, so the row never silently
          * drops work (§3.2). `source` records which engine won. */
         bool have_best = false;
+        char best_file[96] = "";   /* frame behind the winning ID (v2.53) */
 
         if (inat_cv_enabled()) {
             classify_result_t ir;
             roi_t iw = roi_none();
             int   isc = 0;
-            if (inat_event(&job, &ir, &iw, &isc, pf_detail, sizeof(pf_detail))) {
+            char  ibest[96] = "";
+            if (inat_event(&job, &ir, &iw, &isc, pf_detail, sizeof(pf_detail),
+                           ibest, sizeof(ibest))) {
                 best = ir; win = iw; scored = isc;
+                strlcpy(best_file, ibest, sizeof(best_file));
                 have_best = true; source = "inatcv";
             }
         }
@@ -503,6 +514,9 @@ static void classify_task(void *arg)
             strlcpy(s_last_species, best.species, sizeof(s_last_species));
             strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
             s_last_conf = best.confidence_pct;
+            if (best.latin[0])
+                strlcpy(s_last_file, best_file[0] ? best_file : job.first_path,
+                        sizeof(s_last_file));
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);
@@ -970,6 +984,7 @@ int         classify_label_count(void)      { return (int) TARGET_SPECIES_N; }
 int         classify_region_matches(void)   { return (int) TARGET_SPECIES_N; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
+const char *classify_last_file(void)        { return s_last_file; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
 uint32_t    classify_result_seq(void)       { return s_cls_seq; }

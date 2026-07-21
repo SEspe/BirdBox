@@ -264,6 +264,10 @@ static const char INDEX_HTML[] =
 ".livesp .splbl{font-size:.6rem;letter-spacing:.05em;text-transform:uppercase;opacity:.55;"
 "font-weight:600;font-style:normal}"
 ".livesp .spc{font-weight:500;color:#a8d8bb;font-size:.82rem}"
+/* Last ID is a link to that event's best frame — inherit the badge's look so it
+ * reads as a badge, with a subtle underline as the only affordance (v2.53). */
+".livesp .splink{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:.35em}"
+".livesp .splink:hover{text-decoration:underline}"
 ".livesp .splogo{display:inline-block;width:1.15em;height:1.15em;border-radius:50%;"
 "background:url('" BIRD_LOGO "') center/cover;flex:0 0 auto}"
 ".livesp.pop{animation:livesppop .55s ease}"
@@ -857,19 +861,30 @@ static const char INDEX_HTML[] =
  * increments when the ASYNC result lands (seconds after capture) — the old
  * events-count trigger fired at capture time, before iNat replied, so a bird that
  * classified showed a stale "unclassified" and never refreshed. A classified
- * species shows for 3 min and is NOT wiped by an intervening unclassified event;
- * "unclassified" shows only when no species is live. LAST IDENTIFIED (right): the
- * last real species ID (s.species is sticky on the device). (v2.40) */
+ * species shows for 1 min and is NOT wiped by an intervening unclassified event;
+ * "unclassified" shows only when no species is live. A NEW EVENT blanks it
+ * immediately (see below). LAST IDENTIFIED (right): the last real species ID
+ * (s.species is sticky on the device), no TTL. (v2.40, retimed v2.53) */
 "if(spC){"
+/* A NEW EVENT blanks the badge at once (v2.53): while the next bird is being
+ * captured and scored, the previous bird's name is stale — better to show
+ * nothing for those seconds than the wrong species. evStart increments at
+ * CAPTURE time, clsSeq when the result lands, so this clears then refills. */
+"if(s.evStart!==g_evStart){g_evStart=s.evStart;"
+"spC.classList.remove('on');spC.dataset.v='';g_spAt=0;}"
 "if(s.clsSeq!==g_clsSeq){g_clsSeq=s.clsSeq;"
 "if(s.spLive&&s.species){var hc='<span class=splbl>current</span><span class=splogo></span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
 "spC.classList.remove('uncl');spC.dataset.v=hc;spC.innerHTML=hc;g_spAt=Date.now();"
 "spC.classList.add('on');spC.classList.remove('pop');void spC.offsetWidth;spC.classList.add('pop');}"
-"else if(!spC.classList.contains('on')||!g_spAt||Date.now()-g_spAt>180000){"
+"else if(!spC.classList.contains('on')||!g_spAt||Date.now()-g_spAt>60000){"
 "spC.classList.add('uncl');spC.dataset.v='u';spC.innerHTML='<span class=splbl>current</span>unclassified';g_spAt=Date.now();spC.classList.add('on');}}"
-"else if(g_spAt&&Date.now()-g_spAt>180000)spC.classList.remove('on');"
+"else if(g_spAt&&Date.now()-g_spAt>60000)spC.classList.remove('on');"
 "}"
-"if(spL){if(s.species){var hl='<span class=splbl>last id</span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+/* LAST ID links to the frame that scored that ID's PEAK confidence (spFile) —
+ * the event's best image, not merely its first frame (v2.53). No spFile (e.g.
+ * nothing identified since boot) falls back to plain text. */
+"if(spL){if(s.species){var hb='<span class=splbl>last id</span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
+"var hl=s.spFile?'<a class=splink href=\"'+esc(s.spFile)+'\" target=_blank rel=noopener>'+hb+'<\\/a>':hb;"
 "if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
 "else spL.classList.remove('on');}"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
@@ -884,7 +899,7 @@ static const char INDEX_HTML[] =
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
-"var g_motN=-1,g_clsSeq=-1,g_spAt=0;"   /* g_clsSeq: last classification-result seq shown in the Current badge; g_spAt: its shown-at (3-min TTL) */
+"var g_motN=-1,g_clsSeq=-1,g_evStart=-1,g_spAt=0;"   /* g_clsSeq: last classification-result seq shown in the Current badge; g_evStart: last capture-time event seq (blanks the badge); g_spAt: its shown-at (1-min TTL) */
 "function motGrid(){var g=$g('motgrid');if(!g)return null;"
 "if(g.children.length!==64){g.innerHTML='';"
 "for(var c=0;c<64;c++){var d=document.createElement('div');d.className='mcell';g.appendChild(d);}}return g;}"
@@ -3639,7 +3654,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"motion\":%s,\"detect\":%s,\"quarantineS\":%u,"
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
-        "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu}",
+        "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3659,7 +3674,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned) classify_last_confidence(),
         classify_last_event_identified() ? "true" : "false",
         (unsigned long) motion_trigger_count(),
-        (unsigned long) classify_result_seq());
+        (unsigned long) classify_result_seq(),
+        classify_last_file());   /* "/captures/DATE/FILE.jpg" — device-generated, JSON-safe */
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
