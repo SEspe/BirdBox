@@ -4491,6 +4491,29 @@ static esp_err_t h_inat_refresh(httpd_req_t *req)
     return ident_dispatch(req, IDENT_INAT_REFRESH, CLOUD_OFF, NULL, NULL, NULL, 0);
 }
 
+/* GET /api/frameroi?date=<day>&f=<file> — report the motion box the frame-ROI
+ * sidecar holds for one frame, resolved through the SAME storage_frameroi_*
+ * helpers the recheck path uses (v2.47). Read-only diagnostic: it answers "does
+ * recheck actually get an ROI for this frame?" without a serial console. */
+static esp_err_t h_frameroi(httpd_req_t *req)
+{
+    char date[16] = "", file[80] = "";
+    if (!idfile_params(req, date, sizeof(date), file, sizeof(file))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad args");
+        return ESP_OK;
+    }
+    char *buf = storage_frameroi_load(date);
+    char roi[24] = "";
+    bool found = buf && storage_frameroi_find(buf, file, roi, sizeof(roi));
+    char out[160];
+    snprintf(out, sizeof(out), "{\"sidecar\":%s,\"found\":%s,\"roi\":\"%s\"}",
+             buf ? "true" : "false", found ? "true" : "false", roi);
+    free(buf);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out);
+    return ESP_OK;
+}
+
 /* POST /api/inat-login — log in with the stored username/password and mint a JWT
  * (v2.43). Two round-trips to inaturalist.org, so it goes to the identify worker
  * like the refresh above. Credentials come from Settings, never from this body. */
@@ -4906,6 +4929,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/inat-test", .method = HTTP_GET, .handler = h_inat_test },
         { .uri = "/api/inat-refresh", .method = HTTP_POST, .handler = h_inat_refresh },
         { .uri = "/api/inat-login",   .method = HTTP_POST, .handler = h_inat_login   },
+        { .uri = "/api/frameroi",     .method = HTTP_GET,  .handler = h_frameroi     },
         { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
         { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };

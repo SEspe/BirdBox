@@ -298,8 +298,15 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
 
     if (pick_score >= 0)
         cu_to_result(out, true, pick_common, pick_latin, pick_score);
-    else if (top_ic[0] && strcmp(top_ic, "Aves") != 0)
-        cu_to_result(out, false, "", "", top_sc);   /* top guess is a plant/mammal/… → "no bird" (v2.42) */
+    else if (top_ic[0] && strcmp(top_ic, "Aves") != 0 && first_bird_score < 0)
+        /* "No bird" needs BOTH: iNat's #1 is a plant/mammal/… AND no bird appears
+         * ANYWHERE in the results (v2.45). Requiring only #1 was wrong — on a wide
+         * feeder view the bread-covered stump dominates, so a real bird at the frame
+         * edge loses first place to Mammalia and the event was filed as background
+         * (measured: 3 of 5 sampled no-bird events actually held a bird — a Dompap,
+         * a chaffinch, a tit, all at the edge). If iNat lists any Aves species at
+         * all, a bird is in frame: stay unclassified and let a human look. */
+        cu_to_result(out, false, "", "", top_sc);
     else
         cu_to_result(out, true, "", "", first_bird_score < 0 ? 0 : first_bird_score);
 

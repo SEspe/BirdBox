@@ -100,6 +100,13 @@ esp_err_t storage_set_roi(const char *date, const char *file, const char *roi);
  * "x0-y0-x1-y1" string; empty/`,`-bearing inputs are rejected. */
 esp_err_t storage_log_frame_roi(const char *date, const char *file, const char *roi);
 
+/* Read side of that sidecar, for callers that need EVERY frame's box rather than
+ * just the event row's (recheck, v2.47). Load the day once (caller frees; NULL if
+ * absent), then look each frame up in the buffer — loading per frame would re-read
+ * the file thousands of times in a day-wide recheck. `out` gets "x0-y0-x1-y1". */
+char *storage_frameroi_load(const char *date);
+bool  storage_frameroi_find(const char *buf, const char *file, char *out, size_t outsz);
+
 /* Accept the model's current classification as human-confirmed (§3.4/v1.59):
  * copies the row's species into its "corrected" column. Returns ESP_ERR_NOT_FOUND
  * when there's nothing confirmable (no row, a sentinel/no-latin row, or already

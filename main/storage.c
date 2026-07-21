@@ -694,7 +694,7 @@ esp_err_t storage_log_frame_roi(const char *date, const char *file, const char *
 /* Load a day's frame-ROI sidecar into a PSRAM buffer (caller frees), NUL-
  * terminated, or NULL if absent/empty. Takes the write lock briefly, so call it
  * BEFORE the relabel paths take it — otherwise they'd self-deadlock. */
-static char *frameroi_load(const char *date)
+char *storage_frameroi_load(const char *date)
 {
     if (!date || strlen(date) < 10) return NULL;
     char path[64];
@@ -718,7 +718,7 @@ static char *frameroi_load(const char *date)
 
 /* Find `file`'s recorded box ("x0-y0-x1-y1") in a loaded sidecar buffer, newest
  * wins is irrelevant (a frame appears once). Returns false if absent/empty. */
-static bool frameroi_find(const char *buf, const char *file, char *out, size_t outsz)
+bool storage_frameroi_find(const char *buf, const char *file, char *out, size_t outsz)
 {
     if (!buf || !file || !file[0]) return false;
     size_t flen = strlen(file);
@@ -753,7 +753,7 @@ esp_err_t storage_relabel(const char *date, const char *file,
     storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
-    char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
+    char *frbuf = storage_frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
     FILE *in  = fopen(path, "r");
     FILE *out = fopen(tmp, "w");
@@ -804,7 +804,7 @@ esp_err_t storage_relabel(const char *date, const char *file,
         else
             strlcpy(ts, date, sizeof(ts));
         char frroi[24] = "";
-        frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
+        storage_frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
         fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,%s,\n", ts, c, date, file, c, l, frroi);
     }
     fclose(out);
@@ -843,7 +843,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
     storage_visit_log_path(date, path, sizeof(path));
     snprintf(tmp,  sizeof(tmp),  STORAGE_MOUNT_POINT "/log/relabel.tmp");
 
-    char *frbuf = frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
+    char *frbuf = storage_frameroi_load(date);   /* per-frame ROI sidecar, before the lock */
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
     FILE *in  = fopen(path, "r");
     FILE *out = fopen(tmp, "w");
@@ -895,7 +895,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
         else
             strlcpy(ts, date, sizeof(ts));
         char frroi[24] = "";
-        frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
+        storage_frameroi_find(frbuf, file, frroi, sizeof(frroi));   /* this frame's own box, if logged */
         fprintf(out, "%s,%s,0,1,/captures/%.10s/%s,%s,%s,%s,\n", ts, c, date, file, c, l, frroi);
         applied_n++;
     }

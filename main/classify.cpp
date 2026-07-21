@@ -166,6 +166,17 @@ static bool result_better(const classify_result_t *n, const classify_result_t *c
 {
     bool nr = n->latin[0] != '\0', cr = c->latin[0] != '\0';
     if (nr != cr) return nr;
+    if (!nr) {
+        /* Both are sentinels. "Unidentified bird" means a bird WAS seen; "no bird"
+         * means none was. Those aren't the same currency, so they must never be
+         * compared by confidence: a whole frame calling background at 15% would
+         * otherwise beat a crop that actually found a Dompap at 11% and the visit
+         * would be filed as background (v2.46 — measured on three real events).
+         * Bird evidence always wins, however low its score. */
+        bool n_nobird = strcmp(n->species, "no bird") == 0;
+        bool c_nobird = strcmp(c->species, "no bird") == 0;
+        if (n_nobird != c_nobird) return c_nobird;   /* better only if it replaces a no-bird */
+    }
     return n->confidence_pct > c->confidence_pct;
 }
 
@@ -737,19 +748,40 @@ static void recheck_task(void *arg)
     }
     s_rc_total = n;
 
+    /* The per-frame ROI sidecar for the day, loaded ONCE — a day-wide recheck
+     * looks up ~1000 frames and re-reading the file each time would be SD-bound. */
+    char *frbuf = storage_frameroi_load(s_rc_date);
+
     for (int i = 0; i < n; i++) {
         recheck_row_t *row = &rows[i];
 
         /* Reconstruct the event's frames and re-score them via iNaturalist online
          * exactly like a live event (best-of-crop + >=2-frame corroboration +
          * geo-filter), so a recheck matches live quality and applies the current
-         * Norway allowlist (v2.36). Only frame 0's ROI is known; follow-ups score
-         * whole-frame. */
+         * Norway allowlist (v2.36). Every frame's own motion box comes from the
+         * sidecar (v2.47), so follow-ups get cropped too. */
         cls_job_t job = {};
         int nf = rc_event_frames(row, job.paths);
         job.path_count = nf;
-        job.rois[0] = row->roi;
-        for (int k = 1; k < nf; k++) job.rois[k] = roi_none();
+        /* Give EVERY frame its own motion box from the per-day sidecar (v2.47).
+         * Previously only frame 0 got the event row's ROI and follow-ups got
+         * roi_none(), so they were scored whole-frame and never cropped — recheck
+         * was strictly weaker than live despite claiming to match it. That is what
+         * produced the v2.42 false "no bird" verdicts: whole-frame, iNat reads the
+         * bread-covered stump as Mammalia and misses a bird at the edge, while the
+         * crop finds it (measured: Dompap 11%, Bokfink 10%). */
+        for (int k = 0; k < nf; k++) {
+            job.rois[k] = (k == 0) ? row->roi : roi_none();
+            char rs[24] = "";
+            const char *b = strrchr(job.paths[k], '/');
+            if (frbuf && storage_frameroi_find(frbuf, b ? b + 1 : job.paths[k], rs, sizeof(rs))) {
+                float x0, y0, x1, y1;
+                if (sscanf(rs, "%f-%f-%f-%f", &x0, &y0, &x1, &y1) == 4) {
+                    job.rois[k].x0 = x0; job.rois[k].y0 = y0;
+                    job.rois[k].x1 = x1; job.rois[k].y1 = y1;
+                }
+            }
+        }
 
         classify_result_t best;
         roi_t win_roi = roi_none();
@@ -774,12 +806,26 @@ static void recheck_task(void *arg)
             } else {
                 rc_rewrite_row(csv, row, nl);
             }
+        } else if (!row->add) {
+            /* iNat declined this time. Previously the row was left untouched, so a
+             * recheck could only ever REPLACE a label with a better one and could
+             * never clear a wrong one — a stale "no bird" (or a since-fixed bad ID)
+             * survived every re-run, which is exactly what masked the v2.46/v2.47
+             * fixes when re-testing (v2.48). Rewrite it back to the unclassified
+             * sentinel instead, so declining is a real, visible outcome and the
+             * event returns to the review pile. Human labels never reach here —
+             * the row scan skips anything with a `corrected` value. */
+            char nl[720];
+            snprintf(nl, sizeof(nl), "%s,unclassified,0,%d,%s,,,,,,%s",
+                     row->ts, row->frames, row->path, pf);
+            rc_rewrite_row(csv, row, nl);
         }
         s_rc_done = i + 1;
     }
     free(rows);
     free(s_rc_filter);
     s_rc_filter = NULL;
+    free(frbuf);
     ESP_LOGI(TAG, "recheck %s: %d/%d row(s) re-classified", s_rc_date, s_rc_done, s_rc_total);
     s_rc_busy = false;
     vTaskDelete(NULL);
