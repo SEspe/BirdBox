@@ -50,6 +50,10 @@ static char             s_last_file[96] = "";  /* frame that scored the last ID'
                                                   badge links to (v2.53) */
 static volatile bool    s_last_event_ided = false; /* did the MOST RECENT event get a real
                                                        species? gates the live badge (v2.29) */
+static volatile bool    s_cls_busy = false;  /* a job is being scored right now — drives the
+                                                live view's yellow CLASSIFYING state (v2.54).
+                                                Set while the task holds a job, so it spans the
+                                                whole iNat round-trip, not just the queue. */
 static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classification RESULT
                                              lands (v2.40). The live-view "Current" badge keys
                                              on this, not the capture-time event count — the
@@ -450,6 +454,7 @@ static void classify_task(void *arg)
     cls_job_t job;
     for (;;) {
         if (xQueueReceive(s_jobq, &job, portMAX_DELAY) != pdTRUE) continue;
+        s_cls_busy = true;
 
         classify_result_t best;
         roi_t win = roi_none();
@@ -532,6 +537,9 @@ static void classify_task(void *arg)
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
         s_cls_seq = s_cls_seq + 1;   /* result landed — wakes the "Current" badge (v2.40) */
+        /* Clear only when the queue is empty too: back-to-back visits should read
+         * as one continuous CLASSIFYING state, not flicker between events. */
+        s_cls_busy = (uxQueueMessagesWaiting(s_jobq) > 0);
     }
 }
 
@@ -988,6 +996,7 @@ const char *classify_last_file(void)        { return s_last_file; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
 uint32_t    classify_result_seq(void)       { return s_cls_seq; }
+bool        classify_busy(void)             { return s_cls_busy; }
 
 /* The relabel picker's vocabulary is now the curated Norway target-species list
  * (target_species.h) — there's no model label file any more (v2.36). Returns
