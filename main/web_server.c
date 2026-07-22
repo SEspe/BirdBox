@@ -3709,7 +3709,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
         "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\","
-        "\"clsBusy\":%s,\"fastBird\":%s,\"cooldownS\":%u}",
+        "\"clsBusy\":%s,\"fastBird\":%s,\"cooldownS\":%u,"
+        "\"lastFrames\":%d,\"lastFast\":%d}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3733,7 +3734,8 @@ static esp_err_t h_status(httpd_req_t *req)
         classify_last_file(),   /* "/captures/DATE/FILE.jpg" — device-generated, JSON-safe */
         classify_busy() ? "true" : "false",
         classify_fastfallback_active() ? "true" : "false",
-        (unsigned) motion_cooldown_remaining_s());
+        (unsigned) motion_cooldown_remaining_s(),
+        capture_last_frames(), capture_last_fast());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
