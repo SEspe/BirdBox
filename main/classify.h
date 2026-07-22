@@ -51,7 +51,14 @@ static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
  * evidence-pooling over the same set. The event's first frame is often the
  * worst (bird mid-entry / motion-blurred), so scoring all and cross-checking
  * beats trusting any single view. */
-#define CLASSIFY_BEST_OF_N 10
+#define CLASSIFY_BEST_OF_N 14   /* up to 10 slow (capture_count clamp) + 4 fast (v2.56) */
+
+/* Fast-burst backup (v2.56): FAST_BURST_N frames ~FAST_BURST_MS apart, grabbed
+ * right at the trigger to catch a fast, short-visit bird the 1 s slow cadence
+ * misses. Captured on every event but SCORED only if the slow frames fail to
+ * classify (classify.cpp pools them in then). */
+#define FAST_BURST_N   4
+#define FAST_BURST_MS  200
 
 /* Queues a visit event for async best-of-N classification + visit-log write.
  * `paths` are the event's saved-frame paths (web-relative, e.g.
@@ -64,8 +71,8 @@ static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
  * ownership. Returns false (classifier disabled or queue full) so the caller
  * can write the fallback "unclassified" row. */
 bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
-                           int path_count, const char *ts, int frames,
-                           const char *first_path);
+                           int path_count, int fast_count, const char *ts,
+                           int frames, const char *first_path);
 
 /* Synchronous one-shot classification (POST /api/classify). Blocks the
  * caller for the full decode + inference (~seconds); shares a lock with
@@ -108,6 +115,9 @@ const char *classify_last_latin(void);         /* matching binomial, "" */
 bool        classify_busy(void);               /* an event is being scored right now (queue
                                                   non-empty or a job in flight) — drives the
                                                   live view's CLASSIFYING state (v2.54) */
+bool        classify_fastfallback_active(void); /* true while the fast-burst backup frames are
+                                                  being scored because the slow frames failed —
+                                                  drives the live view's FASTBIRD state (v2.56) */
 const char *classify_last_file(void);          /* web-relative path of the frame that
                                                   scored the last ID's peak confidence —
                                                   the "best image" of that event; "" if
