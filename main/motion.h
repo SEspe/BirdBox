@@ -18,6 +18,8 @@ uint64_t motion_trigger_cells(void);   /* 8x8 mask of the last trigger's cells (
  * 0 once detection is live. Lets the UI explain why nothing triggers at boot. */
 uint16_t motion_quarantine_remaining_s(void);
 uint16_t motion_cooldown_remaining_s(void);   /* post-event cool-down countdown, 0 = idle (v2.57) */
+uint32_t motion_fast_last_ms(void);           /* last fast-burst avg inter-frame gap, ms (v2.60) */
+uint32_t motion_fast_avg_ms(void);            /* 4-event moving average of it, ms */
 
 /* Runtime enable/disable of detection, for maintenance (FSD §5). A disabled
  * detector keeps its task alive but skips all frame grabbing/differencing, so

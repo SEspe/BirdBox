@@ -90,6 +90,8 @@ static roi_t    s_roi;                   /* changed-cell bbox of the last trigge
 static volatile bool     s_motion_active = false;
 static volatile uint32_t s_trigger_count = 0;
 static volatile int64_t  s_cooldown_until_us = 0;   /* post-event cool-down end (v2.57) */
+static volatile uint32_t s_fast_last_ms = 0;        /* last fast-burst avg inter-frame gap */
+static volatile uint32_t s_fast_avg_ms  = 0;        /* 4-event EMA of it (Debug, v2.60) */
 static volatile uint64_t s_trigger_cells = 0;   /* 8x8 mask of the last trigger's
                                                    winning cluster, for the live-view
                                                    overlay (bit c = cell, §3.1) */
@@ -354,13 +356,15 @@ static void capture_event(roi_t roi)
     int   fast   = 0;
     roi_t cur = roi;   /* trigger-time ROI for frame 0 */
 
-    /* Fast burst (v2.56): FAST_BURST_N frames ~FAST_BURST_MS apart, grabbed right
-     * at the trigger to catch a fast, short-visit bird the 1 s slow cadence would
-     * miss (e.g. a Granmeis that stops for under a second). Saved on every event
-     * but scored ONLY if the slow frames fail to classify (classify.cpp pools
-     * them in as a fallback). No per-frame re-detect and no early-out — speed is
-     * the point; all share the trigger ROI. They occupy the first `fast` slots of
-     * the event's frame arrays, so classify knows which are fast. */
+    /* Fast burst (v2.56): FAST_BURST_N frames grabbed back-to-back right at the
+     * trigger to catch a fast, short-visit bird the 1 s slow cadence would miss
+     * (e.g. a Granmeis that stops for under a second). Saved on every event but
+     * scored ONLY if the slow frames fail to classify (classify.cpp pools them in
+     * as a fallback). No per-frame re-detect, no early-out, and (v2.60) no added
+     * delay — grabs are as fast as the sensor allows; the OV2640 frame rate is the
+     * floor. They occupy the first `fast` slots of the event's frame arrays. We
+     * time the burst so the Debug panel can show the true average gap. */
+    int64_t fast_first_us = 0, fast_last_us = 0;
     for (int i = 0; i < FAST_BURST_N; i++) {
         camera_fb_t *fb = camera_grab();
         if (fb) {
@@ -368,10 +372,23 @@ static void capture_event(roi_t roi)
                                                 frames == 0 ? first_path : NULL,
                                                 sizeof(first_path));
             camera_return(fb);
-            if (err == ESP_OK) { frames++; fast++; }
+            if (err == ESP_OK) {
+                int64_t now = esp_timer_get_time();
+                if (fast == 0) fast_first_us = now;
+                fast_last_us = now;
+                frames++; fast++;
+            }
             else if (frames == 0) break;   /* no SD — don't spin on a dead write path */
         }
-        if (i + 1 < FAST_BURST_N) vTaskDelay(pdMS_TO_TICKS(FAST_BURST_MS));
+        if (FAST_BURST_MS && i + 1 < FAST_BURST_N) vTaskDelay(pdMS_TO_TICKS(FAST_BURST_MS));
+    }
+    /* Average inter-frame gap of this burst, plus a 4-event moving average, for
+     * the Debug panel (v2.60) — the real-world fast-frame speed, so the sensor
+     * frame-rate floor is visible rather than assumed. */
+    if (fast >= 2) {
+        uint32_t avg = (uint32_t) ((fast_last_us - fast_first_us) / 1000 / (fast - 1));
+        s_fast_last_ms = avg;
+        s_fast_avg_ms  = s_fast_avg_ms ? (uint32_t) ((s_fast_avg_ms * 3 + avg) / 4) : avg;
     }
 
     /* Normal slow frames. first_path already anchors the event on the first fast
@@ -482,3 +499,6 @@ uint16_t motion_cooldown_remaining_s(void)
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }
+
+uint32_t motion_fast_last_ms(void) { return s_fast_last_ms; }   /* Debug (v2.60) */
+uint32_t motion_fast_avg_ms(void)  { return s_fast_avg_ms; }
