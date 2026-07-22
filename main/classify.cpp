@@ -54,6 +54,9 @@ static volatile bool    s_cls_busy = false;  /* a job is being scored right now 
                                                 live view's yellow CLASSIFYING state (v2.54).
                                                 Set while the task holds a job, so it spans the
                                                 whole iNat round-trip, not just the queue. */
+static volatile bool    s_fast_active = false; /* true while the fast-burst backup frames are
+                                                  being scored (slow frames failed) — the live
+                                                  view's FASTBIRD DETECTION state (v2.56). */
 static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classification RESULT
                                              lands (v2.40). The live-view "Current" badge keys
                                              on this, not the capture-time event count — the
@@ -79,6 +82,9 @@ typedef struct {
     char     paths[CLASSIFY_BEST_OF_N][96];  /* saved-frame paths to score */
     roi_t    rois[CLASSIFY_BEST_OF_N];       /* per-frame motion zoom (§3.1) */
     int      path_count;
+    int      fast_count;                     /* the first `fast_count` of paths[] are the
+                                                fast-burst backup, scored only on fallback
+                                                (v2.56); the rest are the normal slow frames */
 } cls_job_t;
 static QueueHandle_t s_jobq = NULL;
 
@@ -339,86 +345,106 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
 
     int ncand = 0, scored = 0, nobird = 0, unid = 0;
     classify_result_t nobird_res; bool have_nobird = false;
-    for (int i = 0; i < job->path_count; i++) {
-        char full[128];
-        snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
-        classify_result_t r;
-        esp_err_t e = score_frame_best(full, job->rois[i], &r);
 
-        /* Record this frame's contribution for the visit-log per-frame column:
-         * "<binomial>=<pct>" for a decided species, "<binomial>?=<pct>" when the
-         * frame was unsure/sub-threshold (binomial from the raw top-1), or "err"
-         * on a failed call — so a table can show the true % per image (v2.29). */
-        if (pf && pfo + 48 < pf_len) {
-            if (e != ESP_OK) {
-                pfo += snprintf(pf + pfo, pf_len - pfo, "%serr", pfo ? ";" : "");
-            } else {
-                char lat[48] = "";
-                if (r.latin[0]) {
-                    strlcpy(lat, r.latin, sizeof(lat));
-                } else {                    /* binomial from the raw top-1 label */
-                    const char *op = strchr(r.top_label[0], '(');
-                    size_t ll = op ? (size_t)(op - r.top_label[0]) : strlen(r.top_label[0]);
-                    while (ll && r.top_label[0][ll - 1] == ' ') ll--;
-                    if (ll >= sizeof(lat)) ll = sizeof(lat) - 1;
-                    memcpy(lat, r.top_label[0], ll); lat[ll] = '\0';
+    /* Score frames [lo, hi) into the shared candidate table. Split out so the
+     * slow frames can be scored first and the fast-burst backup only added on
+     * fallback (v2.56); with fast_count 0 (recheck) this scores every frame in
+     * one pass, unchanged. */
+    auto score_range = [&](int lo, int hi) {
+        for (int i = lo; i < hi; i++) {
+            char full[128];
+            snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
+            classify_result_t r;
+            esp_err_t e = score_frame_best(full, job->rois[i], &r);
+
+            /* Per-frame visit-log column: "<binomial>=<pct>" for a decided
+             * species, "<binomial>?=<pct>" when unsure (binomial from raw top-1),
+             * or "err" on a failed call (v2.29). Fallback events append the fast
+             * frames' scores after the slow ones. */
+            if (pf && pfo + 48 < pf_len) {
+                if (e != ESP_OK) {
+                    pfo += snprintf(pf + pfo, pf_len - pfo, "%serr", pfo ? ";" : "");
+                } else {
+                    char lat[48] = "";
+                    if (r.latin[0]) {
+                        strlcpy(lat, r.latin, sizeof(lat));
+                    } else {                    /* binomial from the raw top-1 label */
+                        const char *op = strchr(r.top_label[0], '(');
+                        size_t ll = op ? (size_t)(op - r.top_label[0]) : strlen(r.top_label[0]);
+                        while (ll && r.top_label[0][ll - 1] == ' ') ll--;
+                        if (ll >= sizeof(lat)) ll = sizeof(lat) - 1;
+                        memcpy(lat, r.top_label[0], ll); lat[ll] = '\0';
+                    }
+                    pfo += snprintf(pf + pfo, pf_len - pfo, "%s%s%s=%u",
+                                    pfo ? ";" : "", lat, r.latin[0] ? "" : "?",
+                                    r.confidence_pct);
                 }
-                pfo += snprintf(pf + pfo, pf_len - pfo, "%s%s%s=%u",
-                                pfo ? ";" : "", lat, r.latin[0] ? "" : "?",
-                                r.confidence_pct);
+            }
+
+            if (e != ESP_OK) {
+                ESP_LOGW(TAG, "iNat CV frame %d failed (%s)", i, inat_last_error());
+                continue;                       /* 429 cooldown fails all → scored 0 */
+            }
+            scored++;
+            if (r.latin[0] == '\0') {           /* no species from this frame — but which kind? */
+                if (strcmp(r.species, "no bird") == 0) {   /* iNat's top guess was non-Aves */
+                    nobird++;
+                    if (!have_nobird) { nobird_res = r; have_nobird = true; }
+                } else {
+                    unid++;                        /* a bird was seen, just not identifiable */
+                }
+                continue;
+            }
+
+            int slot = -1;
+            for (int k = 0; k < ncand; k++)
+                if (strcmp(cand[k].latin, r.latin) == 0) { slot = k; break; }
+            if (slot < 0) {
+                slot = ncand++;
+                strlcpy(cand[slot].latin, r.latin, sizeof(cand[slot].latin));
+                cand[slot].votes = 0;
+                cand[slot].peak  = 0;
+            }
+            cand[slot].votes++;
+            if (r.confidence_pct >= cand[slot].peak) {   /* keep the strongest view */
+                cand[slot].peak = r.confidence_pct;
+                cand[slot].res  = r;
+                cand[slot].roi  = job->rois[i];
+                strlcpy(cand[slot].best, job->paths[i], sizeof(cand[slot].best));
             }
         }
+    };
 
-        if (e != ESP_OK) {
-            ESP_LOGW(TAG, "iNat CV frame %d failed (%s)", i, inat_last_error());
-            continue;                       /* 429 cooldown fails all → scored 0 */
-        }
-        scored++;
-        if (r.latin[0] == '\0') {           /* no species from this frame — but which kind? */
-            if (strcmp(r.species, "no bird") == 0) {   /* iNat's top guess was non-Aves */
-                nobird++;
-                if (!have_nobird) { nobird_res = r; have_nobird = true; }
-            } else {
-                unid++;                        /* a bird was seen, just not identifiable */
-            }
-            continue;
-        }
-
-        int slot = -1;
+    /* Winner = most-confident species seconded by >=2 frames; else a lone frame
+     * only if VERY confident (>= INAT_SOLO_ACCEPT_PCT, v2.33) so an obvious bird
+     * that didn't linger isn't dropped, while a weak lone hit still needs a
+     * second frame (the false-positive guard). */
+    auto pick_winner = [&]() -> int {
+        int w = -1;
         for (int k = 0; k < ncand; k++)
-            if (strcmp(cand[k].latin, r.latin) == 0) { slot = k; break; }
-        if (slot < 0) {
-            slot = ncand++;
-            strlcpy(cand[slot].latin, r.latin, sizeof(cand[slot].latin));
-            cand[slot].votes = 0;
-            cand[slot].peak  = 0;
-        }
-        cand[slot].votes++;
-        if (r.confidence_pct >= cand[slot].peak) {   /* keep the strongest view */
-            cand[slot].peak = r.confidence_pct;
-            cand[slot].res  = r;
-            cand[slot].roi  = job->rois[i];
-            strlcpy(cand[slot].best, job->paths[i], sizeof(cand[slot].best));
-        }
+            if (cand[k].votes >= 2 && (w < 0 || cand[k].peak > cand[w].peak)) w = k;
+        if (w < 0)
+            for (int k = 0; k < ncand; k++)
+                if (cand[k].peak >= INAT_SOLO_ACCEPT_PCT &&
+                    (w < 0 || cand[k].peak > cand[w].peak)) w = k;
+        return w;
+    };
+
+    /* Slow frames first. The fast-burst backup ([0, fast_count)) is scored — and
+     * uploaded to iNat — ONLY if the slow frames yield no winner (v2.56), so the
+     * common case pays no extra iNat calls, latency, or heap. On fallback the
+     * fast frames are POOLED with the slow ones (their scores are already in
+     * cand[]), so a fast frame can corroborate a weak slow frame. */
+    score_range(job->fast_count, job->path_count);
+    int win_k = pick_winner();
+    if (win_k < 0 && job->fast_count > 0) {
+        s_fast_active = true;               /* live view: FASTBIRD DETECTION */
+        ESP_LOGI(TAG, "iNat: slow frames declined — scoring %d fast-burst backup frame(s)",
+                 job->fast_count);
+        score_range(0, job->fast_count);
+        win_k = pick_winner();
+        s_fast_active = false;
     }
-
-    /* Winner = most-confident species seconded by >=2 frames. */
-    int win_k = -1;
-    for (int k = 0; k < ncand; k++)
-        if (cand[k].votes >= 2 && (win_k < 0 || cand[k].peak > cand[win_k].peak))
-            win_k = k;
-
-    /* Solo accept (v2.33): a lone frame may stand alone only when it's VERY
-     * confident (>= INAT_SOLO_ACCEPT_PCT) — so an obvious bird that didn't linger
-     * for a second frame isn't dropped (a 98% Dompap on a 1-frame event was going
-     * to Unidentified), while the corroboration guard still applies to everything
-     * below that bar: a low-confidence lone hit (the false-positive class the
-     * guard targets, e.g. a 50-70% magpie) still needs a second frame to agree. */
-    if (win_k < 0)
-        for (int k = 0; k < ncand; k++)
-            if (cand[k].peak >= INAT_SOLO_ACCEPT_PCT &&
-                (win_k < 0 || cand[k].peak > cand[win_k].peak))
-                win_k = k;
 
     bool have = win_k >= 0;
     if (have) {
@@ -893,8 +919,8 @@ esp_err_t classify_init(void)
 bool classify_available(void) { return inat_cv_enabled() || cloud_enabled(); }
 
 bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
-                           int path_count, const char *ts, int frames,
-                           const char *first_path)
+                           int path_count, int fast_count, const char *ts,
+                           int frames, const char *first_path)
 {
 #if CONFIG_IDF_TARGET_ESP32S3
     /* iNat (primary) or cloud must be on; otherwise decline so capture.c writes
@@ -911,6 +937,9 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
         job.rois[i] = rois ? rois[i] : roi_none();
     }
     job.path_count = n;
+    /* The fast-burst frames are the first fast_count of paths[]; cap to what
+     * actually fit (n) so a truncated event can't over-count them (v2.56). */
+    job.fast_count = fast_count < 0 ? 0 : (fast_count > n ? n : fast_count);
     /* A full queue means every buffered slot is a real visit waiting for a
      * label — giving up here writes a permanent "unclassified" row for a
      * moment of transient pressure. Wait up to 15 s for a slot instead — the
@@ -997,6 +1026,7 @@ uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
 uint32_t    classify_result_seq(void)       { return s_cls_seq; }
 bool        classify_busy(void)             { return s_cls_busy; }
+bool        classify_fastfallback_active(void) { return s_fast_active; }
 
 /* The relabel picker's vocabulary is now the curated Norway target-species list
  * (target_species.h) — there's no model label file any more (v2.36). Returns

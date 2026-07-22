@@ -58,7 +58,7 @@ esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
     return err;
 }
 
-void capture_event_finish(int frames, const char *first_path)
+void capture_event_finish(int frames, int fast_count, const char *first_path)
 {
     if (frames <= 0) {
         s_frame_n = 0;
@@ -85,7 +85,7 @@ void capture_event_finish(int frames, const char *first_path)
     bool queued = false;
     if (s_frame_n > 0)
         queued = classify_submit_event(s_frame_paths, s_frame_rois, s_frame_n,
-                                       ts, frames, first_path);
+                                       fast_count, ts, frames, first_path);
     if (!queued) {
         char line[200];
         snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,,", ts, frames, first_path);

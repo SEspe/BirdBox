@@ -350,8 +350,31 @@ static void capture_event(roi_t roi)
 {
     char  first_path[96] = "";
     int   frames = 0;
+    int   fast   = 0;
     roi_t cur = roi;   /* trigger-time ROI for frame 0 */
 
+    /* Fast burst (v2.56): FAST_BURST_N frames ~FAST_BURST_MS apart, grabbed right
+     * at the trigger to catch a fast, short-visit bird the 1 s slow cadence would
+     * miss (e.g. a Granmeis that stops for under a second). Saved on every event
+     * but scored ONLY if the slow frames fail to classify (classify.cpp pools
+     * them in as a fallback). No per-frame re-detect and no early-out — speed is
+     * the point; all share the trigger ROI. They occupy the first `fast` slots of
+     * the event's frame arrays, so classify knows which are fast. */
+    for (int i = 0; i < FAST_BURST_N; i++) {
+        camera_fb_t *fb = camera_grab();
+        if (fb) {
+            esp_err_t err = capture_event_frame(fb->buf, fb->len, roi,
+                                                frames == 0 ? first_path : NULL,
+                                                sizeof(first_path));
+            camera_return(fb);
+            if (err == ESP_OK) { frames++; fast++; }
+            else if (frames == 0) break;   /* no SD — don't spin on a dead write path */
+        }
+        if (i + 1 < FAST_BURST_N) vTaskDelay(pdMS_TO_TICKS(FAST_BURST_MS));
+    }
+
+    /* Normal slow frames. first_path already anchors the event on the first fast
+     * frame (or the first slow frame if every fast grab failed). */
     for (int i = 0; i < g_settings.capture_count; i++) {
         camera_fb_t *fb = camera_grab();
         if (fb) {
@@ -368,7 +391,7 @@ static void capture_event(roi_t roi)
         cur = s_roi;   /* fresh ROI: the zoom follows the bird between frames */
     }
 
-    capture_event_finish(frames, first_path);
+    capture_event_finish(frames, fast, first_path);
 }
 
 static void motion_task(void *arg)
