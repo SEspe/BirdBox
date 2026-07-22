@@ -24,7 +24,6 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"   /* keep-alive client mutex (v2.60) */
 #include "freertos/task.h"
 
 static const char *TAG = "inat";
@@ -61,19 +60,6 @@ static int64_t  s_cooldown_until_us = 0;        /* skip iNat until this time   *
 static int64_t  s_last_req_us       = 0;        /* pacing: previous request    */
 static bool     s_jwt_stale         = false;    /* a 401 flags the JWT expired →
                                                    refresh from the session cookie */
-
-/* Persistent keep-alive client for score_image (v2.60). ESP-IDF's cert-bundle CA
- * callback leaks ~7 internal-DRAM blocks per TLS HANDSHAKE (v2.50); one handshake
- * per frame meant 5–9 per event and fragmented the heap into a reboot every
- * ~107 min. Reusing one keep-alive connection across an event's frames drops that
- * to ONE handshake per event (the socket idles out between events, reconnecting
- * once). The two callers — the classify task and the identify worker — share this
- * handle, so a mutex serialises them (they were already effectively serial). On
- * ANY request error the handle is torn down so the next call reconnects cleanly;
- * a stale server-closed socket therefore costs one extra handshake, never a hang. */
-static esp_http_client_handle_t s_cv_client = NULL;
-static char             s_cv_url[128]  = "";     /* URL the cached client is bound to */
-static SemaphoreHandle_t s_cv_mtx      = NULL;   /* guards s_cv_client across tasks */
 
 /* Seconds of rate-limit cooldown remaining (0 = none). For the Debug card. */
 int inat_cooldown_s(void)
@@ -203,35 +189,16 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         strlcpy(url, INAT_CV_URL, sizeof(url));
     }
 
-    /* Serialise access to the shared keep-alive client (v2.60). */
-    if (!s_cv_mtx) s_cv_mtx = xSemaphoreCreateMutex();
-    if (s_cv_mtx) xSemaphoreTake(s_cv_mtx, portMAX_DELAY);
-
-    /* Reuse the kept-alive connection when the URL is unchanged; a geo-hint change
-     * (inat_loc → lat/lng query) alters the URL, so rebuild the client then. */
-    if (s_cv_client && strcmp(s_cv_url, url) != 0) {
-        esp_http_client_cleanup(s_cv_client);
-        s_cv_client = NULL;
-    }
-    if (!s_cv_client) {
-        esp_http_client_config_t cfg = {
-            .url               = url,
-            .method            = HTTP_METHOD_POST,
-            .crt_bundle_attach = esp_crt_bundle_attach,
-            .timeout_ms        = 30000,
-            .buffer_size       = 2048,
-            .buffer_size_tx    = 1024,
-            .keep_alive_enable = true,   /* hold the TLS session across an event's frames */
-        };
-        s_cv_client = esp_http_client_init(&cfg);
-        strlcpy(s_cv_url, url, sizeof(s_cv_url));
-    }
-    esp_http_client_handle_t c = s_cv_client;
-    if (!c) {
-        s_cv_url[0] = '\0';
-        if (s_cv_mtx) xSemaphoreGive(s_cv_mtx);
-        free(resp); free(auth); fail("http client init failed"); return ESP_FAIL;
-    }
+    esp_http_client_config_t cfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_POST,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms        = 30000,
+        .buffer_size       = 2048,
+        .buffer_size_tx    = 1024,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) { free(resp); free(auth); fail("http client init failed"); return ESP_FAIL; }
     esp_http_client_set_header(c, "Content-Type", "multipart/form-data; boundary=" INAT_BOUNDARY);
     esp_http_client_set_header(c, "Authorization", auth);
     esp_http_client_set_header(c, "User-Agent", INAT_UA);
@@ -258,14 +225,6 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
            (r = esp_http_client_read(c, resp + rd, INAT_RESP_MAX - 1 - rd)) > 0)
         rd += r;
     resp[rd] = '\0';
-    /* Keep-alive REQUIRES the body be fully consumed; iNat replies can exceed our
-     * 32 KB buffer (many candidates + ancestors), so drain any tail into a scratch
-     * — otherwise leftover bytes desync the next frame's request on this reused
-     * connection (v2.60). The first 32 KB already holds the ranked results. */
-    if (rd >= INAT_RESP_MAX - 1) {
-        char skip[512];
-        while (esp_http_client_read(c, skip, sizeof(skip)) > 0) { }
-    }
 
     int status = esp_http_client_get_status_code(c);
     if (status == 429) {
@@ -372,19 +331,8 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     ret = ESP_OK;
 
 done:
-    /* Keep-alive (v2.60): on success CLOSE the request only — the socket (and its
-     * TLS session) stays open for the next frame, so no new handshake and no new
-     * cert-bundle leak. On any error tear the client fully down and forget it so
-     * the next call reconnects cleanly; a half-broken kept connection must never
-     * be reused. Either way, release the mutex. */
-    if (ret == ESP_OK) {
-        esp_http_client_close(c);
-    } else {
-        esp_http_client_cleanup(c);
-        s_cv_client = NULL;
-        s_cv_url[0] = '\0';
-    }
-    if (s_cv_mtx) xSemaphoreGive(s_cv_mtx);
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
     free(resp);
     free(auth);
     if (ret != ESP_OK) s_last_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
