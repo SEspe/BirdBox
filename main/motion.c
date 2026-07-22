@@ -89,6 +89,7 @@ static roi_t    s_roi;                   /* changed-cell bbox of the last trigge
 
 static volatile bool     s_motion_active = false;
 static volatile uint32_t s_trigger_count = 0;
+static volatile int64_t  s_cooldown_until_us = 0;   /* post-event cool-down end (v2.57) */
 static volatile uint64_t s_trigger_cells = 0;   /* 8x8 mask of the last trigger's
                                                    winning cluster, for the live-view
                                                    overlay (bit c = cell, §3.1) */
@@ -427,7 +428,11 @@ static void motion_task(void *arg)
             s_trigger_count++;
             capture_event(s_roi);   /* snapshot the trigger ROI for species ID */
             s_motion_active = false;
+            /* Publish the cool-down end so the live view can show a countdown
+             * (v2.57); the delay itself is unchanged. */
+            s_cooldown_until_us = esp_timer_get_time() + (int64_t) g_settings.cooldown_s * 1000000;
             vTaskDelay(pdMS_TO_TICKS((uint32_t) g_settings.cooldown_s * 1000));
+            s_cooldown_until_us = 0;
             s_have_bg = false;   /* re-baseline: light/scene may have shifted */
         } else {
             vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
@@ -466,6 +471,13 @@ uint16_t motion_quarantine_remaining_s(void)
     int64_t up_s = esp_timer_get_time() / 1000000;
     return up_s < g_settings.detect_quarantine_s
          ? (uint16_t) (g_settings.detect_quarantine_s - up_s) : 0;
+}
+
+/* Seconds left in the post-event cool-down, 0 when not cooling down (v2.57). */
+uint16_t motion_cooldown_remaining_s(void)
+{
+    int64_t rem = s_cooldown_until_us - esp_timer_get_time();
+    return rem > 0 ? (uint16_t) ((rem + 999999) / 1000000) : 0;
 }
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
