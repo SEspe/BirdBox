@@ -437,9 +437,16 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
      * cand[]), so a fast frame can corroborate a weak slow frame. */
     score_range(job->fast_count, job->path_count);
     int win_k = pick_winner();
-    if (win_k < 0 && job->fast_count > 0) {
-        s_fast_active = true;               /* live view: FASTBIRD DETECTION */
-        ESP_LOGI(TAG, "iNat: slow frames declined — scoring %d fast-burst backup frame(s)",
+    /* Fall back to the fast burst ONLY if the slow frames actually SAW a bird —
+     * a candidate species short of the winner bar (ncand), or an unidentified
+     * Aves (unid). If every slow frame was background/no-bird (ncand==0 &&
+     * unid==0), this is a false trigger (a swaying branch, a shadow), so scoring
+     * the fast frames would just waste iNat calls on nothing (v2.58, operator's
+     * frequent-false-trigger fix). The all-background case still files as "no
+     * bird" below, unchanged. */
+    if (win_k < 0 && job->fast_count > 0 && (ncand > 0 || unid > 0)) {
+        s_fast_active = true;               /* live view: FASTBIRD CHECK */
+        ESP_LOGI(TAG, "iNat: slow frames saw a bird but declined — scoring %d fast-burst frame(s)",
                  job->fast_count);
         score_range(0, job->fast_count);
         win_k = pick_winner();
