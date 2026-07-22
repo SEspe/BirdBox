@@ -1,89 +1,108 @@
-# Session Notes — BirdBox (updated 2026-07-20)
+# Session Notes — BirdBox (updated 2026-07-22)
 
-The architecture changed fundamentally since the last notes: **the on-device
-TFLite-Micro model is gone** (0.74.0 / FSD v2.37 "nordic teardown"). Species ID
-is now **online only** — `inat.c` (iNaturalist CV) as the primary tier with a
-Norway geo-filter and multi-frame corroboration, escalating to the paid cloud
-tier (`cloud.c` → Claude or Gemini) when iNat declines.
+Long session. Reference unit at **192.168.1.111**, now on firmware **0.74.30**,
+`nordic` model long gone (classification is iNaturalist-online + optional cloud).
+Started at 0.74.4; ended 0.74.30. Everything below is committed + pushed to
+`master` (linear history) unless flagged otherwise.
 
-Reference unit: **192.168.1.111**, firmware **0.74.5** (it briefly lived on
-192.168.10.236 — always confirm with `GET /api/status`).
+## What shipped (all built, flashed, verified live)
 
-(Everything before 0.73 — the three-tier cascade, nordic-v0.8, the socket-pool
-sluggishness fix — is in git history + memory and not repeated here.)
+- **0.74.5 / v2.42** — "No bird" from iNat's `iconic_taxon_name`: when no in-region
+  bird is found and the top guess is non-Aves, file the event as **no bird** (state 3)
+  instead of unclassified — but only if EVERY scored frame agreed.
+- **0.74.7 / v2.43+v2.44** — **The box logs in to iNaturalist itself.** Form login
+  (GET /login → scrape CSRF → POST /session → cookie → JWT), so neither the 24 h JWT
+  nor the weeks-long cookie ever needs pasting. **OAuth is NOT an option** — every iNat
+  OAuth flow needs a registered app (~2-month approval). **iNat login name is `steine`**
+  (not SEspe, not the email). Settings gained username/password; password is plaintext
+  in NVS, stated in the UI. See memory `birdbox-inat-self-login`.
+- **0.74.8–11 / v2.45–v2.48** — **Four stacked bugs behind false "no bird" verdicts**,
+  each masking the next: (45) require no Aves *anywhere*, not just rank-1; (46)
+  `result_better()` compared a background score vs a bird score as equals, so 15%
+  "no bird" beat an 11% cropped Dompap — bird evidence must always win; (47) recheck
+  gave follow-up frames `roi_none()` so they were never cropped (the frame-ROI sidecar
+  had the boxes all along); (48) recheck only rewrote a row on success, so it could
+  never *clear* a wrong label — which masked 46/47 in testing.
+- **0.74.12–14 / v2.49–v2.52** — **The 6-hour TLS death, root-caused.** ESP-IDF's
+  cert-bundle CA callback (`esp_crt_copy_asn1` → `esp_crt_ca_cb_callback`) **leaks ~7
+  internal-DRAM blocks per TLS handshake** (found via `HEAP_TRACE_LEAKS`). Tiny blocks,
+  but they shatter contiguity until the largest block drops < ~29 KB and every HTTPS
+  handshake fails → classification dies silently. Added a **heap guard** (reboot when
+  the largest INTERNAL|8BIT block stays < 30000 at rest) + `/api/heapdbg` diagnostics.
+  See memory `birdbox-tls-certbundle-leak`. **Use `allocBlocks`, not free bytes** — the
+  leak is invisible in byte terms.
+- **0.74.15–16 / v2.51–v2.52** — recheck won't clear a label when the calls never got
+  through (`scored==0`); **guard threshold fixed** (was 40000, set from the boot value,
+  which caused a reboot LOOP that killed capture via the 60 s quarantine — 30000 is just
+  above the real ~28.7 KB failure point, + an 1800 s settle window so a guard reboot
+  can't chain).
+- **0.74.17–18 / v2.53–v2.54** — Live view: **Current** badge 1-min TTL + blanks on a new
+  event; **Last ID** links to the event's best (peak-confidence) frame; yellow
+  **CLASSIFYING** stage; the Last-ID link was inert (badge `pointer-events:none`).
+- **0.74.19 / v2.55** — **Guard was firing on mid-call transients, not a real leak.**
+  A live `score_image` transiently grabs a big block; a 10 s guard check landing mid-call
+  saw a dip that recovered. Fix: guard **defers on `classify_busy()`** (measure at rest)
+  + persists a snapshot to NVS so a reboot is self-explaining (`guardReboots`/`guardBlock`
+  in /api/status). `sysinfo.heapIntBig` was a *different* heap query than the guard's —
+  added `heapIntBig8` so monitoring matches.
+- **0.74.20 / v2.56** — **Fast-burst backup frames.** 4 fast frames at the trigger, before
+  the normal slow burst, scored ONLY if the slow frames fail (pooled with them on
+  fallback). For quick, short-visit birds (a Granmeis that stops < 1 s).
+- **0.74.21 / v2.57** — Live view shows the **post-event cool-down countdown**
+  (reference unit's `cooldown_s` is **120 s** — a big invisible pause before this).
+- **0.74.22 / v2.58** — Fast burst skips on false triggers (only fires if the slow frames
+  actually saw a bird); FASTBIRD badge relabelled **"FASTBIRD CHECK"** + amber (it's a
+  classification step, not a new detection — it appears mid-cool-down because classify
+  is async).
+- **0.74.23 / v2.59** — `lastFrames`/`lastFast` in /api/status + `tools/verify_fastburst.sh`
+  (empirical CI check for the 4-fast + N-slow structure).
+- **0.74.27 / v2.61** — Fast burst grabs **back-to-back (no delay)** + Debug shows the real
+  measured "Fast-burst gap".
+- **0.74.30 / v2.63** — **Gemini ✨ fixed.** `gemini-flash-lite-latest` now 400s on
+  `thinkingConfig.thinkingBudget=0` ("Request contains an invalid argument", generic, no
+  field detail — bisected). Removed `thinkingConfig`; verified (Dompap 95% in 4.3 s). Not
+  quota (that's 429). Widened error capture so full 4xx messages reach the Gallery tile.
 
-## Where the classifier landed
+## Reverted / dead ends (don't re-attempt without new info)
 
-- **iNat is the auto-classifier.** Region allowlist (`species_in_region`)
-  rejects geographically-impossible top hits (v2.28); per-frame scores land in
-  the visit log's `pf` column (v2.29); ROI crop is pixel-tight with a best-of
-  whole-vs-crop pick (v2.30/v2.31); a single very-confident frame can
-  solo-accept at **≥75%** (v2.33/v2.34).
-- **The JWT no longer needs a daily paste** — `inat_refresh_jwt` renews the 24 h
-  token from a stored `_inaturalist_session` cookie (v2.35/v2.36).
-- **The relabel-picker vocabulary is `target_species.h`**, not model labels.
-- `training-data/` is now historical: the retrain pipeline and its artifacts are
-  kept, but nothing on the device consumes them. `docs/MODEL.md` carries a
-  DEPRECATED banner.
+- **Keep-alive TLS reuse (v2.60, reverted v2.62).** Aimed at the cert-bundle leak by
+  reusing one connection across an event's frames. Committed with benefit unconfirmed;
+  live use was the verdict: **it doubled classification time (~9.6 s → ~16.8 s/call on a
+  healthy heap)** because iNat/Cloudflare idle-closes the socket between calls, so every
+  reuse paid dead-socket latency for no saved handshake. Operator noticed classification
+  "takes forever, longer than cool-down." Reverted to per-call init/cleanup.
+- **Fast frames at lower resolution (VGA).** Tested and reverted: VGA frames (confirmed
+  7× smaller, 19 KB vs 158 KB) capture at the **same ~1000 ms** — the **OV2640 frame rate
+  at 20 MHz XCLK (~1 fps) is a hardware floor, resolution-independent.** The nominal 200 ms
+  fast gap is **unreachable** on this sensor; best ever seen was ~535 ms (cold heap),
+  ~1190 ms typical. Removing the delay didn't help either. Proven three ways.
 
-## Why the on-device model was abandoned (don't re-litigate)
+## Key facts / gotchas established this session
 
-Usable accuracy needed per-species retraining, and the only obtainable training
-images are glossy, subject-filling "hero" shots that don't transfer to a fixed,
-low-res feeder view. Measured: iNat-weight backbone init **~80%** vs ImageNet
-**~92%** — features tuned to hero shots actively hurt. See memory
-`inat-backbone-init-hurts`.
-
-## Crop resolution: a closed dead end (tested twice)
-
-- **v2.39 (0.74.2)**: decoding the crop at full res gave **no gain** — iNat's
-  `score_image` resizes every upload to ~299² internally, so the existing ~360²
-  half-res crop already saturates its input. Granmeis got *worse* (19→15%), and
-  a full-res q90 crop **HTTP 500s** at iNat (forcing a quality drop that hurt
-  the hardest case). Reverted.
-- **v2.41 (0.74.4)**: re-tested on the specific theory that it would help a
-  *small* corner bird. A Kjøttmeis clipped at the frame edge went 4%→7% but
-  stayed **Unidentified and the wrong species**. Reverted again.
-- **Lesson:** for a clipped or badly-posed bird, no crop/resolution trick
-  helps. The fix is framing, or the cloud tier. Do not attempt a third time.
-
-## This session — 0.74.5 / FSD v2.42, "no bird" from the iconic taxon
-
-Many "unclassified" events are **background** (swaying branch, shadow), not a
-missed bird — and iNat already says so: every candidate carries
-`iconic_taxon_name`, and on an empty scene the **top** guess is a plant or
-mammal. We only used that field to *reject* non-birds; now:
-
-- `inat.c` — when no in-region bird is found and the **top** result is non-Aves,
-  emit **"no bird"** (`cu_to_result(bird=false)`) instead of "Unidentified bird".
-- `classify.cpp` (`inat_event`) — file the event as **"no bird"** (gallery state
-  3) only when **every** scored frame's top guess was non-Aves
-  (`ncand==0 && unid==0`). Conservative by design: a bird seen in *any* frame
-  keeps the event **unclassified** (state 0) for human review.
-- A "no bird" verdict is **final** — not escalated to the paid cloud tier (same
-  role the old nordic background guard played).
-- `top_label[]` is repopulated with the raw iconic names after `cu_to_result`,
-  so the `pf` column shows what drove it (`Plantae?=6;Mammalia?=4`).
-- Recheck (§3.4) inherits the behaviour, so re-running a day also buckets its
-  background. No route or settings change.
-
-**Status: built, OTA'd, device confirmed on 0.74.5.**
+- **iNat call latency ~9.6–10 s/frame** is network + iNat-server time, not the box (heap
+  healthy, timing rock-steady). At 5–9 frames that's 50–90 s/event — inherent to
+  iNat-online. Operator **reduced `capture_count` 5 → 3** late in the session to keep
+  events inside the 120 s cool-down (4 fast + 3 slow = 7 max; still ≥2-frame corroboration).
+- **The cert-bundle leak is still present.** The heap guard mitigates it (reboot ~every
+  107 min under load; instrumented, self-explaining). The durable fix is now **cert-pinning**
+  (pin iNat's root to bypass the leaky CA-bundle callback) — NOT connection reuse. Weigh the
+  cross-signed-root fragility (memory `esp-tls-cross-signed-root`).
+- **Edge-clipped birds are iNat's blind spot.** A bird cut off at the frame edge reads as
+  `Mammalia`/background — no crop or resolution trick recovers it (the fix is framing).
+  Also: iNat confuses the two *Perisoreus* jays and only ever offers the American
+  *canadensis* (geo-rejected) for a Lavskrike; and it won't reliably split Granmeis/Løvmeis.
+- **`version.h` one-liner trap:** a Python `open(p,"w").write(open(p).read()...)` truncates
+  the file (write opens/truncates before the read arg evaluates). Bit me 3×. Use the Write
+  tool for version.h, not an inline read-modify-write.
+- Build must run in **PowerShell** (idf_tools export), not the Bash tool (MSYS rejected).
 
 ## Open / next steps
 
-- **v2.42 is not yet empirically confirmed** — it only affects newly classified
-  or rechecked events. Operator chose to **wait for live events** rather than
-  recheck today. What to look for in the Gallery: vegetation/shadow triggers
-  landing as **"no bird" (state 3)** with a `pf` like `Plantae?=…`, and the
-  unclassified pile shrinking to actual unidentified birds. If real birds start
-  getting filed as "no bird", the all-frames-agree guard is too loose.
-- Today's log (2026-07-20) still holds a large `st:0` pile from before the
-  change; a recheck would re-bucket it if that's ever wanted.
-- **frameroi sidecar not pruned** — `/log/frameroi-YYYY-MM-DD.csv` grows
-  append-only, not cleaned when old captures age out (small; FSD v2.03).
-- **Per-day visit-log split** was the fix for gallery/relabel SD-bound latency —
-  shipped in v2.07; see memory `birdbox-per-day-log-files` for context.
-- Cloud tier: Gemini key stored and verified, model `gemini-flash-lite-latest`
-  (`gemini-2.5-flash` and the whole 2.0 generation 404 on this key — see
-  memory `birdbox-cloud-classifier-dual`).
-- `training-data/` artifacts + logs remain uncommitted by convention.
+1. **Cert-pinning** for the cert-bundle leak — the real fix, deliberate/separate task.
+2. **Watch `capture_count=3`** — does classification now stay inside the 120 s cool-down,
+   and are more single-good-frame birds lost? (operator's live experiment)
+3. **`gemini.c` has 3 `esp_http_client_init` vs 2 `cleanup`** — a real (small) leak spotted
+   but not fixed (Gemini is the secondary tier).
+4. **frameroi sidecar not pruned** (append-only; small; FSD v2.03).
+5. Device: 0.74.30, cloud provider **OFF** (`cprov=0`) — the ✨ button works regardless;
+   Gemini key stored + now verified working again.
