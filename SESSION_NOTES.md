@@ -58,6 +58,14 @@ Started at 0.74.4; ended 0.74.30. Everything below is committed + pushed to
   (empirical CI check for the 4-fast + N-slow structure).
 - **0.74.27 / v2.61** — Fast burst grabs **back-to-back (no delay)** + Debug shows the real
   measured "Fast-burst gap".
+- **0.74.31 / v2.64** — **Cert-pinning — the PERMANENT leak fix.** `inat.c` uses a pinned
+  3-root mini-bundle (USERTrust RSA + GTS Root R4 + GlobalSign, embedded from
+  `main/inat_roots.pem`) via `.cert_pem` instead of `esp_crt_bundle_attach`, bypassing the
+  leaky CA callback. **Verified: allocBlocks flat across 8 handshakes (was +7/call), TLS +
+  classification intact.** The ~107 min guard cycle should be gone; the guard is now a pure
+  safety net. iNat's two hosts use different CAs (api=Sectigo/USERTrust, www=Google/GlobalSign)
+  so all three roots are needed. Cloud tier still on the bundle (infrequent). Memory
+  `birdbox-tls-certbundle-leak` updated.
 - **0.74.30 / v2.63** — **Gemini ✨ fixed.** `gemini-flash-lite-latest` now 400s on
   `thinkingConfig.thinkingBudget=0` ("Request contains an invalid argument", generic, no
   field detail — bisected). Removed `thinkingConfig`; verified (Dompap 95% in 4.3 s). Not
@@ -98,7 +106,9 @@ Started at 0.74.4; ended 0.74.30. Everything below is committed + pushed to
 
 ## Open / next steps
 
-1. **Cert-pinning** for the cert-bundle leak — the real fix, deliberate/separate task.
+1. **Watch that the cert-pinning killed the reboot cycle** — with 0.74.31, `guardReboots`
+   should stop climbing (it was 3 at session end) and uptime should run for many hours.
+   If it still cycles, the leak wasn't the whole story.
 2. **Watch `capture_count=3`** — does classification now stay inside the 120 s cool-down,
    and are more single-good-frame birds lost? (operator's live experiment)
 3. **`gemini.c` has 3 `esp_http_client_init` vs 2 `cleanup`** — a real (small) leak spotted
