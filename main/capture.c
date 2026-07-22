@@ -12,6 +12,10 @@ static const char *TAG = "capture";
 
 static char     s_last_event[96] = "";
 static uint32_t s_event_count = 0;
+/* Frame counts of the most recent event, so a CI/host check can assert the
+ * 4-fast + N-slow capture structure (v2.59). */
+static int      s_last_frames  = 0;
+static int      s_last_fast    = 0;
 
 /* Web-relative paths ("/captures/DAY/NAME.jpg") of this event's saved frames
  * (up to CLASSIFY_BEST_OF_N = all of them), handed to the classifier for
@@ -66,6 +70,8 @@ void capture_event_finish(int frames, int fast_count, const char *first_path)
     }
 
     s_event_count++;
+    s_last_frames = frames;
+    s_last_fast   = fast_count;
     strlcpy(s_last_event, first_path, sizeof(s_last_event));
 
     char ts[24];
@@ -101,3 +107,5 @@ void capture_event_finish(int frames, int fast_count, const char *first_path)
 
 const char *capture_last_event_path(void) { return s_last_event; }
 uint32_t    capture_event_count(void)     { return s_event_count; }
+int         capture_last_frames(void)     { return s_last_frames; }
+int         capture_last_fast(void)       { return s_last_fast; }

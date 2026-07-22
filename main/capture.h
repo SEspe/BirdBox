@@ -21,3 +21,5 @@ void capture_event_finish(int frames, int fast_count, const char *first_path);
 
 const char *capture_last_event_path(void);   /* "" until the first event */
 uint32_t    capture_event_count(void);
+int         capture_last_frames(void);        /* total frames saved for the most recent event */
+int         capture_last_fast(void);          /* of those, how many were fast-burst (v2.59) */
