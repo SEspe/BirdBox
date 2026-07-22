@@ -58,7 +58,12 @@ static inline roi_t roi_none(void) { roi_t r = {0, 0, 0, 0}; return r; }
  * misses. Captured on every event but SCORED only if the slow frames fail to
  * classify (classify.cpp pools them in then). */
 #define FAST_BURST_N   4
-#define FAST_BURST_MS  200
+#define FAST_BURST_MS  0     /* 0 = grab the fast frames back-to-back, as fast as the
+                                sensor allows (v2.60). At HD the ~740 ms grab+save
+                                already dwarfs any small delay, so an added wait only
+                                slowed the burst; the real floor is the OV2640 frame
+                                rate at 20 MHz XCLK. The Debug panel shows the measured
+                                average gap so the actual speed is visible. */
 
 /* Queues a visit event for async best-of-N classification + visit-log write.
  * `paths` are the event's saved-frame paths (web-relative, e.g.

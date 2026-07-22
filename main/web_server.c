@@ -1661,6 +1661,10 @@ static const char INDEX_HTML[] =
 "drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
 "drow('JPEG quality',d.camQuality)+"
 "drow('Motion triggers',(d.motionTriggers||0))+"
+/* Fast-burst speed (v2.60): the true measured average gap between the 4 fast
+ * frames — last event + a 4-event moving average. Always shown (with a waiting
+ * placeholder before the first event) so it's clearly there. */
+"drow('Fast-burst gap',d.fastAvgMs?((d.fastLastMs||0)+' ms (avg '+(d.fastAvgMs||0)+' ms)'):'\\u2014 waiting for an event')+"
 "drow('Watchdog recoveries',(d.camRecoveries||0)+(d.camRecoveryAgo>=0?' (last '+fmtAge(d.camRecoveryAgo)+' ago)':''),(d.camRecoveries?'':'ok'))+"
 "(d.camFault?drow('Camera fault','YES \\u2014 needs a manual power cycle','bad'):'')"
 ":drow('Status','no camera','bad');"
@@ -3842,7 +3846,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
          * (INTERNAL only) does not match; guard* = the last guard-fire snapshot,
          * so a "software" reset is provably a guard reboot, not a crash (v2.55). */
         "\"heapIntBig8\":%lu,\"guardReboots\":%lu,\"guardBlock\":%lu,"
-        "\"guardFree\":%lu,\"guardUptime\":%lu}",
+        "\"guardFree\":%lu,\"guardUptime\":%lu,"
+        "\"fastLastMs\":%lu,\"fastAvgMs\":%lu}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -3869,7 +3874,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s(),
         (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned long) g_grb_count, (unsigned long) g_grb_block,
-        (unsigned long) g_grb_free, (unsigned long) g_grb_uptime);
+        (unsigned long) g_grb_free, (unsigned long) g_grb_uptime,
+        (unsigned long) motion_fast_last_ms(), (unsigned long) motion_fast_avg_ms());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;
