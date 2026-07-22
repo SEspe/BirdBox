@@ -317,6 +317,15 @@ static const char INDEX_HTML[] =
 ".livemsg button{background:#2f6f45;color:#eaf6ee;border:none;border-radius:6px;"
 "padding:6px 16px;font-size:.85rem;cursor:pointer}"
 ".pausebadge.on{display:inline-flex}"
+/* Post-event cool-down countdown (v2.57): top-right, cool blue-grey to read as a
+ * neutral 'resting' state, distinct from the red/yellow activity lamps. Shown
+ * only while cooldownS>0; detection is on during cool-down (not quarantine), so
+ * it doesn't collide with the pausebadge in practice. */
+".cdbadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
+"align-items:center;gap:6px;background:rgba(60,78,96,.92);color:#dce7f0;"
+"font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
+"border-radius:4px}"
+".cdbadge.on{display:inline-flex}"
 "button.act.off{background:#8a6d3f}"
 ".zone{position:absolute;inset:0;z-index:4;display:none;"
 "grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}"
@@ -432,6 +441,7 @@ static const char INDEX_HTML[] =
 "<div class='clsbadge' id='clsbadge'><span class='dot'></span>CLASSIFYING</div>"
 "<div class='fbbadge' id='fbbadge'><span class='dot'></span>FASTBIRD DETECTION</div>"
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
+"<div class='cdbadge' id='cdbadge'></div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror='liveErr()' onload='liveOk()'>"
 "<div class='livemsg' id='livemsg'></div>"
@@ -932,6 +942,10 @@ static const char INDEX_HTML[] =
 "if(s.quarantineS>0){var pb=$g('pausebadge');"
 "if(pb){pb.innerHTML='\\u23F3 BOOT QUARANTINE '+s.quarantineS+'s';pb.classList.add('on');}}"
 "else if(typeof s.detect!=='undefined')detApply(!!s.detect);"
+/* Post-event cool-down countdown (v2.57): shown only while > 0. */
+"var cd=$g('cdbadge');"
+"if(cd){if(s.cooldownS>0){cd.innerHTML='\\u23F2 COOL-DOWN '+s.cooldownS+'s';cd.classList.add('on');}"
+"else cd.classList.remove('on');}"
 "var lm=$g('livemsg');"
 "if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
 "}).catch(()=>{});}tick();setInterval(tick,2000);"
@@ -3693,7 +3707,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"streamUsed\":%d,\"streamMax\":%d,"
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
         "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\","
-        "\"clsBusy\":%s,\"fastBird\":%s}",
+        "\"clsBusy\":%s,\"fastBird\":%s,\"cooldownS\":%u}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -3716,7 +3730,8 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned long) classify_result_seq(),
         classify_last_file(),   /* "/captures/DATE/FILE.jpg" — device-generated, JSON-safe */
         classify_busy() ? "true" : "false",
-        classify_fastfallback_active() ? "true" : "false");
+        classify_fastfallback_active() ? "true" : "false",
+        (unsigned) motion_cooldown_remaining_s());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
