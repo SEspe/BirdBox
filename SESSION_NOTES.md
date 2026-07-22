@@ -1,5 +1,21 @@
 # Session Notes — BirdBox (updated 2026-07-22)
 
+## ⏭ Verify tomorrow (cert-pin held?)
+Baseline snapshot **2026-07-22 20:37**: fw **0.74.31**, uptime **8027 s (134 min)**,
+`heapIntBig8` **31744**, `guardReboots` **3**, `guardUptime` 6404 (the last *pre-fix*
+guard fire), events 38, camFault false, healthy.
+
+**The one definitive check:** `curl http://192.168.1.111/api/sysinfo` and read
+**`guardReboots`** — it persists in NVS across reboots and was **3** at session close.
+- Still **3** ⇒ the heap guard never fired ⇒ **cert-pin killed the ~107 min leak cycle.** ✅
+- **> 3** ⇒ the guard fired again ⇒ the leak wasn't the whole story; check `guardBlock`/
+  `guardUptime` for when/why, and reconsider (cloud tier still on the bundle?).
+Also glance at `heapIntBig8` (should hold ~31744, not drift toward ~28.7 KB) and `uptime`
+(should be many hours unbroken). No watch is running — the device self-records all of this.
+
+---
+
+
 Long session. Reference unit at **192.168.1.111**, now on firmware **0.74.30**,
 `nordic` model long gone (classification is iNaturalist-online + optional cloud).
 Started at 0.74.4; ended 0.74.30. Everything below is committed + pushed to
