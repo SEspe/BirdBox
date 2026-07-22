@@ -10,11 +10,14 @@
  *    generationConfig (response schema + prompt) is the suffix after it.
  *
  * 2. The model id is operator-settable (see the GEMINI_MODEL_DEFAULT block). The
- *    body sends thinkingConfig.thinkingBudget=0 to disable thinking — the usable
- *    flash models are all thinking-capable and a single-image ID gains nothing
- *    from reasoning (left on it adds seconds and eats the maxOutputTokens
- *    budget). A non-thinking model would 400 on this, but that whole generation
- *    (2.0) is retired.
+ *    body does NOT send thinkingConfig (v2.63): it used to send
+ *    thinkingConfig.thinkingBudget=0 to disable thinking, but Google changed
+ *    gemini-flash-lite-latest to REJECT that with a bare HTTP 400
+ *    "Request contains an invalid argument" (no field detail) — verified live
+ *    2026-07-22, removing the field fixed it. Flash-Lite doesn't think by
+ *    default anyway, so there's nothing to disable; a single-image ID gains
+ *    nothing from reasoning. If a thinking-by-default model is ever selected and
+ *    needs it off, re-add thinkingConfig only for that model.
  *
  * 3. Structured output is generationConfig.responseSchema (OpenAPI subset:
  *    UPPERCASE types, no additionalProperties) plus responseMimeType
@@ -53,11 +56,11 @@ static const char *TAG = "gemini";
  * gemini-flash-latest alias resolved too but returned sustained 503 "high
  * demand"; the lite alias is the less-contended (and cheaper) sibling.
  *
- * The body sends thinkingConfig.thinkingBudget=0 to DISABLE thinking: the usable
- * flash models are all thinking-capable (the non-thinking 2.0 generation is
- * gone), and a single-image ID gains nothing from reasoning while it adds
- * seconds of latency and eats the token budget. NOTE: if a future NON-thinking
- * model is ever selected, thinkingConfig would 400 and must be removed. */
+ * The body no longer sends thinkingConfig (v2.63): gemini-flash-lite-latest
+ * began 400ing "Request contains an invalid argument" on thinkingBudget=0
+ * (verified 2026-07-22). Flash-Lite doesn't think by default, so nothing needs
+ * disabling. Re-add thinkingConfig only if a thinking-by-default model is ever
+ * selected AND that model still accepts it. */
 #define GEMINI_API_HOST      "generativelanguage.googleapis.com"
 #define GEMINI_MODEL_DEFAULT "gemini-flash-lite-latest"
 #define GEMINI_MODELS_URL    "https://" GEMINI_API_HOST "/v1beta/models"
@@ -72,7 +75,7 @@ static const char *gemini_model(void)
 #define GEMINI_RESP_MAX   4096           /* schema'd reply is small; slack is for
                                             error bodies + candidate metadata */
 
-static char     s_last_error[96] = "";
+static char     s_last_error[256] = "";   /* wide enough for Gemini's full 400 detail (v2.63) */
 static int32_t  s_last_ms       = -1;
 static uint32_t s_calls         = 0;
 
@@ -150,7 +153,6 @@ static const char REQ_SUFFIX[] =
     "\"}},"
     "{\"text\":\"Identify the bird in this photo.\"}]}],"
     "\"generationConfig\":{\"maxOutputTokens\":512,"
-    "\"thinkingConfig\":{\"thinkingBudget\":0},"
     "\"responseMimeType\":\"application/json\","
     "\"responseSchema\":{\"type\":\"OBJECT\",\"properties\":{"
     "\"bird\":{\"type\":\"BOOLEAN\"},"
@@ -258,7 +260,7 @@ esp_err_t gemini_classify_jpeg(const uint8_t *jpeg, size_t len,
         }
         /* Error bodies are {"error":{"code":..,"message":..,"status":..}} —
          * surface the message verbatim ("API key not valid", "quota exceeded"). */
-        char msg[80] = "";
+        char msg[200] = "";
         cu_json_str(resp, "message", msg, sizeof(msg));
         fail("Gemini HTTP %d%s%s", status, msg[0] ? ": " : "", msg);
         goto done;

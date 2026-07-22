@@ -4329,7 +4329,7 @@ static void ident_task(void *arg)
         if (cloud_classify_file(j->provider, path, &r) != ESP_OK) {
             /* Surface the provider's own words (bad key, quota, safety block) —
              * the Gallery prints this straight into the tile. */
-            char e[128], msg[96];
+            char e[320], msg[288];   /* wide: Gemini's 400 detail is long (v2.63) */
             json_escape(msg, sizeof(msg), cloud_last_error(j->provider));
             snprintf(e, sizeof(e), "{\"error\":\"%s\"}", msg);
             httpd_resp_set_status(req, "502 Bad Gateway");
