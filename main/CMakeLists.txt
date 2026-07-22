@@ -19,6 +19,7 @@ idf_component_register(
         "species_i18n.c"
         "target_species.c"
     INCLUDE_DIRS "."
+    EMBED_TXTFILES "inat_roots.pem"   # pinned iNat root CAs (v2.64) — see inat.c
     REQUIRES
         esp_wifi
         esp_event

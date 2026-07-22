@@ -28,6 +28,18 @@
 
 static const char *TAG = "inat";
 
+/* Pinned iNaturalist root CAs (v2.64): a 3-cert mini-bundle (USERTrust RSA for
+ * api.inaturalist.org's Sectigo chain, plus GTS Root R4 + GlobalSign for the
+ * www host's Google chain) embedded from main/inat_roots.pem, extracted from the
+ * ESP-IDF cert bundle itself. Using this via .cert_pem instead of
+ * esp_crt_bundle_attach BYPASSES the bundle's CA callback, whose esp_crt_copy_asn1
+ * leaks ~7 internal-DRAM blocks per handshake (v2.50) — the root cause of the
+ * ~107 min guard-reboot cycle. Both hosts verify against these 3 roots (checked
+ * with openssl before pinning), and both of iNat's current CAs are covered, so a
+ * host swapping between them still works; the heap guard remains a safety net if
+ * iNat ever moves to a third CA and a pinned call starts failing. */
+extern const char inat_roots_pem[] asm("_binary_inat_roots_pem_start");
+
 #define INAT_API_HOST  "api.inaturalist.org"
 #define INAT_WEB_HOST  "www.inaturalist.org"
 #define INAT_CV_URL    "https://" INAT_API_HOST "/v1/computervision/score_image"
@@ -192,7 +204,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     esp_http_client_config_t cfg = {
         .url               = url,
         .method            = HTTP_METHOD_POST,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .cert_pem = inat_roots_pem,
         .timeout_ms        = 30000,
         .buffer_size       = 2048,
         .buffer_size_tx    = 1024,
@@ -374,7 +386,7 @@ static esp_err_t me_get(int *status, char *resp, char *detail, size_t dsz)
     esp_http_client_config_t cfg = {
         .url               = INAT_ME_URL,
         .method            = HTTP_METHOD_GET,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .cert_pem = inat_roots_pem,
         .timeout_ms        = 15000,
         .buffer_size       = 2048,
         .buffer_size_tx    = 1024,
@@ -428,7 +440,7 @@ esp_err_t inat_refresh_jwt(char *out, size_t osz)
     esp_http_client_config_t cfg = {
         .url                  = INAT_TOKEN_URL,
         .method               = HTTP_METHOD_GET,
-        .crt_bundle_attach    = esp_crt_bundle_attach,
+        .cert_pem = inat_roots_pem,
         .timeout_ms           = 15000,
         .buffer_size          = 4096,
         .buffer_size_tx       = 2048,
@@ -566,7 +578,7 @@ esp_err_t inat_login(char *out, size_t osz)
     esp_http_client_config_t gcfg = {
         .url                   = INAT_LOGIN_URL,
         .method                = HTTP_METHOD_GET,
-        .crt_bundle_attach     = esp_crt_bundle_attach,
+        .cert_pem = inat_roots_pem,
         .timeout_ms            = 15000,
         .buffer_size           = 4096,
         .buffer_size_tx        = 1024,
@@ -620,7 +632,7 @@ esp_err_t inat_login(char *out, size_t osz)
     esp_http_client_config_t pcfg = {
         .url                   = INAT_SESS_URL,
         .method                = HTTP_METHOD_POST,
-        .crt_bundle_attach     = esp_crt_bundle_attach,
+        .cert_pem = inat_roots_pem,
         .timeout_ms            = 20000,
         .buffer_size           = 4096,
         .buffer_size_tx        = 2048,
