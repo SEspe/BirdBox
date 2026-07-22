@@ -260,17 +260,19 @@ static const char INDEX_HTML[] =
 ".clsbadge .dot{width:9px;height:9px;border-radius:50%;background:#1b1500;"
 "animation:detpulse 1s ease-in-out infinite}"
 ".liveWrap.cls{outline:3px solid rgba(212,160,23,.9);outline-offset:-3px}"
-/* FASTBIRD DETECTION (v2.56): the fast-burst backup is being scored because the
- * slow frames failed. Same RED as DETECTING (operator asked for it) — it means
- * "a quick bird that the normal frames nearly missed". Shares the top-left slot. */
+/* FASTBIRD CHECK (v2.56, amber v2.58): the fast-burst backup is being SCORED
+ * because the slow frames failed — it's a classification step on the last bird,
+ * NOT a new detection, so it's AMBER (classification family), not red, and reads
+ * "CHECK" not "DETECTION". A touch more orange than CLASSIFYING to tell them
+ * apart; they're mutually exclusive anyway. Shares the top-left slot. */
 ".fbbadge{position:absolute;top:8px;left:8px;z-index:3;display:none;"
-"align-items:center;gap:6px;background:rgba(200,40,40,.92);color:#fff;"
+"align-items:center;gap:6px;background:rgba(232,138,20,.94);color:#1b1200;"
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
 "border-radius:4px}"
 ".fbbadge.on{display:inline-flex}"
-".fbbadge .dot{width:9px;height:9px;border-radius:50%;background:#fff;"
+".fbbadge .dot{width:9px;height:9px;border-radius:50%;background:#1b1200;"
 "animation:detpulse 1s ease-in-out infinite}"
-".liveWrap.fb{outline:3px solid rgba(220,60,60,.9);outline-offset:-3px}"
+".liveWrap.fb{outline:3px solid rgba(232,138,20,.9);outline-offset:-3px}"
 ".liveWrap.mot{outline:5px solid #ff2f2f;outline-offset:-5px;"   /* 1s per-trigger motion flash */
 "box-shadow:inset 0 0 18px rgba(255,47,47,.6)}"
 "@keyframes detpulse{0%,100%{opacity:1}50%{opacity:.25}}"
@@ -439,7 +441,7 @@ static const char INDEX_HTML[] =
 "<div class='liveWrap' id='liveWrap'>"
 "<div class='detbadge' id='detbadge'><span class='dot'></span>DETECTING</div>"
 "<div class='clsbadge' id='clsbadge'><span class='dot'></span>CLASSIFYING</div>"
-"<div class='fbbadge' id='fbbadge'><span class='dot'></span>FASTBIRD DETECTION</div>"
+"<div class='fbbadge' id='fbbadge'><span class='dot'></span>FASTBIRD CHECK</div>"
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<div class='cdbadge' id='cdbadge'></div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
