@@ -111,8 +111,8 @@ Started at 0.74.4; ended 0.74.30. Everything below is committed + pushed to
    If it still cycles, the leak wasn't the whole story.
 2. **Watch `capture_count=3`** — does classification now stay inside the 120 s cool-down,
    and are more single-good-frame birds lost? (operator's live experiment)
-3. **`gemini.c` has 3 `esp_http_client_init` vs 2 `cleanup`** — a real (small) leak spotted
-   but not fixed (Gemini is the secondary tier).
+3. ~~`gemini.c` 3 init vs 2 cleanup~~ — **investigated, NOT a leak**: the 3rd "init" was a
+   grep matching a comment; both functions pair init→cleanup on every path. No fix needed.
 4. **frameroi sidecar not pruned** (append-only; small; FSD v2.03).
 5. Device: 0.74.30, cloud provider **OFF** (`cprov=0`) — the ✨ button works regardless;
    Gemini key stored + now verified working again.

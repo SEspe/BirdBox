@@ -5,9 +5,12 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
 ## Real bugs (small, located)
-- [ ] **`gemini.c` handle leak** — 3 `esp_http_client_init` vs 2 `esp_http_client_cleanup`.
-      A genuine leak on the Gemini path. Low urgency (Gemini is secondary / off by
-      default), but it's the only outright bug left and it's a quick focused fix.
+- [x] ~~`gemini.c` handle leak (3 init vs 2 cleanup)~~ — **INVESTIGATED, NOT A LEAK
+      (2026-07-22).** The "3rd init" was a grep false positive: line 174 is a *comment*
+      containing the text "esp_http_client_init". There are 2 real `esp_http_client_init`
+      calls and both functions (`gemini_post_once`, `gemini_models`) pair init→cleanup on
+      every path — `if (!c) return` (NULL handle, nothing to free) and all error paths
+      `goto out` → close + cleanup. No fix needed.
 - [ ] **Cloud tier still uses the cert bundle** (claude.c / gemini.c) — so it still hits
       the leaky CA callback. Barely matters (infrequent, off by default); pin its roots
       the same way as iNat if cloud ever becomes the heavily-used active provider.
