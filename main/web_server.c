@@ -110,6 +110,7 @@ static float soc_temp_c(void)
 /* Heap low-water mark, tracked by main.c's housekeeping task (FSD §5) */
 extern uint32_t g_heap_min;
 extern int64_t  g_heap_min_ts_us;
+void guard_last_reboot(uint32_t *count, uint32_t *block, uint32_t *freeb, uint32_t *up);  /* main.c (v2.55) */
 
 #ifndef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -3784,6 +3785,9 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         if (httpd_get_client_list(s_httpd, &nfds, fds) == ESP_OK) httpd_sock = (int) nfds;
     }
 
+    uint32_t g_grb_count = 0, g_grb_block = 0, g_grb_free = 0, g_grb_uptime = 0;
+    guard_last_reboot(&g_grb_count, &g_grb_block, &g_grb_free, &g_grb_uptime);
+
     char buf[1152];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
@@ -3798,7 +3802,12 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,"
-        "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d}",
+        "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
+        /* heapIntBig8 = the guard's EXACT metric (INTERNAL|8BIT), which heapIntBig
+         * (INTERNAL only) does not match; guard* = the last guard-fire snapshot,
+         * so a "software" reset is provably a guard reboot, not a crash (v2.55). */
+        "\"heapIntBig8\":%lu,\"guardReboots\":%lu,\"guardBlock\":%lu,"
+        "\"guardFree\":%lu,\"guardUptime\":%lu}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -3822,7 +3831,10 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
         classify_model_name(), classify_label_count(), classify_region_matches(),
-        httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s());
+        httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s(),
+        (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned long) g_grb_count, (unsigned long) g_grb_block,
+        (unsigned long) g_grb_free, (unsigned long) g_grb_uptime);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;

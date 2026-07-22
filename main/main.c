@@ -19,6 +19,7 @@
 #include <time.h>
 
 #include "nvs_flash.h"
+#include "nvs.h"          /* persist the guard-fire snapshot across the reboot (v2.55) */
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -46,6 +47,31 @@ static const char *TAG = "main";
  * directly by web_server.c. */
 uint32_t g_heap_min       = UINT32_MAX;
 int64_t  g_heap_min_ts_us = 0;
+
+/* Last heap-guard reboot, read from NVS at boot (v2.55). Exposed via
+ * guard_last_reboot() so /api/status can report whether the previous boot ended
+ * in a guard fire, and with what largest-block/free/uptime — turning a
+ * "software" reset from a guess into a fact. count is cumulative across boots. */
+static uint32_t s_guard_reboots = 0, s_guard_block = 0, s_guard_free = 0, s_guard_uptime = 0;
+
+void guard_last_reboot(uint32_t *count, uint32_t *block, uint32_t *freeb, uint32_t *up)
+{
+    if (count) *count = s_guard_reboots;
+    if (block) *block = s_guard_block;
+    if (freeb) *freeb = s_guard_free;
+    if (up)    *up    = s_guard_uptime;
+}
+
+static void guard_load_last(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("guard", NVS_READONLY, &h) != ESP_OK) return;
+    nvs_get_u32(h, "count",  &s_guard_reboots);
+    nvs_get_u32(h, "block",  &s_guard_block);
+    nvs_get_u32(h, "freeb",  &s_guard_free);
+    nvs_get_u32(h, "uptime", &s_guard_uptime);
+    nvs_close(h);
+}
 
 /* Heap guard (FSD v2.50). ESP-IDF's certificate-bundle CA callback
  * (esp_crt_copy_asn1 → esp_crt_ca_cb_callback) leaks ~7 small INTERNAL-DRAM
@@ -87,21 +113,38 @@ static void housekeeping_task(void *arg)
          * trigger the next one, and a fresh boot has a backlog to classify. */
         if (esp_timer_get_time() < (int64_t) HEAP_GUARD_MIN_UPTIME_S * 1000000) continue;
 
+        /* Measure at REST only. A live score_image transiently grabs a large
+         * contiguous internal block for TLS+HTTP, so sampling mid-call sees a dip
+         * that fully recovers when the call ends — that transient, not a real
+         * leak, is what fired the guard under sustained classification (v2.55,
+         * proven: reboots correlated with image load while the at-rest largest
+         * block held at 31744). classify_busy() covers the queue+in-flight window;
+         * motion covers capture; recheck covers a bulk pass. Defer on any of them
+         * and reset the strike run, so only a genuinely-idle low reading counts. */
+        bool rc_busy = false;
+        classify_recheck_status(&rc_busy, NULL, NULL, NULL, 0);
+        if (motion_active() || rc_busy || classify_busy()) { strikes = 0; continue; }
+
         size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (big >= HEAP_GUARD_MIN_BLOCK) { strikes = 0; continue; }
         strikes++;
-        ESP_LOGW(TAG, "heap guard: largest internal block %u B (strike %d/%d)",
+        ESP_LOGW(TAG, "heap guard: largest internal block %u B AT REST (strike %d/%d)",
                  (unsigned) big, strikes, HEAP_GUARD_STRIKES);
         if (strikes < HEAP_GUARD_STRIKES) continue;
-        /* An OTA cannot be checked (no busy flag) but is safe to interrupt —
-         * dual partitions plus rollback mean a killed upload just fails. */
-        bool rc_busy = false;
-        classify_recheck_status(&rc_busy, NULL, NULL, NULL, 0);
-        if (motion_active() || rc_busy) {
-            ESP_LOGW(TAG, "heap guard: work in flight — deferring reboot");
-            continue;
+
+        /* Genuine at-rest exhaustion. Persist a snapshot so the reboot is self-
+         * explaining: /api/status reports it as guard*, distinguishing a guard
+         * reboot from an OTA or a crash (which is ESP_RST_PANIC, not SW). */
+        nvs_handle_t h;
+        if (nvs_open("guard", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u32(h, "block", (uint32_t) big);
+            nvs_set_u32(h, "freeb", (uint32_t) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            nvs_set_u32(h, "uptime", (uint32_t) (esp_timer_get_time() / 1000000));
+            nvs_set_u32(h, "count", s_guard_reboots + 1);
+            nvs_commit(h);
+            nvs_close(h);
         }
-        ESP_LOGE(TAG, "heap guard: internal DRAM fragmented (largest block %u B) — "
+        ESP_LOGE(TAG, "heap guard: internal DRAM exhausted at rest (largest block %u B) — "
                       "HTTPS would fail; rebooting to restore classification", (unsigned) big);
         vTaskDelay(pdMS_TO_TICKS(500));      /* let the log drain */
         esp_restart();
@@ -124,6 +167,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
 
     ESP_ERROR_CHECK(settings_load());
+    guard_load_last();   /* surface any prior heap-guard reboot in /api/status (v2.55) */
     /* Apply the timezone at boot, before anything uses localtime (capture
      * folders/filenames, stats) — not just on WiFi connect (FSD §3.4). */
     setenv("TZ", g_settings.timezone, 1);
