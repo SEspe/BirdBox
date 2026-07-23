@@ -182,6 +182,11 @@ Box size	Boksstørrelse
 Skip	Hopp over
 Save & next	Lagre og neste
 # ── Debug ──
+# NOTE (operator decision 2026-07-23): the Debug pane's CONTENT — the
+# dynamically generated diagnostic rows (heap, RSSI, guard forensics, …) —
+# stays ENGLISH permanently and is excluded from Phase 3. Only the static
+# section headers below are translated. Diagnostic vocabulary reads best
+# untranslated.
 WiFi Link	WiFi-forbindelse
 SD Card	SD-kort
 Camera	Kamera
