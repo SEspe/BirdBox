@@ -529,8 +529,12 @@ static const char INDEX_HTML[] =
 "<datalist id='speclist'></datalist>"
 "</div>"
 "<div id='statsp' class='pane'>"
+/* Day picker (v2.69): first option "Today" (value '', server resolves the
+ * date, honouring the ~1970 clock guard), then every capture day from
+ * /api/days. Changing it switches to (that) day scope. */
 "<div class='gacts' style='margin-bottom:12px'>"
-"<button class='act' id='stgToday' style='opacity:1' onclick='setStatScope(\"day\")'>Today</button>"
+"<select id='sDay' onchange='setStatScope(\"day\")'>"
+"<option value=''>Today</option></select>"
 "<button class='act' id='stgAll' style='opacity:.5' onclick='setStatScope(\"all\")'>All time</button>"
 "</div>"
 "<h3 class='sh' style='margin-top:0'>Visits per day</h3><div id='sDaily'></div>"
@@ -1323,11 +1327,19 @@ static const char INDEX_HTML[] =
 "setTimeout(gRcPoll,2000);}"
 "else if(o.date){el.textContent='Recheck '+o.date+' done ('+o.done+'/'+o.total+' row(s))';}"
 "});}"
-"var g_statScope='day';"   /* 'day' = Today (v2.07), 'all' = all-time */
+"var g_statScope='day';"   /* 'day' = the sDay dropdown's day (v2.07/v2.69), 'all' = all-time */
+/* Selected day as a query suffix: '' = Today (server resolves the date). */
+"function sDayQ(){var v=$g('sDay').value;return v?'&date='+v:'';}"
+"function sDayLbl(){var v=$g('sDay').value;return v?(' on '+v):' today';}"
+"function sDayFill(){var s=$g('sDay');if(s.dataset.f)return;s.dataset.f='1';"
+"fetch('/api/days').then(r=>r.json()).then(a=>{a.sort((x,y)=>y.d.localeCompare(x.d));"
+"a.forEach(o=>{var op=document.createElement('option');op.value=o.d;"
+"op.textContent=o.d;s.appendChild(op);});}).catch(()=>{delete s.dataset.f;});}"
 "function setStatScope(s){g_statScope=s;"
-"$g('stgToday').style.opacity=s==='day'?'1':'.5';"
+"$g('sDay').style.opacity=s==='day'?'1':'.5';"
 "$g('stgAll').style.opacity=s==='all'?'1':'.5';loadStats();}"
-"function loadStats(){var q=g_statScope==='day'?'?scope=day':'';"
+"function loadStats(){sDayFill();"
+"var q=g_statScope==='day'?('?scope=day'+sDayQ()):'';"
 "Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u+q).then(r=>r.json())))"
 ".then(function(res){var d=res[0],spo=res[1],sp=spo.rows,h=res[2];"
 "d.sort((a,b)=>a.d.localeCompare(b.d));d=d.slice(-30);"
@@ -1348,7 +1360,7 @@ static const char INDEX_HTML[] =
 "'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
 "'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
 "var birds=sp.filter(o=>!o.fp).reduce((a,o)=>a+o.n,0);"
-"document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(g_statScope==='day'?' today':(spo.since?(' since '+spo.since.replace('T',' ')):' total'))"
+"document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(g_statScope==='day'?sDayLbl():(spo.since?(' since '+spo.since.replace('T',' ')):' total'))"
 "+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
 "$g('sImgs').innerHTML='';"
 "});}"
@@ -1356,10 +1368,10 @@ static const char INDEX_HTML[] =
  * shows that day's images only, matching the table it was clicked in. */
 "function spImgs(key,name){var nm=decodeURIComponent(name);var el=$g('sImgs');"
 "el.innerHTML='<span class=sts>\\u2026 loading images for '+esc(nm)+'</span>';"
-"fetch('/api/stats/images?limit=10&sp='+key+(g_statScope==='day'?'&scope=day':''))"
+"fetch('/api/stats/images?limit=10&sp='+key+(g_statScope==='day'?'&scope=day'+sDayQ():''))"
 ".then(r=>r.json()).then(function(a){"
 "if(!a.length){el.innerHTML='<span class=sts>No images for '+esc(nm)+'</span>';return;}"
-"el.innerHTML='<h3 class=sh>Last '+a.length+' image(s)'+(g_statScope==='day'?' today':'')+': '+esc(nm)+'</h3>'+"
+"el.innerHTML='<h3 class=sh>Last '+a.length+' image(s)'+(g_statScope==='day'?sDayLbl():'')+': '+esc(nm)+'</h3>'+"
 "'<div class=grid>'+a.map(o=>'<div class=gitem>"
 "<a href=\"'+o.f+'\" target=_blank><img loading=lazy src=\"'+o.f+'\"></a>"
 "<div class=gmeta><span>'+esc((o.t||'').replace('T',' '))+'</span></div></div>').join('')+'</div>';"
@@ -3019,23 +3031,38 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
 }
 
 /* ── Stats endpoints (FSD §3.4, §6) — aggregated from the visit logs ────── */
-/* Resolve the Stats scope from ?scope=day → today's "YYYY-MM-DD" (v2.07 Today
- * view); anything else → "" (all-time). Guards the pre-SNTP ~1970 clock: if the
- * clock isn't synced, returns "" (all-time) rather than a bogus 1970 day. The
- * empty string is what stats_collect_scoped treats as all-time. */
+/* Strict "YYYY-MM-DD" shape check (v2.69). The date feeds
+ * storage_visit_log_path and thence a filename — anything less strict would
+ * let a crafted query name an arbitrary /sd/log file. */
+static bool stats_date_valid(const char *d)
+{
+    if (strlen(d) != 10 || d[4] != '-' || d[7] != '-') return false;
+    for (int i = 0; i < 10; i++)
+        if (i != 4 && i != 7 && (d[i] < '0' || d[i] > '9')) return false;
+    return true;
+}
+
+/* Resolve the Stats scope: ?scope=day&date=YYYY-MM-DD → that day (v2.69 date
+ * picker); ?scope=day alone → today's "YYYY-MM-DD" (v2.07 Today view);
+ * anything else → "" (all-time). Guards the pre-SNTP ~1970 clock: if the
+ * clock isn't synced (and no explicit date given), returns "" (all-time)
+ * rather than a bogus 1970 day. The empty string is what
+ * stats_collect_scoped treats as all-time. */
 static const char *stats_scope_date(httpd_req_t *req, char *buf, size_t sz)
 {
     buf[0] = '\0';
-    char q[48] = {0}, scope[8] = {0};
-    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
+    char q[64] = {0}, scope[8] = {0}, date[16] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
         httpd_query_key_value(q, "scope", scope, sizeof(scope));
-    if (strcmp(scope, "day") == 0) {
-        time_t now = time(NULL);
-        struct tm tmv;
-        localtime_r(&now, &tmv);
-        if (tmv.tm_year + 1900 >= 2020)
-            strftime(buf, sz, "%Y-%m-%d", &tmv);
+        httpd_query_key_value(q, "date", date, sizeof(date));
     }
+    if (strcmp(scope, "day") != 0) return buf;
+    if (stats_date_valid(date)) { strlcpy(buf, date, sz); return buf; }
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    if (tmv.tm_year + 1900 >= 2020)
+        strftime(buf, sz, "%Y-%m-%d", &tmv);
     return buf;
 }
 
@@ -3077,11 +3104,13 @@ static esp_err_t h_stats_species(httpd_req_t *req)
         char species[80];
         species_localize(st->sp[i], st->sp_latin[i], g_settings.lang,
                           species, sizeof(species));
-        /* "s" is the localized display name; "key" is the raw log species
-         * value (the CSV join key) the images endpoint matches on. */
+        /* "s" is the localized display name; "key" is what the images endpoint
+         * matches rows on: the Latin binomial when the row has one (v2.70 — a
+         * merged row spans several raw common names), else the raw log value. */
         char s_esc[96], k_esc[80];
         json_escape(s_esc, sizeof(s_esc), species);
-        json_escape(k_esc, sizeof(k_esc), st->sp[i]);
+        json_escape(k_esc, sizeof(k_esc),
+                    st->sp_latin[i][0] ? st->sp_latin[i] : st->sp[i]);
         char item[256];
         int len = snprintf(item, sizeof(item),
                            "%s{\"s\":\"%s\",\"key\":\"%s\",\"n\":%u,\"first\":\"%s\",\"last\":\"%s\"}",
@@ -3118,18 +3147,22 @@ static esp_err_t h_stats_species(httpd_req_t *req)
  * the scope and quietly serve all-time again. Same pre-SNTP ~1970 clock guard. */
 static esp_err_t h_stats_images(httpd_req_t *req)
 {
-    char query[200] = {0}, sp[80] = {0}, lim[8] = {0}, scope[8] = {0};
+    char query[200] = {0}, sp[80] = {0}, lim[8] = {0}, scope[8] = {0},
+         dateq[16] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     httpd_query_key_value(query, "sp", sp, sizeof(sp));
     httpd_query_key_value(query, "limit", lim, sizeof(lim));
     httpd_query_key_value(query, "scope", scope, sizeof(scope));
+    httpd_query_key_value(query, "date", dateq, sizeof(dateq));
     url_decode(sp);
     if (!sp[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing sp"); return ESP_OK; }
     int max = lim[0] ? atoi(lim) : 10;
     if (max < 1) max = 1;
     if (max > 10) max = 10;
     char day[12] = "";
-    if (strcmp(scope, "day") == 0) {
+    if (stats_date_valid(dateq)) {          /* explicit day (v2.69 date picker) */
+        strlcpy(day, dateq, sizeof(day));
+    } else if (strcmp(scope, "day") == 0) { /* "Today", with the ~1970 guard */
         time_t now = time(NULL);
         struct tm tmv;
         localtime_r(&now, &tmv);
