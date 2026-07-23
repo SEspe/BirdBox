@@ -1029,7 +1029,7 @@ static const char INDEX_HTML[] =
 "<div class=\"gmeta\"><span>'+o.f+'</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
-"<button class=\"gidbtn\" title=\"identify bird (primary: iNaturalist if on, else on-device model)\" "
+"<button class=\"gidbtn\" title=\"identify bird with iNaturalist\" "
 "onclick=\"idBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#128269;</button>"
 "<button class=\"gidbtn\" title=\"identify bird with the cloud classifier\" "
 "onclick=\"cldBird(this,\\''+d+'\\',\\''+o.f+'\\')\">&#10024;</button>'+cfb+'"
@@ -1352,11 +1352,14 @@ static const char INDEX_HTML[] =
 "+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
 "$g('sImgs').innerHTML='';"
 "});}"
+/* Honours the active Stats scope (v2.68): in the Today view the row click
+ * shows that day's images only, matching the table it was clicked in. */
 "function spImgs(key,name){var nm=decodeURIComponent(name);var el=$g('sImgs');"
 "el.innerHTML='<span class=sts>\\u2026 loading images for '+esc(nm)+'</span>';"
-"fetch('/api/stats/images?limit=10&sp='+key).then(r=>r.json()).then(function(a){"
+"fetch('/api/stats/images?limit=10&sp='+key+(g_statScope==='day'?'&scope=day':''))"
+".then(r=>r.json()).then(function(a){"
 "if(!a.length){el.innerHTML='<span class=sts>No images for '+esc(nm)+'</span>';return;}"
-"el.innerHTML='<h3 class=sh>Last '+a.length+' image(s): '+esc(nm)+'</h3>'+"
+"el.innerHTML='<h3 class=sh>Last '+a.length+' image(s)'+(g_statScope==='day'?' today':'')+': '+esc(nm)+'</h3>'+"
 "'<div class=grid>'+a.map(o=>'<div class=gitem>"
 "<a href=\"'+o.f+'\" target=_blank><img loading=lazy src=\"'+o.f+'\"></a>"
 "<div class=gmeta><span>'+esc((o.t||'').replace('T',' '))+'</span></div></div>').join('')+'</div>';"
@@ -3106,23 +3109,37 @@ static esp_err_t h_stats_species(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/stats/images?sp=<raw species>&limit=N (N<=10) — the last N
- * first_frame images for a species/false-positive row (FSD §3.4/v1.50). */
+/* GET /api/stats/images?sp=<raw species>&limit=N (N<=10)[&scope=day] — the
+ * last N first_frame images for a species/false-positive row (FSD §3.4/v1.50).
+ * scope=day (v2.68) restricts to today's log so the Today view's row click
+ * shows today's images only. Scope is parsed from the local query buffer, not
+ * stats_scope_date(): that helper re-reads the query into its own 48-byte
+ * buffer, which an encoded sp= can overflow — truncation would silently drop
+ * the scope and quietly serve all-time again. Same pre-SNTP ~1970 clock guard. */
 static esp_err_t h_stats_images(httpd_req_t *req)
 {
-    char query[160] = {0}, sp[80] = {0}, lim[8] = {0};
+    char query[200] = {0}, sp[80] = {0}, lim[8] = {0}, scope[8] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     httpd_query_key_value(query, "sp", sp, sizeof(sp));
     httpd_query_key_value(query, "limit", lim, sizeof(lim));
+    httpd_query_key_value(query, "scope", scope, sizeof(scope));
     url_decode(sp);
     if (!sp[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing sp"); return ESP_OK; }
     int max = lim[0] ? atoi(lim) : 10;
     if (max < 1) max = 1;
     if (max > 10) max = 10;
+    char day[12] = "";
+    if (strcmp(scope, "day") == 0) {
+        time_t now = time(NULL);
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        if (tmv.tm_year + 1900 >= 2020)
+            strftime(day, sizeof(day), "%Y-%m-%d", &tmv);
+    }
 
     stats_img_t *imgs = calloc(max, sizeof(stats_img_t));
     if (!imgs) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory"); return ESP_OK; }
-    int n = stats_list_images(sp, imgs, max);
+    int n = stats_list_images(sp, day, imgs, max);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send_chunk(req, "[", 1);

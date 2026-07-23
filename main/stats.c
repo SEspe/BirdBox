@@ -187,7 +187,7 @@ esp_err_t stats_collect_scoped(stats_t *out, const char *date)
 
 esp_err_t stats_collect(stats_t *out) { return stats_collect_scoped(out, NULL); }
 
-int stats_list_images(const char *want, stats_img_t *out, int max)
+int stats_list_images(const char *want, const char *date, stats_img_t *out, int max)
 {
     if (max <= 0 || !want || !want[0] || !storage_sd_present()) return 0;
 
@@ -198,6 +198,14 @@ int stats_list_images(const char *want, stats_img_t *out, int max)
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!names) return 0;
     int  n_files = 0;
+    if (date && date[0]) {
+        /* Day scope (v2.68): only that day's log file — mirrors the Today
+         * branch of stats_collect_scoped, so the images match the table. */
+        char path[64];
+        storage_visit_log_path(date, path, sizeof(path));
+        const char *base = strrchr(path, '/');
+        strlcpy(names[n_files++], base ? base + 1 : path, sizeof(names[0]));
+    } else {
     DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
     if (!d) { free(names); return 0; }
     struct dirent *e;
@@ -218,6 +226,7 @@ int stats_list_images(const char *want, stats_img_t *out, int max)
             j--;
         }
         strlcpy(names[j + 1], tmp, sizeof(names[0]));
+    }
     }
 
     stats_img_t *ring = calloc(max, sizeof(stats_img_t));

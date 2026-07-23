@@ -45,8 +45,10 @@ typedef struct { char path[64]; char ts[20]; } stats_img_t;
 
 /* Fills `out` with up to `max` most-recent visit-log first_frame paths whose
  * decided species equals `want` (raw log species value; "no bird" for the
- * false-positive row). Returns the count filled, newest first. */
-int stats_list_images(const char *want, stats_img_t *out, int max);
+ * false-positive row). `date` ("YYYY-MM-DD") scopes to that single day's log
+ * (the Stats "Today" view, v2.68); NULL/"" scans every log file (all-time).
+ * Returns the count filled, newest first. */
+int stats_list_images(const char *want, const char *date, stats_img_t *out, int max);
 
 /* Fills *out from the visit logs; zero stats (not an error) when no SD or
  * no logs. ~2.6 kB — allocate on the heap, not an httpd stack.
