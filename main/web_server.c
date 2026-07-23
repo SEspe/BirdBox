@@ -1770,12 +1770,17 @@ static const char INDEX_HTML[] =
 "drow('Watchdog recoveries',(d.camRecoveries||0)+(d.camRecoveryAgo>=0?' (last '+fmtAge(d.camRecoveryAgo)+' ago)':''),(d.camRecoveries?'':'ok'))+"
 "(d.camFault?drow('Camera fault','YES \\u2014 needs a manual power cycle','bad'):'')"
 ":drow('Status','no camera','bad');"
-"$g('dCls').innerHTML=d.clsModel?"
-"drow('Model',d.clsModel)+drow('Labels',d.clsLabels+' species')+"
-"drow('Northern-Europe species',(d.clsRegion||0)+' of '+d.clsLabels"
-"+((d.clsRegion||0)?'':' \\u2014 region filter N/A for this model'))+"
-"drow('Last inference',d.lastInferenceMs<0?'none yet':d.lastInferenceMs+' ms'):"
-"drow('Status','no model loaded \\u2014 upload a .tflite + .txt to /sd/model','bad');"
+/* Species ID card, reworked for the iNat-only world (v2.71): the region row
+ * shows the REAL Norway allowlist (species_in_region, 147 entries), the vocab
+ * row is honest about what the 31 is, and Last classification is the timed
+ * tier cascade of the most recent event (was a dead on-device counter). */
+"$g('dCls').innerHTML="
+"drow('Model',d.clsModel||'off \\u2014 enable iNaturalist in Settings',d.clsModel?'':'bad')+"
+"drow('Species set',d.clsRfilt?('Norway only \\u2014 '+(d.clsRegion||0)+' species allowlist')"
+":'All species (no region filter)')+"
+"drow('Relabel / cloud vocabulary',d.clsLabels+' species')+"
+"drow('Last classification',d.lastInferenceMs<0?'none since boot'"
+":((d.lastInferenceMs/1000).toFixed(1)+' s (all tiers, incl. network)'));"
 "}).catch(()=>{});}"
 "function dbgGpio(lvl){var n=$g('dbgGpioNum').value;"
 "fetch('/api/debug/gpio',{method:'POST',"
@@ -3977,7 +3982,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
-        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,"
+        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
         "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
         /* heapIntBig8 = the guard's EXACT metric (INTERNAL|8BIT), which heapIntBig
          * (INTERNAL only) does not match; guard* = the last guard-fire snapshot,
@@ -4007,7 +4012,11 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_fault() ? "true" : "false",
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
-        classify_model_name(), classify_label_count(), classify_region_matches(),
+        /* clsRegion = the real "Norway only" allowlist size (species_i18n.c's
+         * NO_NAMES via species_in_region) — NOT target_species.h; clsLabels is
+         * that 31-entry relabel/cloud vocabulary (v2.71). */
+        classify_model_name(), classify_label_count(),
+        (int) species_region_count(), (unsigned) g_settings.region_filter,
         httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s(),
         (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned long) g_grb_count, (unsigned long) g_grb_block,

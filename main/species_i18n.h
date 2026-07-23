@@ -13,6 +13,10 @@ extern "C" {
  * filter (single source of truth: one list to maintain). Empty/NULL → false. */
 bool species_in_region(const char *latin);
 
+/* Size of that allowlist — the Debug page's honest "Norway only filters to N
+ * species" number (v2.71). */
+size_t species_region_count(void);
+
 /* Formats a display string for a classified species (FSD §3.2). `name_en`
  * is the English common name already stored in the visit log; `latin` is
  * the scientific binomial (empty for the "no bird"/"Unidentified bird"/

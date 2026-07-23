@@ -488,6 +488,7 @@ static void classify_task(void *arg)
     for (;;) {
         if (xQueueReceive(s_jobq, &job, portMAX_DELAY) != pdTRUE) continue;
         s_cls_busy = true;
+        int64_t job_t0_us = esp_timer_get_time();   /* Debug "Last classification" (v2.71) */
 
         classify_result_t best;
         roi_t win = roi_none();
@@ -569,6 +570,10 @@ static void classify_task(void *arg)
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
+        /* Wall time of the whole tier cascade (iNat frames + cloud fallback +
+         * log write) for this event — repurposes the on-device-era inference
+         * counter, which nothing had written since the 0.74.0 pivot (v2.71). */
+        s_last_ms = (int32_t) ((esp_timer_get_time() - job_t0_us) / 1000);
         s_cls_seq = s_cls_seq + 1;   /* result landed — wakes the "Current" badge (v2.40) */
         /* Clear only when the queue is empty too: back-to-back visits should read
          * as one continuous CLASSIFYING state, not flicker between events. */
@@ -1025,7 +1030,6 @@ esp_err_t classify_run_sync(const uint8_t *jpeg, size_t len, classify_result_t *
 int32_t     classify_last_duration_ms(void) { return s_last_ms; }
 const char *classify_model_name(void)       { return inat_cv_enabled() ? "iNaturalist online" : ""; }
 int         classify_label_count(void)      { return (int) TARGET_SPECIES_N; }
-int         classify_region_matches(void)   { return (int) TARGET_SPECIES_N; }
 const char *classify_last_species(void)     { return s_last_species; }
 const char *classify_last_latin(void)       { return s_last_latin; }
 const char *classify_last_file(void)        { return s_last_file; }
