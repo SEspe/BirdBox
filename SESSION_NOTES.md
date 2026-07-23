@@ -64,8 +64,15 @@ the gallery's `\'`-escaped onclick strings; a real parser doesn't. Also
 cross-checked all 29 ⓘ icon keys ↔ SINFO table keys both directions.
 
 ### Open / notes
-- CI warns `download-artifact@v4` + `action-gh-release@v2` target deprecated
-  Node 20 — bump the workflow versions sometime.
+- **Fast-burst gap variance explained** (operator asked why it's now <1000 ms):
+  it was never a constant — grab + JPEG + SD-save, dominated by OV2640
+  auto-exposure, so it tracks scene brightness (~500–800 ms in daylight,
+  →~1 s dim). The old "~940 ms" figure included the 200 ms `FAST_BURST_MS`
+  delay removed in v2.61. Measured same-day drift: avg 524 (08:58) → 693
+  (midday), zero firmware involvement. Clarifying note appended to the FSD
+  v2.61 entry — don't re-investigate a moving `fastAvgMs`.
+- CI actions bumped off Node 20 (checkout v7, upload v7, download v8,
+  gh-release v3); push build green, release job validates on next tag.
 - SINFO Default rows must be kept in sync when a settings.c default changes
   (noted in a comment above the table).
 - Unit still runs its own tuned NVS values (sens 65, conf 25, cool 100,
