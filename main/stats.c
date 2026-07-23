@@ -99,11 +99,24 @@ static void ingest_line(stats_t *st, char *line)
         if (hh >= 0 && hh < 24) st->hour[hh]++;
     }
 
+    /* One species can be logged under different common names — Norwegian from
+     * the relabel vocabulary, English from the cloud tier ("Bokfink" vs
+     * "Common Chaffinch") — which used to split it into duplicate rows. The
+     * Latin binomial is the species' identity whenever both sides have one
+     * (v2.70); the raw name only decides for rows without Latin
+     * ("unclassified", pre-v1.51 legacy rows). */
     int i;
-    for (i = 0; i < st->sp_count; i++)
-        if (strcmp(st->sp[i], species) == 0) break;
+    for (i = 0; i < st->sp_count; i++) {
+        if (latin && latin[0] && st->sp_latin[i][0]) {
+            if (strcmp(st->sp_latin[i], latin) == 0) break;
+        } else if (strcmp(st->sp[i], species) == 0) {
+            break;
+        }
+    }
     if (i == st->sp_count && st->sp_count < STATS_MAX_SPECIES) {
         strlcpy(st->sp[st->sp_count], species, sizeof(st->sp[0]));
+        if (latin && latin[0])
+            strlcpy(st->sp_latin[st->sp_count], latin, sizeof(st->sp_latin[0]));
         strlcpy(st->sp_first[st->sp_count], ts, sizeof(st->sp_first[0]));
         st->sp_count++;
     }
@@ -250,10 +263,14 @@ int stats_list_images(const char *want, const char *date, stats_img_t *out, int 
             next_field(&p);                    /* frames */
             char *first     = next_field(&p);
             char *corrected = next_field(&p);
-            next_field(&p);                    /* latin */
+            char *latin     = next_field(&p);
             if (!ts[0] || !species[0] || !first[0]) continue;
             if (corrected[0]) species = corrected;
-            if (strcmp(species, want) != 0) continue;
+            /* `want` is the species-table row key: the Latin binomial when the
+             * row has one (v2.70), else the raw common name — match either, so
+             * a merged row ("Bokfink" + "Common Chaffinch") lists all its
+             * images whichever name each event was logged under. */
+            if (strcmp(species, want) != 0 && strcmp(latin, want) != 0) continue;
             stats_img_t *slot = &ring[total % max];
             strlcpy(slot->path, first, sizeof(slot->path));
             strlcpy(slot->ts,   ts,    sizeof(slot->ts));
