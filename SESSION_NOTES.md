@@ -1,4 +1,18 @@
-# Session Notes — BirdBox (updated 2026-07-22)
+# Session Notes — BirdBox (updated 2026-07-23)
+
+## ✅ VERIFIED 2026-07-23 08:58 — cert-pin held overnight
+Checked `/api/sysinfo` after a full overnight run on **0.74.31**:
+- `guardReboots` **3** (unchanged from baseline) ⇒ heap guard never fired.
+- `heapIntBig8` **31744** — byte-for-byte identical to baseline, zero drift
+  (pre-fix it decayed toward ~28.7 KB within ~107 min).
+- `uptime` **52475 s (~14.6 h)** unbroken, ~8× the old leak cycle, through
+  118 motion events, active iNat classification (Kjøttmeis 97%), 0 SD remounts,
+  0 cam recoveries, SoC 51 °C.
+
+**Conclusion: the root-CA cert-pin (0.74.31) is the permanent fix for the
+cert-bundle DRAM leak.** Nothing further to watch.
+
+Original baseline + check procedure kept below for the record.
 
 ## ⏭ Verify tomorrow (cert-pin held?)
 Baseline snapshot **2026-07-22 20:37**: fw **0.74.31**, uptime **8027 s (134 min)**,
