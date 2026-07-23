@@ -12,10 +12,10 @@ static const char *TAG = "settings";
 settings_t g_settings = {
     .mode              = MODE_FEEDER,
     .motion_sensitivity = 50,
-    .capture_count      = 5,
+    .capture_count      = 4,
     .capture_interval_ms = 1500,
-    .cooldown_s         = 3,
-    .confidence_pct     = 60,
+    .cooldown_s         = 120,
+    .confidence_pct     = 30,
     .sd_cap_pct         = 80,
     .stream_quality     = 12,
     .ir_led_mode        = 0,
@@ -47,7 +47,9 @@ settings_t g_settings = {
     .ondevice_enabled   = 1,    /* on-device (nordic) model is the secondary tier */
     .inat_cv_enabled    = 0,    /* opt-in primary tier; needs a (24h) iNat JWT */
     .inat_key           = "",
-    .inat_loc           = "",   /* iNat geo hint "lat,lng"; "" = no geo */
+    .inat_loc           = "59.91,10.75",   /* iNat geo hint "lat,lng"; default
+                                            * Oslo (matches the cities_data.h
+                                            * dropdown entry); "" = no geo */
     .inat_periodic_enabled     = 0,    /* opt-in third tier (§3.2.3) */
     .inat_periodic_interval_min = 60,
 };
