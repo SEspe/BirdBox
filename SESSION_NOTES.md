@@ -98,8 +98,11 @@ strings translate, misses all deliberate — no browser needed.
 - **Phase 2 shipped 0.74.39 / v2.73**: the 29 ⓘ popup bodies translate via
   116 `@sinfo:<key>:<field>` rows in i18n.txt (t/d/def/alt, HTML allowed,
   per-field English fallback). Verified: all 29×4 resolve in NO.
-- Pending, unscheduled: Phase 3 (dynamic status/confirm strings, minus
-  Debug — that content stays English permanently).
+- Phase 3 (dynamic status/confirm strings): **ON HOLD, may be abandoned**
+  (operator, 2026-07-23, after seeing the detail: ~100–130 fragile inline-JS
+  call sites for the last ~10 % of visible text). Do not propose unprompted;
+  Phases 1+2 are the accepted end state unless the operator reopens it.
+  Debug content stays English permanently regardless.
 
 ### Open / notes
 - **Fast-burst gap variance explained** (operator asked why it's now <1000 ms):
