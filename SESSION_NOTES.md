@@ -14,13 +14,12 @@ cert-bundle DRAM leak.** Nothing further to watch.
 
 Original baseline + check procedure kept below for the record.
 
-## Session 2026-07-23 — ⓘ popups, defaults, stats fixes, Debug rework, i18n Phase 1; **released v0.74.35 + v0.74.38**
+## Session 2026-07-23 — ⓘ popups, defaults, stats fixes, Debug rework, i18n Phases 1+2; **released v0.74.35 / .38 / .39**
 
-Started 0.74.31, ended **0.74.38** — every step built, OTA-flashed to the
-reference unit, verified live, committed + pushed to `master`. Two GitHub
-releases cut: **v0.74.35** (mid-session) and **v0.74.38** (session close,
-current latest — first tag through the bumped CI actions, which validated
-clean).
+Started 0.74.31, ended **0.74.39** — every step built, OTA-flashed to the
+reference unit, verified live, committed + pushed to `master`. Three GitHub
+releases cut: **v0.74.35**, **v0.74.38** (first tag through the bumped CI
+actions, validated clean), and **v0.74.39** (current latest).
 
 ### What shipped
 - **0.74.32 / v2.65 — per-setting ⓘ info popups.** Every Settings label got a
@@ -75,7 +74,8 @@ clean).
   wall-clock of the event's whole tier cascade (set in `classify_task`);
   the ".tflite to /sd/model" fallback text removed. sysinfo: `clsRegion` now
   = allowlist size (147), new `clsRfilt`; `classify_region_matches()` deleted.
-- **0.74.38 / v2.72 — i18n Phase 1** (see the i18n status section below).
+- **0.74.38 / v2.72 — i18n Phase 1** and **0.74.39 / v2.73 — i18n Phase 2**
+  (see the i18n status section below for the full picture).
 
 ### New verification tooling (keep using this)
 `esprima` (pip'd into the session scratchpad's IDF-python) now **parses the
