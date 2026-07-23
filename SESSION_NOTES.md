@@ -14,13 +14,13 @@ cert-bundle DRAM leak.** Nothing further to watch.
 
 Original baseline + check procedure kept below for the record.
 
-## Session 2026-07-23 — Settings ⓘ popups, defaults retune, two bug fixes; **released v0.74.35**
+## Session 2026-07-23 — ⓘ popups, defaults, stats fixes, Debug rework, i18n Phase 1; **released v0.74.35 + v0.74.38**
 
-Started 0.74.31, ended **0.74.35** — all built, OTA-flashed to the reference
-unit, verified live, committed + pushed to `master`, and **published as GitHub
-release v0.74.35** (tag → CI builds + publishes; asset
-`BirdBox_esp32s3_v0.74.35.bin`, now what the OTA tab's "Flash from GitHub
-release" offers).
+Started 0.74.31, ended **0.74.38** — every step built, OTA-flashed to the
+reference unit, verified live, committed + pushed to `master`. Two GitHub
+releases cut: **v0.74.35** (mid-session) and **v0.74.38** (session close,
+current latest — first tag through the bumped CI actions, which validated
+clean).
 
 ### What shipped
 - **0.74.32 / v2.65 — per-setting ⓘ info popups.** Every Settings label got a
@@ -55,6 +55,27 @@ release" offers).
   2 Kjøttmeis images all from today; all-time = 10 across days.
   (0.74.34 existed transiently on-device as the tooltip-only build; both fixes
   committed together as 0.74.35.)
+- **0.74.36 / v2.69 — Stats date picker.** The Today button became a dropdown:
+  "Today" default (value '' — server resolves the date, keeping the ~1970
+  guard), then every capture day from `/api/days`. All four stats endpoints
+  take `&date=YYYY-MM-DD`, shape-validated (`stats_date_valid` — the string
+  feeds a `/sd/log` filename); labels say "on <date>".
+- **0.74.36 / v2.70 — species rows merge by Latin binomial.** Operator spotted
+  two "Bokfink" lines: 16× `Bokfink` + 1× `Common Chaffinch` (cloud tier logs
+  English; relabel vocab logs Norwegian; display localizes both identically).
+  Latin is now the row identity when both sides have one; JSON `key` = latin;
+  `stats_list_images` matches species OR latin. Verified: one row, n=17.
+- **0.74.37 / v2.71 — Debug "Species ID" card rework** (operator audit: "31
+  species Northern Europe — still in use?"). Findings: "31 of 31" was a
+  tautology AND named the wrong list — the real Norway filter is
+  `species_in_region()` = the **147-entry** NO_NAMES allowlist in
+  species_i18n.c, not target_species.h's 31 (that's the relabel picker +
+  cloud-prompt vocabulary, kept, honestly labelled); "Last inference" had NO
+  writer since the pivot — repurposed as **"Last classification"**, the timed
+  wall-clock of the event's whole tier cascade (set in `classify_task`);
+  the ".tflite to /sd/model" fallback text removed. sysinfo: `clsRegion` now
+  = allowlist size (147), new `clsRfilt`; `classify_region_matches()` deleted.
+- **0.74.38 / v2.72 — i18n Phase 1** (see the i18n status section below).
 
 ### New verification tooling (keep using this)
 `esprima` (pip'd into the session scratchpad's IDF-python) now **parses the
@@ -62,6 +83,9 @@ served page's inline JS for real** after every UI flash — strictly better than
 the old grep/bracket-count ritual. A naive bracket counter false-positives on
 the gallery's `\'`-escaped onclick strings; a real parser doesn't. Also
 cross-checked all 29 ⓘ icon keys ↔ SINFO table keys both directions.
+For i18n: simulated the ENTIRE client pipeline in Python (fetch page +
+`/i18n.txt`, HTMLParser text nodes, same `tX()` logic) → 191/195 static
+strings translate, misses all deliberate — no browser needed.
 
 ### i18n status (Phase 1 shipped 0.74.38 / v2.72, operator-approved)
 - Whole static HMI follows the Language setting; dictionary = `main/i18n.txt`
@@ -83,7 +107,10 @@ cross-checked all 29 ⓘ icon keys ↔ SINFO table keys both directions.
   (midday), zero firmware involvement. Clarifying note appended to the FSD
   v2.61 entry — don't re-investigate a moving `fastAvgMs`.
 - CI actions bumped off Node 20 (checkout v7, upload v7, download v8,
-  gh-release v3); push build green, release job validates on next tag.
+  gh-release v3); push build green, **release job validated by the v0.74.38
+  tag — fully proven, closed.**
+- "Last classification" (Debug) reads "none since boot" until the first
+  motion event after each reboot — expected, not a bug.
 - SINFO Default rows must be kept in sync when a settings.c default changes
   (noted in a comment above the table).
 - Unit still runs its own tuned NVS values (sens 65, conf 25, cool 100,
