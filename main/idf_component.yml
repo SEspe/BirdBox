@@ -4,3 +4,6 @@ dependencies:
   # WS2812 illuminator on the reference unit (GPIO48, found via Debug-tab GPIO probe) —
   # a raw gpio_set_level can't reliably light/clear it, needs the real bit-timed protocol
   espressif/led_strip: "*"
+  # mDNS responder — the box answers to http://birdbox.local/ so the UI/OTA
+  # survive DHCP address changes (the unit has moved subnets before)
+  espressif/mdns: "^1.0.0"

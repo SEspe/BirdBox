@@ -32,6 +32,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "driver/gpio.h"
+#include "mdns.h"
 
 static const char *TAG = "wifi";
 
@@ -290,6 +291,26 @@ static void start_sntp(void)
     ESP_LOGI(TAG, "SNTP started (%s)", g_settings.ntp_server);
 }
 
+/* mDNS responder (FSD §4.8): the box answers to http://birdbox.local/ so the
+ * UI and OTA don't depend on knowing the current DHCP address (the unit has
+ * changed subnets before). Best-effort — a failure here must never block
+ * bringup; the IP path keeps working regardless. Note mDNS is same-subnet by
+ * design; clients behind another subnet still use the IP unless the router
+ * reflects multicast. */
+static void start_mdns(void)
+{
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "mdns_init: %s", esp_err_to_name(err));
+        return;
+    }
+    mdns_hostname_set(MDNS_HOSTNAME);
+    mdns_instance_name_set(FIRMWARE_NAME " camera");
+    /* Advertise the web UI so service browsers (Bonjour etc.) list it too. */
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS: http://%s.local/", MDNS_HOSTNAME);
+}
+
 void wifi_restart_sntp(void)
 {
     if (!s_connected) return;   /* applies from g_settings on the next connect anyway */
@@ -508,6 +529,9 @@ esp_err_t wifi_start(void)
 
     s_wifi_eg = xEventGroupCreate();
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    /* DHCP hostname (shows in router client lists as "birdbox") — must be set
+     * before the DHCP client starts, i.e. before esp_wifi_start below. */
+    esp_netif_set_hostname(sta_netif, MDNS_HOSTNAME);
     nvs_load_ipcfg();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -562,6 +586,7 @@ esp_err_t wifi_start(void)
             start_sntp();
             setenv("TZ", g_settings.timezone, 1);
             tzset();
+            start_mdns();   /* http://birdbox.local/ (FSD §4.8) */
             xTaskCreate(config_apply_task, "cfg_apply", 4096, NULL, 3, NULL);
             return ESP_OK;
         }
