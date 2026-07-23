@@ -1,5 +1,32 @@
 # Session Notes — BirdBox (updated 2026-07-23)
 
+## Session 2026-07-23 (late) — mDNS `birdbox.local`; **released 0.74.40 / FSD v2.74**
+Operator asked whether the box could answer to a name instead of the IP
+(which has moved before: `192.168.10.236` → `192.168.1.111`). Added mDNS.
+
+- **0.74.40 / v2.74 — mDNS responder** (`espressif/mdns`, new §4.8). In
+  `wifi.c`: `start_mdns()` sets hostname `birdbox` (`MDNS_HOSTNAME` in
+  version.h), instance "BirdBox camera", advertises `_http._tcp` port 80;
+  called right after `start_sntp()` in `wifi_start`, best-effort (failure
+  logs + continues, IP path unaffected). Portal mode untouched. Also
+  `esp_netif_set_hostname(sta_netif, "birdbox")` **before** `esp_wifi_start`
+  so it's the DHCP hostname too → shows as "birdbox" in the router client list.
+- Built clean (64% app free), OTA-flashed, `/api/status` confirms 0.74.40.
+  Committed + pushed (`e818ced`).
+
+**Verified + the key caveat:** the responder works — a unicast mDNS query to
+`192.168.1.111:5353` for `birdbox.local` returns the box's own IP. BUT the
+name does **not** resolve from the dev PC: PC is on **192.168.86.23**, box on
+**192.168.1.111** — different subnets, and mDNS multicast (224.0.0.251) is
+link-local, never crosses the router. So `birdbox.local` works only from
+clients **on the box's subnet** (192.168.1.x); cross-subnet needs router mDNS
+reflection or a router DNS name. **Operator decided: no hosts-file entry,
+system is fine as-is** — the name is for same-subnet devices, IP stays the
+cross-subnet path. (Windows 10 19045 resolves `.local` natively, so same-subnet
+it will just work; not empirically tested from a same-subnet client this
+session.) Device-address memory updated with all of this.
+
+
 ## ✅ VERIFIED 2026-07-23 08:58 — cert-pin held overnight
 Checked `/api/sysinfo` after a full overnight run on **0.74.31**:
 - `guardReboots` **3** (unchanged from baseline) ⇒ heap guard never fired.
@@ -14,7 +41,7 @@ cert-bundle DRAM leak.** Nothing further to watch.
 
 Original baseline + check procedure kept below for the record.
 
-## Session 2026-07-23 — ⓘ popups, defaults, stats fixes, Debug rework, i18n Phases 1+2; **released v0.74.35 / .38 / .39**
+## Session 2026-07-23 (earlier) — ⓘ popups, defaults, stats fixes, Debug rework, i18n Phases 1+2; **released v0.74.35 / .38 / .39**
 
 Started 0.74.31, ended **0.74.39** — every step built, OTA-flashed to the
 reference unit, verified live, committed + pushed to `master`. Three GitHub
