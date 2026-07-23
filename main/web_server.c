@@ -1583,9 +1583,13 @@ static const char INDEX_HTML[] =
 " light sensor. Leave off if it should never light the scene.',"
 "'Off','Auto (on during dark hours).']"
 "};"
+/* i18n Phase 2 (v2.73): popup bodies come from i18n.txt rows keyed
+ * '@sinfo:<key>:<field>' (t/d/def/alt) when the active language has them;
+ * each field falls back to the English SINFO table independently. */
 "function sInfo(k){var i=SINFO[k];if(!i)return;"
-"$g('ipT').innerHTML=i[0];$g('ipD').innerHTML=i[1];"
-"$g('ipDef').innerHTML=i[2];$g('ipAlt').innerHTML=i[3];"
+"var g=g_i18n||{},p='@sinfo:'+k+':';"
+"$g('ipT').innerHTML=g[p+'t']||i[0];$g('ipD').innerHTML=g[p+'d']||i[1];"
+"$g('ipDef').innerHTML=g[p+'def']||i[2];$g('ipAlt').innerHTML=g[p+'alt']||i[3];"
 "$g('ipop').style.display='flex';}"
 "function ipClose(){$g('ipop').style.display='none';}"
 "function stSensShow(){$g('stSensV').textContent=$g('stSens').value;}"

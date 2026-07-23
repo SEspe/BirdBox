@@ -95,8 +95,11 @@ strings translate, misses all deliberate — no browser needed.
   English (rule recorded in FSD v2.72).
 - **Debug pane content stays English permanently** (operator decision) —
   only its section headers translate. Excluded from Phase 3.
-- Pending, unscheduled: Phase 2 (SINFO ⓘ popup bodies in NO), Phase 3
-  (dynamic status/confirm strings, minus Debug).
+- **Phase 2 shipped 0.74.39 / v2.73**: the 29 ⓘ popup bodies translate via
+  116 `@sinfo:<key>:<field>` rows in i18n.txt (t/d/def/alt, HTML allowed,
+  per-field English fallback). Verified: all 29×4 resolve in NO.
+- Pending, unscheduled: Phase 3 (dynamic status/confirm strings, minus
+  Debug — that content stays English permanently).
 
 ### Open / notes
 - **Fast-burst gap variance explained** (operator asked why it's now <1000 ms):
