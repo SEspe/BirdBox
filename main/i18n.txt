@@ -235,3 +235,127 @@ gemini-flash-lite-latest (default)	gemini-flash-lite-latest (standard)
 tap network or type	trykk på nettverk eller skriv
 leave blank if open	la stå tomt hvis åpent
 optional	valgfritt
+#
+# ── ⓘ settings-popup bodies (i18n Phase 2, v2.73) ──
+# Key convention: @sinfo:<setting-key>:<field> where field is
+#   t = title, d = description, def = default value, alt = alternatives.
+# Values may contain HTML (<b>, <i>, <code>) — inserted via innerHTML.
+# One line per row; a missing row falls back to English for that field only.
+# The <setting-key> list mirrors the SINFO table in web_server.c.
+#
+@sinfo:mode:t	Plassering
+@sinfo:mode:d	Registrerer om boksen er montert som fuglekasse eller overvåker en fôringsplass. Foreløpig kun informativt — endrer ikke deteksjons- eller identifikasjonsatferd.
+@sinfo:mode:def	Fôringsplass
+@sinfo:mode:alt	Fuglekasse
+@sinfo:sens:t	Bevegelsesfølsomhet
+@sinfo:sens:d	Hvor mye av deteksjonssonen som må endres (som én sammenhengende klump) for å regnes som bevegelse: 0 krever ~11 % av sonen, 50 krever ~6 %, 100 bare ~1 %. Høyere = mer følsom. Spredt vindbevegelse (gress, løv) ignoreres — bare den største sammenhengende klyngen teller, så en kompakt klump på fuglestørrelse vinner over diffus støy.
+@sinfo:sens:def	50
+@sinfo:sens:alt	0–100. Senk den hvis løv eller skygger utløser hendelser; øk den hvis små fugler ikke fanges opp.
+@sinfo:ccnt:t	Bilder per hendelse
+@sinfo:ccnt:d	Hvor mange bilder én bevegelseshendelse tar. Flere bilder gir arts-ID flere sjanser (minst 2 bilder må være enige om et iNaturalist-resultat) og et bedre beste-bilde til galleriet, mot mer SD-plass og lengre opptatt-periode per hendelse.
+@sinfo:ccnt:def	4
+@sinfo:ccnt:alt	1–10. 1 slår av kravet om bekreftelse; 3–7 er det nyttige området.
+@sinfo:civl:t	Bildeintervall
+@sinfo:civl:d	Pause mellom bildene i én hendelse. Kort = nesten-serie av samme positur; langt = besøket fordelt over flere sekunder, med bedre sjanse for en tydelig positur, men noe risiko for at fuglen drar midt i hendelsen.
+@sinfo:civl:def	1500 ms
+@sinfo:civl:alt	250–10000 ms i steg på 250 ms.
+@sinfo:cool:t	Pause mellom hendelser
+@sinfo:cool:d	Etter at en hendelse er ferdig, ignoreres bevegelse så lenge — slik at ett langt besøk ikke blir titalls hendelser (og titalls identifikasjonskall).
+@sinfo:cool:def	120 s
+@sinfo:cool:alt	1–600 s. Øk på en travel fôringsplass for å spare SD-plass og API-kall; senk for å fange flere separate besøk.
+@sinfo:qtn:t	Deteksjonskarantene etter oppstart
+@sinfo:qtn:d	Etter omstart ignoreres bevegelse i så mange sekunder, slik at kameraets oppvarmingsbilder og den ennå ikke synkroniserte klokken (som arkiverer opptak under <i>no-date</i>) ikke lager falske hendelser.
+@sinfo:qtn:def	60 s
+@sinfo:qtn:alt	0 slår av; opptil 3600 s.
+@sinfo:dzoom:t	Zoom arts-ID til bevegelsesområdet
+@sinfo:dzoom:d	Sender i tillegg iNaturalist et utsnitt i full oppløsning sentrert på endringsboksen, og beholder det som scorer høyest — helbilde eller utsnitt — slik at en liten eller usentrert fugl fortsatt kan identifiseres. Koster ett ekstra iNaturalist-kall per bilde. Lagrede bilder påvirkes ikke; deteksjonssonen settes på Direkte-fanen.
+@sinfo:dzoom:def	Av
+@sinfo:dzoom:alt	På. Merk: dagens iNat-modell scorer ofte tette utsnitt <i>dårligere</i> enn helbildet, så la den stå av med mindre små fugler stadig forblir uidentifiserte.
+@sinfo:fshut:t	Reduser bevegelsesuskarphet (rask lukker)
+@sinfo:fshut:d	Når scenen er mørk, låses eksponeringen kort i stedet for å forlenges — hovedårsaken til en uskarp, nær eller rask fugl i skumring eller innendørs. Aktiveres bare i lite lys (samme lysmåling som lys-LED-en), så dagslysbilder påvirkes ikke; bilder i lite lys blir mørkere/mer støyete i bytte mot mindre uskarphet.
+@sinfo:fshut:def	Av
+@sinfo:fshut:alt	På.
+@sinfo:conf:t	Konfidensterskel
+@sinfo:conf:d	Minste konfidens for at en sky-identifikasjon (Claude/Gemini) godtas; under den forblir hendelsen uidentifisert i stedet for å risikere feil merkelapp. Definerer også vurderingsbåndet galleriets «Nær terskel»-filter viser.
+@sinfo:conf:def	30 %
+@sinfo:conf:alt	15–95 %. Lavere slipper inn flere (mer risikable) automatiske merkelapper; høyere overlater mer til manuell gjennomgang.
+@sinfo:rfilt:t	Artsutvalg
+@sinfo:rfilt:d	Kun Norge begrenser identifikasjoner til den regionale tillatlisten: en geografisk umulig toppkandidat (f.eks. Pica hudsonia, den amerikanske skjæra) avvises, og den beste kandidaten i regionen vinner i stedet (f.eks. Pica pica).
+@sinfo:rfilt:def	Alle arter (uten regionfilter)
+@sinfo:rfilt:alt	Kun Norge — anbefalt for en norsk fôringsplass.
+@sinfo:inatcv:t	Identifiser med iNaturalist først
+@sinfo:inatcv:d	Sender hver ny bevegelseshendelse til iNaturalists <b>nettbaserte</b> bildegjenkjenningsmodell (den bak iNat-appen) som primær klassifisering; skyleverandøren, hvis valgt, får bare hendelsene iNat ikke klarer. Gratis, ingen kostnad per kall. Krever innloggingen eller et token nedenfor, pluss WiFi.
+@sinfo:inatcv:def	Av (opt-in)
+@sinfo:inatcv:alt	På — den tiltenkte modusen; med denne av og uten skyleverandør forblir nye hendelser uidentifiserte.
+@sinfo:iuser:t	iNaturalist-innlogging
+@sinfo:iuser:d	Med innloggingen lagret logger boksen seg inn selv slik en nettleser gjør, lager sin egen sesjons-cookie og holder sitt ~24 t-token ferskt på ubestemt tid — ingenting å lime inn, noensinne. Trykk <b>Logg inn nå</b> etter lagring for å teste. iNaturalist har ingen permanent API-nøkkel, så dette er anbefalt oppsett.
+@sinfo:iuser:def	(ikke satt)
+@sinfo:iuser:alt	La stå tomt og lim inn sesjons-cookien eller et token nedenfor i stedet.
+@sinfo:loc:t	Plassering (nærmeste hovedstad)
+@sinfo:loc:d	iNaturalist er mye mer treffsikker med en plassering — den favoriserer arter som faktisk finnes nær deg. Velg hovedstaden nærmest kameraet. Uten den kjører iNat kun på bildet og kan foreslå fugler fra feil kontinent med lav konfidens.
+@sinfo:loc:def	Oslo, Norway (59.91,10.75)
+@sinfo:loc:alt	Enhver hovedstad i listen, sendes som lat,lng med hvert identifikasjonskall — eller ingen plassering (kun bilde, svakere resultater).
+@sinfo:isess:t	Sesjons-cookie
+@sinfo:isess:d	Manuell reserveløsning: lim inn <b>_inaturalist_session</b>-cookien, så lager boksen ferske 24 t-tokens fra den i ukevis. Hent den etter innlogging på inaturalist.org: DevTools → Application → Cookies → inaturalist.org → kopier verdien. Automatisk innlogging lager akkurat denne selv. Holdes utenfor innstillingseksporten.
+@sinfo:isess:def	(ikke satt)
+@sinfo:isess:alt	Ikke nødvendig så lenge lagret brukernavn/passord-innlogging virker.
+@sinfo:ikey:t	iNaturalist API-token (JWT)
+@sinfo:ikey:d	Siste manuelle utvei: et håndlimt token fra <b>inaturalist.org/users/api_token</b> slutter å virke etter ~24 t. Hele <code>{"api_token":"..."}</code>-JSON-en kan limes inn — boksen henter ut tokenet. Tomt beholder gjeldende token. Holdes utenfor innstillingseksporten.
+@sinfo:ikey:def	(ikke satt)
+@sinfo:ikey:alt	Foretrekk lagret innlogging eller sesjons-cookien — begge varer lenger.
+@sinfo:cprov:t	Aktiv skyleverandør
+@sinfo:cprov:d	Når iNaturalist ikke kan identifisere en hendelse, sendes dens beste bilde til denne leverandøren, og det svaret brukes i stedet; feiler kallet (ikke nett, ugyldig nøkkel, tom kreditt) står iNaturalist-resultatet eller <i>Uidentifisert</i>, så ingenting blir verre. Hver eskalert hendelse koster fra en brøkdel av en cent til et par cent — en travel fôringsplass kan komme opp i noen dollar per dag. Begge nøkler kan lagres; velgeren bestemmer hvilken som kjører, én om gangen. Uansett valg spør galleriets ✨-knapp skyen om ett enkelt bilde når en nøkkel er lagret.
+@sinfo:cprov:def	Av — kun iNaturalist
+@sinfo:cprov:alt	Anthropic Claude (Opus 4.8) eller Google Gemini (2.5 Flash).
+@sinfo:ckey:t	Anthropic API-nøkkel
+@sinfo:ckey:d	Opprett en på console.anthropic.com/settings/keys. Lagres på enheten og sendes bare til api.anthropic.com; vises aldri igjen etter lagring og holdes utenfor innstillingseksporten. Tomt beholder gjeldende nøkkel; Glem-knappen fjerner den.
+@sinfo:ckey:def	(ikke satt)
+@sinfo:ckey:alt	—
+@sinfo:gkey:t	Google Gemini API-nøkkel
+@sinfo:gkey:d	Opprett en på aistudio.google.com/apikey. Lagres på enheten og sendes bare til generativelanguage.googleapis.com; vises aldri igjen etter lagring og holdes utenfor innstillingseksporten. Tomt beholder gjeldende nøkkel; Glem-knappen fjerner den.
+@sinfo:gkey:def	(ikke satt)
+@sinfo:gkey:alt	—
+@sinfo:gmodel:t	Gemini-modell
+@sinfo:gmodel:d	Hvilken Gemini-modell som kalles. Tilgjengelighet endres med Google-kontoen din og når generasjoner pensjoneres: får et kall 404, trykk <b>Test Gemini</b> for å liste modell-id-ene nøkkelen din kan bruke, lim inn én her og Lagre — ingen omflashing. Bare små bokstaver, sifre, punktum og bindestrek.
+@sinfo:gmodel:def	gemini-flash-lite-latest (tomt felt)
+@sinfo:gmodel:alt	Enhver modell-id nøkkelen din kan bruke, f.eks. gemini-flash-latest.
+@sinfo:lang:t	Språk
+@sinfo:lang:d	Språk for hele grensesnittet: artsnavn, faner, etiketter, knapper og hjelpetekst (last siden på nytt etter lagring). Oversettelser kommer fra den redigerbare kryssreferansefilen main/i18n.txt i fastvarekilden; strenger uten oversettelse forblir på engelsk. Det vitenskapelige (latinske) artsnavnet vises alltid i tillegg.
+@sinfo:lang:def	Engelsk
+@sinfo:lang:alt	Norsk.
+@sinfo:cap:t	SD-lagringsgrense
+@sinfo:cap:d	Når kortet fylles forbi dette nivået, slettes de eldste dagmappene for å frigjøre plass — boksen slutter aldri å ta opp av plassmangel.
+@sinfo:cap:def	80 %
+@sinfo:cap:alt	50–95 %.
+@sinfo:qual:t	JPEG-kvalitet for strøm/opptak
+@sinfo:qual:d	JPEG-komprimering for direktestrømmen og lagrede bilder. Lavere tall betyr bedre kvalitet og større filer; Best (8) gir arts-ID mest detalj å jobbe med.
+@sinfo:qual:def	Standard (12)
+@sinfo:qual:alt	Best 8, Høy 10, Standard 12, Lav 18, Lavest 25.
+@sinfo:res:t	Oppløsning
+@sinfo:res:d	HD og SXGA deler samme bredde på 1280 px, så fuglen får samme horisontale detalj uansett. <b>HD</b> holder bevegelsesdeteksjonen mest responsiv; <b>SXGA</b> gir mer vertikalt synsfelt, men de større bildene bremser bevegelsesløkken, så den utløses mindre pålitelig. Ingenting høyere tilbys — UXGA-bilder etterlater for lite ledig minne. Trer i kraft etter omstart.
+@sinfo:res:def	HD 1280×720
+@sinfo:res:alt	SXGA 1280×1024.
+@sinfo:contrast:t	Kontrast
+@sinfo:contrast:d	Sensorkontrast — OV2640 har ingen skarphetskontroll, så dette er nærmeste virkemiddel. Gjelder umiddelbart for strøm og lagrede bilder.
+@sinfo:contrast:def	0
+@sinfo:contrast:alt	-2 (myk) til +2 (kraftig).
+@sinfo:ae:t	Lysstyrke (autoeksponering)
+@sinfo:ae:d	Skyver kameraets autoeksponeringsmål mørkere eller lysere. Gjelder umiddelbart.
+@sinfo:ae:def	0
+@sinfo:ae:alt	-2 (mørkere) til +2 (lysere).
+@sinfo:rot:t	Bilderotasjon
+@sinfo:rot:d	0°/180° roterer selve sensoren og gjelder strøm, lagrede bilder og arts-ID. 90°/270° støttes ikke av kameraets maskinvare, så bare direktevisningen og arts-ID korrigeres; lagrede bilder beholder original retning.
+@sinfo:rot:def	0°
+@sinfo:rot:alt	90°, 180°, 270°.
+@sinfo:tz:t	Tidssone
+@sinfo:tz:d	POSIX-tidssone brukt for tidsstempler, dagmapper og daglig statistikk; sommertidsregler er inkludert i hvert forvalg.
+@sinfo:tz:def	Sentral-Europa (Oslo/Berlin)
+@sinfo:tz:alt	Forvalg for Storbritannia, Øst-Europa, UTC og amerikanske soner; en lagret egendefinert verdi vises også her.
+@sinfo:ntp:t	NTP-server
+@sinfo:ntp:d	Hvor klokken synkroniseres fra ved oppstart. Før første synkronisering viser klokken ~1970 og opptak settes i karantene eller arkiveres under no-date, så en tilgjengelig server er viktig.
+@sinfo:ntp:def	pool.ntp.org
+@sinfo:ntp:alt	Regionale pooler, time.cloudflare.com, time.google.com, time.nist.gov, eller en egendefinert server.
+@sinfo:ir:t	Lys-LED
+@sinfo:ir:d	Innebygd hvit/rødlig lys-LED. Auto slår den på når kameraets egne bilder er mørke og av igjen når det er lyst — enkel nattbelysning uten egen lyssensor. La stå av hvis den aldri skal lyse opp scenen.
+@sinfo:ir:def	Av
+@sinfo:ir:alt	Auto (på når det er mørkt).
