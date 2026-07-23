@@ -63,6 +63,17 @@ the old grep/bracket-count ritual. A naive bracket counter false-positives on
 the gallery's `\'`-escaped onclick strings; a real parser doesn't. Also
 cross-checked all 29 ⓘ icon keys ↔ SINFO table keys both directions.
 
+### i18n status (Phase 1 shipped 0.74.38 / v2.72, operator-approved)
+- Whole static HMI follows the Language setting; dictionary = `main/i18n.txt`
+  (EN master, TAB-separated, `#cols` header, NO only so far), embedded +
+  served at `/i18n.txt`, translated client-side, English fallback.
+- **Every new/changed static UI string needs an i18n.txt row** or it shows
+  English (rule recorded in FSD v2.72).
+- **Debug pane content stays English permanently** (operator decision) —
+  only its section headers translate. Excluded from Phase 3.
+- Pending, unscheduled: Phase 2 (SINFO ⓘ popup bodies in NO), Phase 3
+  (dynamic status/confirm strings, minus Debug).
+
 ### Open / notes
 - **Fast-burst gap variance explained** (operator asked why it's now <1000 ms):
   it was never a constant — grab + JPEG + SD-save, dominated by OV2640
