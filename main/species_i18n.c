@@ -195,6 +195,8 @@ bool species_in_region(const char *latin)
     return false;
 }
 
+size_t species_region_count(void) { return NO_NAMES_N; }
+
 static const char *no_sentinel(const char *name_en)
 {
     if (strcmp(name_en, "no bird") == 0)           return "ingen fugl";

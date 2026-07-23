@@ -110,11 +110,13 @@ void classify_recheck_status(bool *busy, int *done, int *total,
                              char *date, size_t date_len);
 
 /* Debug-card data (FSD §5) */
-int32_t     classify_last_duration_ms(void);   /* -1 = none yet */
-const char *classify_model_name(void);         /* "" when no model loaded */
-int         classify_label_count(void);
-int         classify_region_matches(void);     /* loaded labels in the N-Euro
-                                                  set; 0 = region filter N/A */
+int32_t     classify_last_duration_ms(void);   /* wall ms of the last event's
+                                                  whole tier cascade (v2.71);
+                                                  -1 = none yet */
+const char *classify_model_name(void);         /* "" when iNat CV is disabled */
+int         classify_label_count(void);        /* target_species.h vocabulary
+                                                  (relabel picker + cloud
+                                                  prompt), NOT model labels */
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
 bool        classify_busy(void);               /* an event is being scored right now (queue
