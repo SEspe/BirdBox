@@ -1,0 +1,232 @@
+# BirdBox UI language cross-reference (FSD v2.72, i18n Phase 1).
+#
+# HOW TO EDIT
+#  - TAB-separated. Column 0 = the ENGLISH master string, exactly as rendered
+#    in the UI (real characters, not HTML entities: — not &mdash;). It is the
+#    lookup key; if it does not match the on-screen text letter-for-letter,
+#    the string silently stays English (safe fallback, nothing breaks).
+#  - Leading emoji on buttons are NOT part of the key ("💾 Save Settings" is
+#    keyed as "Save Settings" — the translator strips the first token when the
+#    full text has no entry).
+#  - Lines starting with # are comments. Blank lines ignored.
+#  - After editing: rebuild + flash (the file is embedded in the firmware).
+#
+# ADDING A LANGUAGE
+#  1. Add its code to the #cols line below (e.g. "#cols<TAB>no<TAB>de").
+#  2. Add a translation column to every row (missing cells fall back to EN).
+#  3. In web_server.c: add the language to the Settings dropdown and to the
+#     LANGC array (index = the settings lang enum value).
+#
+#cols	no
+# ── Tabs ──
+Live	Direkte
+Gallery	Galleri
+Stats	Statistikk
+Settings	Innstillinger
+Maint	Vedlikehold
+Debug	Feilsøk
+OTA Update	OTA-oppdatering
+# ── Live tab ──
+Rotation	Rotasjon
+DETECTING	DETEKTERER
+CLASSIFYING	KLASSIFISERER
+FASTBIRD CHECK	HURTIGFUGL-SJEKK
+DETECTION OFF	DETEKSJON AV
+SD WRITE FAILING — captures are not being saved	SD-SKRIVING FEILER — bilder lagres ikke
+Snapshot to SD	Øyeblikksbilde til SD
+Disable detection	Slå av deteksjon
+Edit detection zone	Rediger deteksjonssone
+Pauses motion detection for maintenance (no visit events fire). The live view and snapshots keep working. Detection re-enables automatically on reboot.	Pauser bevegelsesdeteksjon for vedlikehold (ingen besøkshendelser utløses). Direktevisning og øyeblikksbilder virker fortsatt. Deteksjon slås automatisk på igjen ved omstart.
+Tap cells to include (green) / exclude (red) from motion detection. Excluded cells are ignored, so a swaying branch or busy background won't trigger captures.	Trykk på celler for å inkludere (grønn) / ekskludere (rød) fra bevegelsesdeteksjon. Ekskluderte celler ignoreres, så en svaiende gren eller urolig bakgrunn ikke utløser opptak.
+All on	Alle på
+All off	Alle av
+Save zone	Lagre sone
+Cancel	Avbryt
+# ── Gallery ──
+Refresh	Oppdater
+Show	Vis
+All	Alle
+Classified	Klassifisert
+Confirmed (bird)	Bekreftet (fugl)
+No bird (review)	Ingen fugl (til gjennomsyn)
+Confirmed no-bird	Bekreftet ingen fugl
+Other (not a bird)	Annet (ikke fugl)
+Unknown / bad bird	Ukjent / dårlig fugl
+Unclassified	Uklassifisert
+Near threshold	Nær terskel
+Select all	Velg alle
+Confirm selected	Bekreft valgte
+Set species▾	Sett art▾
+Delete selected	Slett valgte
+Recheck (day)	Sjekk dag på nytt
+Recheck selected	Sjekk valgte på nytt
+Set species on selected:	Sett art på valgte:
+Apply	Bruk
+# ── Stats ──
+Today	I dag
+All time	Totalt
+Visits per day	Besøk per dag
+Activity by hour of day	Aktivitet per time
+Species	Arter
+Reset Statistics	Nullstill statistikk
+# ── Settings: Placement / Motion ──
+Placement	Plassering
+Nest box	Fuglekasse
+Feeder	Fôringsplass
+Motion & Capture	Bevegelse og opptak
+Motion sensitivity:	Bevegelsesfølsomhet:
+Frames per event (1–10)	Bilder per hendelse (1–10)
+Frame interval (ms)	Bildeintervall (ms)
+Cool-down between events (s)	Pause mellom hendelser (s)
+Detection quarantine after boot (s)	Deteksjonskarantene etter oppstart (s)
+Zoom species ID to the motion area	Zoom arts-ID til bevegelsesområdet
+Reduce motion blur (fast shutter)	Reduser bevegelsesuskarphet (rask lukker)
+# ── Settings: Species ID / iNaturalist ──
+Species Identification	Artsidentifikasjon
+Confidence threshold (%)	Konfidensterskel (%)
+Species set	Artsutvalg
+All species (no region filter)	Alle arter (uten regionfilter)
+Norway only	Kun Norge
+iNaturalist online ID (primary, free)	iNaturalist nett-ID (primær, gratis)
+Identify new birds with iNaturalist first	Identifiser nye fugler med iNaturalist først
+iNaturalist username	iNaturalist-brukernavn
+Password	Passord
+Security:	Sikkerhet:
+the password is stored on the device in plain text (a flash dump would reveal it) and is never shown back or exported.	passordet lagres på enheten i klartekst (en flash-dump vil avsløre det) og vises aldri igjen eller eksporteres.
+Location (nearest capital)	Plassering (nærmeste hovedstad)
+Test token	Test token
+Refresh token now	Forny token nå
+Log in now	Logg inn nå
+Forget token	Glem token
+Advanced — manual fallback.	Avansert — manuell reserveløsning.
+Only needed if the automatic login stops working.	Trengs bare hvis automatisk innlogging slutter å virke.
+Session cookie (mints tokens for weeks)	Sesjons-cookie (lager tokens i ukevis)
+iNaturalist API token (JWT, ~24 h)	iNaturalist API-token (JWT, ~24 t)
+# ── Settings: Cloud ──
+Cloud Identification (secondary classifier)	Sky-identifikasjon (sekundær klassifisering)
+Escalates the events iNaturalist could not identify to a paid cloud vision model.	Sender hendelsene iNaturalist ikke kunne identifisere til en betalt sky-bildetjeneste.
+Costs money	Koster penger
+against your own API key, and	mot din egen API-nøkkel, og
+photos leave the device	bilder forlater enheten
+while a provider is selected — leave Off unless you are actively gathering labels.	mens en leverandør er valgt — la stå Av med mindre du aktivt samler treningsdata.
+Active provider	Aktiv leverandør
+Off — iNaturalist only	Av — kun iNaturalist
+Anthropic API key	Anthropic API-nøkkel
+Test Claude	Test Claude
+Forget Claude key	Glem Claude-nøkkel
+Google Gemini API key	Google Gemini API-nøkkel
+Gemini model	Gemini-modell
+Test Gemini	Test Gemini
+Forget Gemini key	Glem Gemini-nøkkel
+# ── Settings: Language / Storage / System ──
+Language	Språk
+English	Engelsk
+Norsk (Norwegian)	Norsk
+Storage & Stream	Lagring og strømming
+SD retention cap (%)	SD-lagringsgrense (%)
+Stream / capture JPEG quality	JPEG-kvalitet for strøm/opptak
+Best	Best
+High	Høy
+Standard	Standard
+Low	Lav
+Lowest	Lavest
+Resolution (needs reboot)	Oppløsning (krever omstart)
+HD 1280×720 — recommended (best motion)	HD 1280×720 — anbefalt (best bevegelse)
+SXGA 1280×1024 — +vertical detail, weaker motion	SXGA 1280×1024 — +vertikal detalj, svakere bevegelse
+Contrast (the OV2640 has no sharpness control)	Kontrast (OV2640 mangler skarphetskontroll)
+-2 (soft)	-2 (myk)
+0 (default)	0 (standard)
++2 (punchy)	+2 (kraftig)
+Brightness (auto-exposure level)	Lysstyrke (autoeksponering)
+-2 (darker)	-2 (mørkere)
++2 (brighter)	+2 (lysere)
+Image rotation (correct mount vs. subject)	Bilderotasjon (korriger montering mot motiv)
+Timezone	Tidssone
+Central Europe (Oslo/Berlin)	Sentral-Europa (Oslo/Berlin)
+UK / Ireland	Storbritannia / Irland
+Eastern Europe (Helsinki)	Øst-Europa (Helsinki)
+US Eastern	USA øst
+US Central	USA sentral
+US Mountain	USA fjell
+US Pacific	USA stillehav
+NTP server	NTP-server
+pool.ntp.org (default)	pool.ntp.org (standard)
+Europe pool	Europa-pool
+North America pool	Nord-Amerika-pool
+Asia pool	Asia-pool
+Custom…	Egendefinert…
+Illuminator LED	Lys-LED
+Off (default)	Av (standard)
+Auto (on during dark hours)	Auto (på når det er mørkt)
+Settings apply immediately — no reboot needed (resolution excepted).	Innstillinger trer i kraft umiddelbart — ingen omstart nødvendig (unntatt oppløsning).
+Save Settings	Lagre innstillinger
+Backup & Restore	Sikkerhetskopi og gjenoppretting
+Download all settings to a file, or restore them from one after a reset or NVS wipe — so your tuning (zone, sensitivity, confidence…) survives a re-provision without re-entering it by hand.	Last ned alle innstillinger til en fil, eller gjenopprett dem fra en etter nullstilling eller NVS-sletting — slik at justeringene dine (sone, følsomhet, konfidens…) overlever re-provisjonering uten å måtte tastes inn på nytt.
+Download settings	Last ned innstillinger
+Restore from file	Gjenopprett fra fil
+# ── Maint ──
+Day maintenance	Dagsvedlikehold
+Destructive, whole-day operations moved out of the Gallery so they can't be hit by accident while labelling. Pick a day, then delete its photos or wipe it entirely. Cannot be undone.	Destruktive operasjoner for hele dager, flyttet ut av galleriet så de ikke trykkes ved et uhell under merking. Velg en dag, slett dagens bilder eller fjern dagen helt. Kan ikke angres.
+Day	Dag
+Delete all photos	Slett alle bilder
+Wipe day (photos+stats)	Fjern dag (bilder+statistikk)
+removes every image for the day but leaves the statistics/visit log intact.	fjerner alle bilder for dagen, men beholder statistikk/besøkslogg.
+Wipe day	Fjern dag
+also removes that day’s rows from the statistics/visit log. To clear all statistics, use the Stats tab.	fjerner også dagens rader fra statistikk/besøksloggen. Bruk Statistikk-fanen for å nullstille all statistikk.
+Backfill ROI (bird box)	Etterfyll ROI (fuglekasse)
+Confirmed birds captured before always-on ROI logging have no motion box, so ROI-crop training can’t use them. Pick a day, load the birds still missing a box, then	Bekreftede fugler tatt opp før ROI-logging ble alltid på mangler bevegelsesboks, så ROI-beskjæring kan ikke bruke dem til trening. Velg en dag, hent fuglene som fortsatt mangler boks, og
+click the bird’s centre	klikk på fuglens midtpunkt
+on each image (adjust the box with the size slider) and Save. Newer captures record the box automatically.	på hvert bilde (juster boksen med størrelsesglideren) og Lagre. Nyere opptak registrerer boksen automatisk.
+Load missing-ROI birds	Hent fugler uten ROI
+Box size	Boksstørrelse
+Skip	Hopp over
+Save & next	Lagre og neste
+# ── Debug ──
+WiFi Link	WiFi-forbindelse
+SD Card	SD-kort
+Camera	Kamera
+Species ID	Arts-ID
+GPIO Test	GPIO-test
+Drives a raw GPIO pin high/low — use it to find which pin an unlabeled onboard LED is wired to by trying numbers and watching the board. Camera, SD and flash/PSRAM pins are refused; the pin reverts to input on reboot.	Setter en rå GPIO-pinne høy/lav — bruk den til å finne hvilken pinne en umerket LED er koblet til ved å prøve numre og se på kortet. Kamera-, SD- og flash/PSRAM-pinner avvises; pinnen går tilbake til inngang ved omstart.
+GPIO number	GPIO-nummer
+On	På
+Off	Av
+# ── WiFi tab ──
+WiFi Network	WiFi-nettverk
+Scan Networks	Søk etter nettverk
+Primary SSID	Primær SSID
+Connect & Save	Koble til og lagre
+Alternative Network (alt1)	Alternativt nettverk (alt1)
+A fallback AP, tried when the primary is unreachable and used for failover in service. Shares the IP setting below — a single static address only works if both APs are on the same subnet, otherwise use DHCP. Save with a blank SSID to remove it.	Et reserve-aksesspunkt som prøves når det primære er utilgjengelig, og brukes som failover i drift. Deler IP-innstillingen nedenfor — én statisk adresse virker bare hvis begge AP-ene er på samme subnett, ellers bruk DHCP. Lagre med tomt SSID for å fjerne det.
+Alternative SSID	Alternativt SSID
+Save Alternative	Lagre alternativ
+IP Configuration	IP-konfigurasjon
+Automatic (DHCP)	Automatisk (DHCP)
+Static IP	Statisk IP
+IP Address	IP-adresse
+Subnet Mask	Subnettmaske
+Gateway	Gateway
+DNS Server	DNS-server
+Saving reboots the device to apply. If a static IP is unreachable afterward, hold the boot button 5 s while powering on to reset WiFi + IP settings.	Lagring starter enheten på nytt. Hvis en statisk IP er utilgjengelig etterpå, hold boot-knappen inne i 5 s under oppstart for å nullstille WiFi- og IP-innstillinger.
+Save & Apply	Lagre og bruk
+Device	Enhet
+Reboot Now	Start på nytt nå
+# ── OTA tab ──
+Firmware Update	Fastvareoppdatering
+Upload a birdbox-vX.Y.Z.bin release. The device flashes it to the inactive slot and reboots into it immediately; if that image never boots cleanly, the previous version resumes automatically on the next boot (dual OTA partitions, FSD §8) — a bad upload can't brick the device. Don't power-cycle mid-upload.	Last opp en birdbox-vX.Y.Z.bin-utgivelse. Enheten skriver den til den inaktive plassen og starter rett inn i den; hvis det nye bildet aldri starter rent, gjenopptas forrige versjon automatisk ved neste oppstart (doble OTA-partisjoner, FSD §8) — en dårlig opplasting kan ikke ødelegge enheten. Ikke kutt strømmen midt i opplastingen.
+Upload & Flash	Last opp og flash
+Flash from GitHub release	Flash fra GitHub-utgivelse
+Pull a published release straight from GitHub — the device downloads and flashes it itself over HTTPS (no PC needed). Repo-locked to this project's releases; same dual-partition rollback as a manual upload.	Hent en publisert utgivelse rett fra GitHub — enheten laster ned og flasher selv over HTTPS (ingen PC nødvendig). Låst til dette prosjektets utgivelser; samme dobbelpartisjons-rollback som manuell opplasting.
+Load releases…	Hent utgivelser…
+Reload	Last på nytt
+Download & flash	Last ned og flash
+# ── Info popup chrome ──
+Default:	Standard:
+Alternatives:	Alternativer:
+# ── Placeholders / tooltips (exact-match, incl. any emoji) ──
+species…	art…
+(not set)	(ikke satt)
+gemini-flash-lite-latest (default)	gemini-flash-lite-latest (standard)
+tap network or type	trykk på nettverk eller skriv
+leave blank if open	la stå tomt hvis åpent
+optional	valgfritt
