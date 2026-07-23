@@ -623,7 +623,7 @@ static const char INDEX_HTML[] =
  * inat_periodic_* settings lost their consumer in the 0.74.0 iNat-only pivot
  * (the on-SD model batch), so the toggle had been doing nothing. The NVS
  * fields remain parsed/stored server-side for old export files. */
-"<label class='wl'>Species name language<span class='inf' onclick='sInfo(\"lang\")'>i</span></label>"
+"<label class='wl'>Language<span class='inf' onclick='sInfo(\"lang\")'>i</span></label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
 "</select>"
@@ -956,10 +956,39 @@ static const char INDEX_HTML[] =
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'rot='+v});}"
 "var g_zone=[];"
+/* UI language (v2.72 Phase 1): g_settings.lang drives the WHOLE HMI, not just
+ * species names. LANGC maps the lang enum to a column code in /i18n.txt
+ * (main/i18n.txt — the editable EN-master cross-reference, embedded at build).
+ * applyLang() walks every STATIC text node once at boot and swaps exact
+ * matches; a missing entry silently stays English. Emoji-prefixed buttons are
+ * matched on the text after the first token, so keys carry no emoji. Dynamic
+ * strings (status lines, confirm dialogs) are Phase 3. */
+"var g_i18n=null,g_lang=0,LANGC=['en','no'];"
+"function i18nLoad(cb){if(g_lang<1||g_lang>=LANGC.length){cb&&cb();return;}"
+"fetch('/i18n.txt').then(r=>r.text()).then(function(t){"
+"var code=LANGC[g_lang],col=-1,m={};"
+"t.split('\\n').forEach(function(ln){ln=ln.replace(/\\r$/,'');"
+"if(!ln)return;"
+"if(ln[0]==='#'){if(ln.indexOf('#cols')===0)col=ln.split('\\t').indexOf(code);return;}"
+"var f=ln.split('\\t');if(col>0&&f[col])m[f[0]]=f[col];});"
+"g_i18n=m;cb&&cb();}).catch(function(){cb&&cb();});}"
+"function tX(t){if(g_i18n[t])return g_i18n[t];"
+"var sp=t.indexOf(' ');if(sp>0){var r=t.slice(sp+1);if(g_i18n[r])return t.slice(0,sp+1)+g_i18n[r];}"
+"return null;}"
+"function applyLang(){if(!g_i18n)return;"
+"(function w(n){if(n.nodeType===3){var v=n.nodeValue,t=v.trim();"
+"if(t){var r=tX(t);if(r!==null)n.nodeValue=v.replace(t,r);}}"
+"else if(n.nodeType===1&&n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'){"
+"for(var c=n.firstChild;c;c=c.nextSibling)w(c);}})(document.body);"
+"document.querySelectorAll('[placeholder],[title]').forEach(function(e){"
+"if(e.placeholder&&g_i18n[e.placeholder])e.placeholder=g_i18n[e.placeholder];"
+"var ti=e.getAttribute('title');if(ti&&g_i18n[ti])e.setAttribute('title',g_i18n[ti]);});}"
 "function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
 "$g('lvRot').value=c.rot;applyRot(c.rot);"
 "if(c.zone&&c.zone.length===64)g_zone=c.zone.split('').map(function(x){return x==='1';});"
-"if(g_zoneEditing)zoneBuild();}).catch(()=>{});}"
+"if(g_zoneEditing)zoneBuild();"
+"if(c.lang!=null&&c.lang!==g_lang){g_lang=c.lang;i18nLoad(applyLang);}"
+"}).catch(()=>{});}"
 "loadRot();"
 "var g_zoneEditing=false;"
 "function zoneBuild(){var z=$g('zone');z.innerHTML='';"
@@ -1513,8 +1542,10 @@ static const char INDEX_HTML[] =
 " key can use, paste one here and Save &mdash; no reflash needed. Lowercase letters, digits, dot"
 " and hyphen only.',"
 "'gemini-flash-lite-latest (blank field)','Any model id your key can use, e.g. gemini-flash-latest.'],"
-"lang:['Species name language','Language for common species names across the UI and stats. The"
-" scientific (Latin) name is always shown too.',"
+"lang:['Language','Language for the whole interface: species names, tabs, labels, buttons and"
+" help text (reload the page after saving). Translations come from the editable cross-reference"
+" file main/i18n.txt in the firmware source; any string without a translation stays English."
+" The scientific (Latin) species name is always shown too.',"
 "'English','Norsk (Norwegian).'],"
 "cap:['SD retention cap','When the card fills past this level, the oldest day folders are deleted"
 " to make room, so the box never stops recording for lack of space.',"
@@ -2243,6 +2274,18 @@ static esp_err_t h_captures_file(httpd_req_t *req)
     free(buf);
     fclose(f);
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* GET /i18n.txt — the UI language cross-reference (main/i18n.txt, embedded at
+ * build). The page fetches and parses it client-side when a non-English
+ * language is selected; missing entries silently stay English (v2.72). */
+extern const char i18n_txt_start[] asm("_binary_i18n_txt_start");
+extern const char i18n_txt_end[]   asm("_binary_i18n_txt_end");
+static esp_err_t h_i18n(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_send(req, i18n_txt_start, i18n_txt_end - i18n_txt_start);
     return ESP_OK;
 }
 
@@ -5317,6 +5360,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/roi-todo", .method = HTTP_GET,  .handler = h_roi_todo },
         { .uri = "/api/set-roi",  .method = HTTP_POST, .handler = h_set_roi  },
         { .uri = "/api/confirm", .method = HTTP_POST, .handler = h_confirm    },
+        { .uri = "/i18n.txt",          .method = HTTP_GET, .handler = h_i18n          },
         { .uri = "/api/stats/daily",   .method = HTTP_GET, .handler = h_stats_daily   },
         { .uri = "/api/stats/species", .method = HTTP_GET, .handler = h_stats_species },
         { .uri = "/api/stats/hourly",  .method = HTTP_GET, .handler = h_stats_hourly  },
