@@ -14,6 +14,64 @@ cert-bundle DRAM leak.** Nothing further to watch.
 
 Original baseline + check procedure kept below for the record.
 
+## Session 2026-07-23 — Settings ⓘ popups, defaults retune, two bug fixes; **released v0.74.35**
+
+Started 0.74.31, ended **0.74.35** — all built, OTA-flashed to the reference
+unit, verified live, committed + pushed to `master`, and **published as GitHub
+release v0.74.35** (tag → CI builds + publishes; asset
+`BirdBox_esp32s3_v0.74.35.bin`, now what the OTA tab's "Flash from GitHub
+release" offers).
+
+### What shipped
+- **0.74.32 / v2.65 — per-setting ⓘ info popups.** Every Settings label got a
+  circled-i opening one shared modal (`SINFO` key→[title, description, default,
+  alternatives] table in the served JS; `sInfo()`/`ipClose()`, `#ipop` div).
+  The long inline help paragraphs moved into the popups; only safety/cost
+  warnings stay inline (iNat password plaintext, cloud costs + photos leave
+  device). **Popup text verified against code, not copied**: sensitivity =
+  motion.c ~11 %/6 %/1 % thresholds; conf threshold gates the CLOUD tier only
+  (`cloud_util.c:134` is its sole consumer); SD cap prunes oldest day-folders;
+  **Placement `mode` is consumed by NOTHING** — popup honestly says
+  "informational only".
+  **Also removed the dead "Periodic iNat re-scan" section** — `inat_periodic_*`
+  lost its consumer in the 0.74.0 pivot; the toggle did nothing and its text
+  referenced the deleted `inat-birds-v1.tflite`. NVS fields + server parses
+  kept for old export files. `stLoad`/`stSave` refs to `stInat`/`stInatv`
+  removed (a leftover `$g()` on a missing id kills every handler).
+- **0.74.33 / v2.66 — compiled-in defaults retuned** (settings.c): cool-down
+  3→**120 s**, frames/event 5→**4**, confidence 60→**30 %**, iNat location
+  ""→**Oslo "59.91,10.75"**. SINFO Default rows updated to match. Stored NVS
+  values win, so existing devices unaffected; applies on fresh provision/wipe.
+- **0.74.35 / v2.67 — gallery 🔍 tooltip fixed**: said "else on-device model"
+  (stale since the pivot); `/api/id-primary` is a pure iNat round-trip → now
+  "identify bird with iNaturalist".
+- **0.74.35 / v2.68 — Stats Today row-click shows that day's images only.**
+  Bug was on both ends: `spImgs` never sent the scope AND `stats_list_images`
+  always scanned every visit log. Fix: `stats_list_images` gained a `date`
+  param (single-day log scan, mirrors `stats_collect_scoped`); JS sends
+  `&scope=day` in the Today view; heading says "today". **Deliberately did NOT
+  reuse `stats_scope_date()`**: its 48-byte query re-read truncates on an
+  encoded `sp=` and would silently drop the scope. Verified live: day scope =
+  2 Kjøttmeis images all from today; all-time = 10 across days.
+  (0.74.34 existed transiently on-device as the tooltip-only build; both fixes
+  committed together as 0.74.35.)
+
+### New verification tooling (keep using this)
+`esprima` (pip'd into the session scratchpad's IDF-python) now **parses the
+served page's inline JS for real** after every UI flash — strictly better than
+the old grep/bracket-count ritual. A naive bracket counter false-positives on
+the gallery's `\'`-escaped onclick strings; a real parser doesn't. Also
+cross-checked all 29 ⓘ icon keys ↔ SINFO table keys both directions.
+
+### Open / notes
+- CI warns `download-artifact@v4` + `action-gh-release@v2` target deprecated
+  Node 20 — bump the workflow versions sometime.
+- SINFO Default rows must be kept in sync when a settings.c default changes
+  (noted in a comment above the table).
+- Unit still runs its own tuned NVS values (sens 65, conf 25, cool 100,
+  4 frames, dzoom **1** — user turned zoom on at some point despite the
+  zoom-hurts finding; their call, not touched).
+
 ## ⏭ Verify tomorrow (cert-pin held?)
 Baseline snapshot **2026-07-22 20:37**: fw **0.74.31**, uptime **8027 s (134 min)**,
 `heapIntBig8` **31744**, `guardReboots` **3**, `guardUptime` 6404 (the last *pre-fix*
