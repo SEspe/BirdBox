@@ -84,14 +84,6 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
                                 int nfiles, const char *common, const char *latin,
                                 int *applied);
 
-/* Backfill the motion ROI on one visit row (§3.4/v1.99): set the "roi" column
- * (field 7, "x0-y0-x1-y1" fractional) on the row whose first_frame basename is
- * `file`, keeping every other column. For the click-to-place ROI backfill of
- * older captures that predate always-on ROI logging. Returns ESP_ERR_NOT_FOUND
- * when no row matches (never adds one — there's nothing to backfill without a
- * row). `roi` must already be a validated "x0-y0-x1-y1" string. */
-esp_err_t storage_set_roi(const char *date, const char *file, const char *roi);
-
 /* Append one saved frame's motion box to the per-day frame-ROI sidecar
  * (/log/frameroi-DATE.csv, "file,roi" per line), §3.4. The capture burst
  * re-detects the box on every frame but only the event row records one; this

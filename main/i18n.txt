@@ -173,14 +173,6 @@ Wipe day (photos+stats)	Fjern dag (bilder+statistikk)
 removes every image for the day but leaves the statistics/visit log intact.	fjerner alle bilder for dagen, men beholder statistikk/besøkslogg.
 Wipe day	Fjern dag
 also removes that day’s rows from the statistics/visit log. To clear all statistics, use the Stats tab.	fjerner også dagens rader fra statistikk/besøksloggen. Bruk Statistikk-fanen for å nullstille all statistikk.
-Backfill ROI (bird box)	Etterfyll ROI (fuglekasse)
-Confirmed birds captured before always-on ROI logging have no motion box, so ROI-crop training can’t use them. Pick a day, load the birds still missing a box, then	Bekreftede fugler tatt opp før ROI-logging ble alltid på mangler bevegelsesboks, så ROI-beskjæring kan ikke bruke dem til trening. Velg en dag, hent fuglene som fortsatt mangler boks, og
-click the bird’s centre	klikk på fuglens midtpunkt
-on each image (adjust the box with the size slider) and Save. Newer captures record the box automatically.	på hvert bilde (juster boksen med størrelsesglideren) og Lagre. Nyere opptak registrerer boksen automatisk.
-Load missing-ROI birds	Hent fugler uten ROI
-Box size	Boksstørrelse
-Skip	Hopp over
-Save & next	Lagre og neste
 # ── Debug ──
 # NOTE (operator decision 2026-07-23): the Debug pane's CONTENT — the
 # dynamically generated diagnostic rows (heap, RSSI, guard forensics, …) —
