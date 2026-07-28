@@ -114,9 +114,21 @@ ship tests). Verification is empirical, on real hardware:
   misfiles/misreads. There is a boot detection quarantine for exactly this.
 
 - **Classification never drops work.** Prefer queue/wait/degrade over emitting
-  "unclassified". Free heap (incl. PSRAM) is only ~600–700 KB in practice, so
-  ~1 MB single allocations never succeed — size buffers accordingly and
-  `heap_caps_*` into PSRAM for large arrays (e.g. the gallery label table).
+  "unclassified".
+
+- **PSRAM is roomy; internal DRAM is the scarce pool.** Measured on the
+  reference unit (0.74.44): `heapPsram` **7.9 MB free of 8 MB**, largest block
+  **7.5 MB** — only ~480 KB PSRAM in use at idle. Multi-MB PSRAM allocations
+  succeed, so `heap_caps_*` large arrays into PSRAM freely (camera framebuffers,
+  gallery label table, the 1.5 MB `CLS_DECODE_MAX` ROI decode, all HTTP/TLS reply
+  buffers already do). Internal DRAM is the constraint: ~123 KB free with a
+  **32 KB** largest 8-bit block, and that is what mbedTLS handshakes compete for
+  (see the cert-bundle fragmentation history, §7/v2.50–v2.64). Check
+  `/api/sysinfo` `heapInt`/`heapIntBig8` — not the PSRAM-inclusive `heap` field —
+  before adding anything that must live in internal RAM.
+  *(Pre-0.74.0 this note said free heap was ~600–700 KB and ~1 MB allocations
+  never succeeded. That was true only while the TFLM model + 3 MB arena were
+  resident in PSRAM; the iNat-only pivot removed both.)*
 
 - **On the SD (FATFS), `rename()` across directories can delete the source
   without creating the dest.** Use copy-then-delete for cross-dir moves.
