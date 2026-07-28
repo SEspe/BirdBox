@@ -433,6 +433,12 @@ static const char INDEX_HTML[] =
 "table.st tr:hover td{background:#1e3826}"
 ".fpb{font-size:.62rem;background:#5a3030;color:#e0a0a0;padding:1px 5px;border-radius:3px;"
 "text-transform:uppercase;vertical-align:middle}"
+/* Sortable species-table headers (v2.79). The arrow lives in its own span so
+ * each header's text node stays exactly "Species"/"Visits"/... and remains
+ * matchable by applyLang's exact-match walker. */
+".sth{cursor:pointer;user-select:none;white-space:nowrap}"
+".sth:hover{color:#cfe}"
+".sa{font-size:.6rem;margin-left:3px;color:#8cf}"
 ".wl{display:block;margin:10px 0 4px;font-size:.85rem}"
 ".wi{width:100%;max-width:280px;padding:8px;background:#1e3826;border:1px solid #444;"
 "border-radius:5px;color:#eee}"
@@ -1346,6 +1352,34 @@ static const char INDEX_HTML[] =
 "function setStatScope(s){g_statScope=s;"
 "$g('sDay').style.opacity=s==='day'?'1':'.5';"
 "$g('stgAll').style.opacity=s==='all'?'1':'.5';loadStats();}"
+/* Sortable species table (v2.79). Rows are cached client-side so re-sorting is
+ * instant and costs no request — the aggregate is SD-bound (a few seconds), and
+ * sorting must not pay that again. Column keys are the JSON field names:
+ * 's' species, 'n' visits, 'first'/'last' the ISO timestamps. */
+"var g_spRows=[],g_spSortC='n',g_spSortD=-1;"
+"function spCmp(a,b){var c=g_spSortC,d=g_spSortD,x,y;"
+"if(c==='n')return (a.n-b.n)*d;"
+"if(c==='s'){x=(a.s||'').toLowerCase();y=(b.s||'').toLowerCase();}"
+/* first/last: ISO 'YYYY-MM-DDTHH:MM:SS' compares correctly as text. Blank
+ * timestamps (pre-v1.51 rows) always sink to the bottom, either direction, so
+ * they never masquerade as the earliest or the most recent sighting. */
+"else{x=a[c]||'';y=b[c]||'';"
+"if(!x&&!y)return 0;if(!x)return 1;if(!y)return -1;}"
+"return (x<y?-1:(x>y?1:0))*d;}"
+/* Clicking the active column flips direction; a new column starts on its most
+ * useful default — names A-Z, counts and dates biggest/newest first. */
+"function spSort(c){if(g_spSortC===c){g_spSortD=-g_spSortD;}"
+"else{g_spSortC=c;g_spSortD=(c==='s')?1:-1;}spRender();}"
+"function spArrow(c){return g_spSortC===c?"
+"('<span class=sa>'+(g_spSortD>0?'\\u25b2':'\\u25bc')+'</span>'):'';}"
+"function spTh(c,t){return '<th class=sth title=\"Sort by '+t+'\" onclick=\"spSort(\\''"
+"+c+'\\')\">'+t+spArrow(c)+'</th>';}"
+"function spRender(){var sp=g_spRows.slice().sort(spCmp);"
+"$g('sSpecies').innerHTML='<tr>'+spTh('s','Species')+spTh('n','Visits')+"
+"spTh('first','First seen')+spTh('last','Last seen')+'</tr>'+"
+"sp.map(o=>'<tr style=cursor:pointer onclick=\"spImgs(\\''+encodeURIComponent(o.key)+"
+"'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
+"'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');}"
 "function loadStats(){sDayFill();"
 "var q=g_statScope==='day'?('?scope=day'+sDayQ()):'';"
 "Promise.all(['daily','species','hourly'].map(u=>fetch('/api/stats/'+u+q).then(r=>r.json())))"
@@ -1361,12 +1395,7 @@ static const char INDEX_HTML[] =
 "'<div class=hcol title=\"'+i+':00 &mdash; '+n+'\">"
 "<div class=hfill style=\"height:'+Math.round(n*100/hm)+'%\"></div>"
 "<div class=hlbl>'+(i%3===0?i:'')+'</div></div>').join('');"
-"sp.sort((a,b)=>b.n-a.n);"
-"document.getElementById('sSpecies').innerHTML="
-"'<tr><th>Species</th><th>Visits</th><th>First seen</th><th>Last seen</th></tr>'+"
-"sp.map(o=>'<tr style=cursor:pointer onclick=\"spImgs(\\''+encodeURIComponent(o.key)+"
-"'\\',\\''+encodeURIComponent(o.s)+'\\')\"><td>'+esc(o.s)+(o.fp?' <span class=fpb>false pos</span>':'')+"
-"'</td><td>'+o.n+'</td><td>'+o.first+'</td><td>'+o.last+'</td></tr>').join('');"
+"g_spRows=sp;spRender();"
 "var birds=sp.filter(o=>!o.fp).reduce((a,o)=>a+o.n,0);"
 "document.getElementById('sTotal').textContent=birds+' bird visit(s)'+(g_statScope==='day'?sDayLbl():(spo.since?(' since '+spo.since.replace('T',' ')):' total'))"
 "+(spo.falsePos?' \\u00b7 '+spo.falsePos+' false positive(s)':'')+' \\u2014 click a row for its last 10 images';"
