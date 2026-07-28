@@ -48,3 +48,5 @@ tools/streamtest/sdkconfig
 tools/streamtest/sdkconfig.old
 tools/streamtest/managed_components/
 tools/streamtest/dependencies.lock
+build_esp32/
+sdkconfig.esp32

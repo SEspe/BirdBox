@@ -62,7 +62,12 @@ static volatile uint32_t s_cls_seq = 0;   /* ++ when an event's async classifica
                                              on this, not the capture-time event count — the
                                              result arrives seconds after capture. */
 
-#if CONFIG_IDF_TARGET_ESP32S3
+/* No target guard here any more (v2.78). The whole implementation below used to
+ * sit behind CONFIG_IDF_TARGET_ESP32S3 because classification meant a TFLite-
+ * Micro arena in PSRAM, which only the S3 could host. Since the 0.74.0 iNat-only
+ * pivot it is HTTPS round-trips (inat.c / cloud.c) with no target-specific
+ * dependency — classify_run_sync() below was already unguarded and calls
+ * inat_classify_jpeg() directly on any target. */
 
 /* RGB888 decode cap for the ROI crop (classify_crop_jpeg). Kept at 1.5 MB so an
  * HD frame halves to 640x360 for the crop. A v2.39 experiment lifted this to
@@ -897,16 +902,11 @@ static void recheck_task(void *arg)
     s_rc_busy = false;
     vTaskDelete(NULL);
 }
-#endif /* CONFIG_IDF_TARGET_ESP32S3 */
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 esp_err_t classify_init(void)
 {
-#if !CONFIG_IDF_TARGET_ESP32S3
-    ESP_LOGW(TAG, "species ID unavailable on this target (FSD §3.2) — captures stay 'unclassified'");
-    return ESP_OK;
-#else
     /* No on-device model any more (v2.36 nordic teardown): classification is
      * iNaturalist online (primary) + optional cloud. The event task/queue always
      * come up so events can be labelled the moment iNat/cloud is enabled — no
@@ -923,7 +923,6 @@ esp_err_t classify_init(void)
         return ESP_OK;
     }
     return ESP_OK;
-#endif
 }
 
 /* "Available" now means an online classifier can run: iNaturalist (primary) or a
@@ -934,7 +933,6 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
                            int path_count, int fast_count, const char *ts,
                            int frames, const char *first_path)
 {
-#if CONFIG_IDF_TARGET_ESP32S3
     /* iNat (primary) or cloud must be on; otherwise decline so capture.c writes
      * the "unclassified" row (§3.2.3). */
     if ((!inat_cv_enabled() && !cloud_enabled()) ||
@@ -965,15 +963,10 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
         return false;
     }
     return true;
-#else
-    (void) paths; (void) rois; (void) path_count; (void) ts; (void) frames; (void) first_path;
-    return false;
-#endif
 }
 
 bool classify_recheck_start(const char *date, const char *files)
 {
-#if CONFIG_IDF_TARGET_ESP32S3
     if (!inat_cv_enabled() || !storage_sd_present()) return false;
     if (!date || strlen(date) != 10) return false;
     if (s_rc_busy) return false;
@@ -998,26 +991,15 @@ bool classify_recheck_start(const char *date, const char *files)
         return false;
     }
     return true;
-#else
-    (void) date; (void) files;
-    return false;
-#endif
 }
 
 void classify_recheck_status(bool *busy, int *done, int *total,
                              char *date, size_t date_len)
 {
-#if CONFIG_IDF_TARGET_ESP32S3
     if (busy)  *busy  = s_rc_busy;
     if (done)  *done  = s_rc_done;
     if (total) *total = s_rc_total;
     if (date && date_len) strlcpy(date, s_rc_date, date_len);
-#else
-    if (busy)  *busy  = false;
-    if (done)  *done  = 0;
-    if (total) *total = 0;
-    if (date && date_len) date[0] = '\0';
-#endif
 }
 
 /* Manual one-shot (POST /api/classify[-file]): now an iNaturalist round-trip on

@@ -54,7 +54,15 @@
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "soc/soc_caps.h"
+/* Classic ESP32 has no on-die temperature sensor: SOC_TEMP_SENSOR_SUPPORTED is
+ * undefined there, and the driver's TEMPERATURE_SENSOR_CONFIG_DEFAULT expands to
+ * TEMPERATURE_SENSOR_CLK_SRC_DEFAULT, which does not exist for that target — the
+ * exact break that got the esp32 build dropped from CI (v1.39). Guarded rather
+ * than removed, so the S3 keeps its reading. */
+#if SOC_TEMP_SENSOR_SUPPORTED
 #include "driver/temperature_sensor.h"
+#endif
 #include "driver/gpio.h"
 #include "illum.h"
 
@@ -91,6 +99,12 @@ static void device_time(char *out, size_t n, const char **src)
  * Installed lazily on first /api/sysinfo read. This is the SoC die, not the
  * camera, but it's a solid proxy for whether the box is running hot. Returns
  * -1000 if unavailable. */
+#if !SOC_TEMP_SENSOR_SUPPORTED
+/* No on-die sensor on this target. -1000 is the established "unavailable"
+ * sentinel: the Debug tab renders socTempC <= -100 as "n/a", so the row is
+ * simply blank-ish rather than reporting a fake temperature. */
+static float soc_temp_c(void) { return -1000.0f; }
+#else
 static temperature_sensor_handle_t s_tsens;
 static float soc_temp_c(void)
 {
@@ -112,6 +126,7 @@ static float soc_temp_c(void)
     if (err != ESP_OK) { ESP_LOGW(TAG, "temp read failed: %s", esp_err_to_name(err)); return -1000.0f; }
     return c;
 }
+#endif /* SOC_TEMP_SENSOR_SUPPORTED */
 
 /* Heap low-water mark, tracked by main.c's housekeeping task (FSD §5) */
 extern uint32_t g_heap_min;
@@ -3905,7 +3920,14 @@ static void hw_info_json(char *out, size_t out_sz)
      * nonzero configured mode with psramMB 0 is the signature of PSRAM that
      * enumerated but failed — the exact case this card was added to diagnose. */
 #if CONFIG_SPIRAM
-    const char *pmode  = CONFIG_SPIRAM_MODE_OCT ? "octal" : "quad";
+    /* Must be #if, not a C ternary: classic ESP32 has quad-only PSRAM, so
+     * CONFIG_SPIRAM_MODE_OCT is undefined there and using it in an expression is
+     * a hard error (in #if an undefined macro is just 0). */
+    #if CONFIG_SPIRAM_MODE_OCT
+    const char *pmode  = "octal";
+    #else
+    const char *pmode  = "quad";
+    #endif
     int         pspeed = CONFIG_SPIRAM_SPEED;
     unsigned    pmb    = esp_psram_is_initialized()
                          ? (unsigned) (esp_psram_get_size() / (1024 * 1024)) : 0;
