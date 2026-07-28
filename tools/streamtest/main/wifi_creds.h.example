@@ -1,0 +1,9 @@
+#pragma once
+/* Copy this file to wifi_creds.h and fill in your network.
+ * wifi_creds.h is gitignored so the password never lands in the repo.
+ *
+ * Leave TEST_WIFI_SSID empty ("") to run as a SoftAP instead: the board hosts
+ * SSID "BirdBox-Test" / password "birdbox1234" and serves at http://192.168.4.1/.
+ */
+#define TEST_WIFI_SSID  "YourNetwork"
+#define TEST_WIFI_PASS  "YourPassword"

@@ -1,0 +1,32 @@
+# streamtest — deliberately built WITHOUT PSRAM.
+#
+# The whole point of this image is to exercise a board whose PSRAM does not
+# work: camera frame buffers are forced into internal DRAM instead (see
+# CAMERA_FB_IN_DRAM in streamtest_main.c), which caps resolution but proves the
+# sensor, WiFi, HTTP stack and the board itself are otherwise healthy.
+# Do NOT add CONFIG_SPIRAM here — enabling it is what hangs these boards.
+
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Dual OTA slots (3 MB each) so PSRAM experiments can be flashed over the
+# network. Rollback is what makes that safe: a PSRAM-enabled image hangs in
+# cpu_start, never reaches esp_ota_mark_app_valid_cancel_rollback(), and the
+# bootloader reverts to this streamer on the next boot.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-streamtest.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# A ~1 MB OTA body must not die on one slow packet.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# Without PSRAM, internal DRAM is the only pool — keep WiFi's share modest so
+# the JPEG frame buffer still fits.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE=0
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8

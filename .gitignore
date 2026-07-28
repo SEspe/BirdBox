@@ -40,3 +40,11 @@ training-data/*-v*.txt
 training-data/*-v*.json
 # downloaded detector weights (e.g. yolov8n.pt)
 training-data/*.pt
+
+# streamtest bringup tool: local WiFi credentials + build output
+tools/streamtest/main/wifi_creds.h
+tools/streamtest/build/
+tools/streamtest/sdkconfig
+tools/streamtest/sdkconfig.old
+tools/streamtest/managed_components/
+tools/streamtest/dependencies.lock
