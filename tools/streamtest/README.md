@@ -19,7 +19,32 @@ sensor, XCLK/SCCB wiring, WiFi, TCP, the HTTP stack and the power path.
 |---|---|
 | `GET /` | one-page viewer (`<img src=/stream>`) |
 | `GET /stream` | multipart MJPEG |
-| `GET /health` | chip rev, embedded-PSRAM efuse bit, frames sent, fb failures, free DRAM |
+| `GET /health` | chip rev, flash id, sensor PID, frames sent, fb failures, free DRAM, OTA slot |
+| `GET /wifi` | network config page — scan, pick, save |
+| `GET /api/scan` | nearby APs as JSON |
+| `POST /wifi-save` | `ssid`+`pass` → NVS, then reboots |
+| `GET /ota` | firmware upload form |
+| `POST /ota/upload` | raw `.bin` body → inactive slot, then reboots |
+| `POST /reboot` | restart |
+
+## OTA + rollback: why PSRAM trials no longer need a cable
+
+The app runs from a **dual-OTA partition table** (`partitions-streamtest.csv`,
+3 MB per slot) with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, and it calls
+`esp_ota_mark_app_valid_cancel_rollback()` **only after WiFi and the HTTP server
+are up**. So a PSRAM-enabled experiment can be flashed over the network:
+
+1. `POST` the test `.bin` to `/ota/upload`.
+2. On a bad board it hangs in `cpu_start` — never reaching the mark-valid call.
+3. The bootloader reverts to this streamer on the next boot.
+
+A failed PSRAM experiment therefore costs one reboot, not a serial session.
+Verified end-to-end: OTA'ing the image to itself moved it `ota_0` → `ota_1`, and
+it stayed in `ota_1` across a reboot (proving mark-valid fired rather than
+silently rolling back).
+
+The camera is deliberately **not** part of that gate. A board with a dead sensor
+must still come up on the network, or it becomes unrecoverable without serial.
 
 ## Setup
 
@@ -28,9 +53,15 @@ cp main/wifi_creds.h.example main/wifi_creds.h
 # edit main/wifi_creds.h — set SSID + password
 ```
 
-`wifi_creds.h` is gitignored so the password stays out of the repo. Leave
-`TEST_WIFI_SSID` empty (`""`) to run as a SoftAP instead — SSID `BirdBox-Test`,
-password `birdbox1234`, stream at `http://192.168.4.1/`.
+`wifi_creds.h` is gitignored so the password stays out of the repo. It is only
+the **first-boot seed**: credentials are stored in NVS (namespace `stcfg`) and
+can be changed from `/wifi` afterwards, so a board can be re-pointed at another
+network from the browser.
+
+Leave `TEST_WIFI_SSID` empty (`""`) to run as a SoftAP instead — SSID
+`BirdBox-Test`, password `birdbox1234`, stream at `http://192.168.4.1/`. The
+board also falls back to that AP by itself if it cannot join after 8 tries, and
+uses APSTA in that mode so the scan on `/wifi` still works.
 
 ## Build & flash
 
@@ -51,7 +82,8 @@ cd build
 Enumerate the port first — it changes across replugs and between boards:
 `[System.IO.Ports.SerialPort]::GetPortNames()`
 
-Then read the serial log for the address:
+Serial is only needed for the FIRST flash; after that use `/ota`. Read the serial
+log for the address:
 
 ```
 I (nnnn) streamtest: ==================================================
