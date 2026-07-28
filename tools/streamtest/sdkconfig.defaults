@@ -21,6 +21,16 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # A ~1 MB OTA body must not die on one slow packet.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# OV5640 autofocus. The driver ships the OmniVision AF firmware blob and loads
+# it into the sensor's on-chip MCU over SCCB; both options are off by default.
+# NOTE: this is chip-level AF. It can only move a lens on a module fitted with a
+# VCM (voice-coil motor). On a fixed-focus OV5640 board the firmware still loads
+# and reports status, but nothing physically moves — software cannot tell the
+# two apart, so confirm the lens type by hand.
+CONFIG_OV5640_SUPPORT=y
+CONFIG_CAMERA_AF_SUPPORT=y
+CONFIG_CAMERA_AF_TIMEOUT_MS=3000
+
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
