@@ -724,9 +724,10 @@ static const char INDEX_HTML[] =
 "known-good one. <b>PSRAM</b> shows the mode and clock this firmware asks for and "
 "how much the driver actually found &mdash; a configured mode with <b>0 MB</b> "
 "detected means the module enumerated but its memory failed, which is fatal to "
-"BirdBox (frame buffers live there). Values line up with what esptool prints over "
-"serial, so a board that will not boot far enough to serve this page can still be "
-"compared from a bench log.</p>"
+"BirdBox (frame buffers live there). For telling two boards apart, the reliable "
+"fields are <b>Flash</b> (id) and the sensor PID on the Camera card; compare "
+"like with like, since the chip&#8217;s embedded-PSRAM feature bit does "
+"<i>not</i> agree with what esptool prints over serial.</p>"
 "<h3 class='sh'>WiFi Link</h3><div id='dWifi'></div>"
 "<h3 class='sh'>SD Card</h3><div id='dSd'></div>"
 "<h3 class='sh'>Camera</h3><div id='dCam'></div>"
@@ -1760,10 +1761,12 @@ static const char INDEX_HTML[] =
 "drow('PSRAM',(d.psramMode==='disabled')?'disabled in this build':"
 "((d.psramMode||'?')+' @ '+(d.psramSpeedMhz||0)+' MHz \\u2014 '+(d.psramMB||0)+' MB detected'),"
 "(d.psramMode==='disabled')?'':((d.psramMB>0)?'ok':'bad'))+"
-/* Identity, NOT health — deliberately uncoloured. The working reference unit
- * reports "no" here (its 8 MB octal PSRAM is a separate die on the module,
- * not in the chip package), so flagging "yes" as good would be backwards. */
-"drow('Embedded PSRAM (efuse)',d.chipEmbPsram?'yes \\u2014 in chip package':'no \\u2014 external to chip')+"
+/* No embedded-PSRAM row on purpose (v2.77). CHIP_FEATURE_EMB_PSRAM reads
+ * false on this reference unit AND on a bench board whose esptool output says
+ * "Embedded PSRAM 8MB (AP_3v3)", so the runtime bit does not agree with
+ * esptool and cannot identify a module. chipEmbPsram stays in the JSON for
+ * completeness, but showing it here only invites a false comparison. Use the
+ * camera sensor PID (Camera card) and flashId for board identity instead. */
 "drow('Flash',(d.flashMB||0)+' MB, '+(d.flashMode||'?')+' @ '+(d.flashFreq||'?')"
 "+' (id '+(d.flashId||'?')+')')+"
 "drow('Build',(d.buildDate||'?')+' \\u2014 IDF '+(d.idfVer||'?'));"
