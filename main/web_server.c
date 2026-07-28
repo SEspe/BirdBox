@@ -41,6 +41,12 @@
 #include "esp_heap_trace.h"   /* leak hunt for the outbound-HTTPS leak (v2.50) */
 #endif
 #include "esp_system.h"
+#include "esp_chip_info.h"    /* hardware identity for the Debug tab (v2.76) */
+#include "esp_flash.h"        /* detected flash size + chip ID */
+#include "esp_app_desc.h"     /* build date/time + IDF version of this image */
+#if CONFIG_SPIRAM
+#include "esp_psram.h"        /* detected PSRAM size / init state */
+#endif
 #include "esp_log.h"
 #include "esp_camera.h"
 #include "esp_ota_ops.h"
@@ -713,6 +719,14 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='dbgp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>System</h3><div id='dSys'></div>"
+"<h3 class='sh'>Hardware</h3><div id='dHw'></div>"
+"<p class='sts'>Board identity, for comparing a new or suspect module against a "
+"known-good one. <b>PSRAM</b> shows the mode and clock this firmware asks for and "
+"how much the driver actually found &mdash; a configured mode with <b>0 MB</b> "
+"detected means the module enumerated but its memory failed, which is fatal to "
+"BirdBox (frame buffers live there). Values line up with what esptool prints over "
+"serial, so a board that will not boot far enough to serve this page can still be "
+"compared from a bench log.</p>"
 "<h3 class='sh'>WiFi Link</h3><div id='dWifi'></div>"
 "<h3 class='sh'>SD Card</h3><div id='dSd'></div>"
 "<h3 class='sh'>Camera</h3><div id='dCam'></div>"
@@ -1735,6 +1749,24 @@ static const char INDEX_HTML[] =
 "drow('HTTP sockets',(d.httpdSock==null||d.httpdSock<0?'n/a':d.httpdSock+' / '+d.httpdSockMax),"
 "(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'')"
 "+((d.inatCooldown>0)?drow('iNaturalist','rate-limited \\u2014 cooling down '+d.inatCooldown+'s','bad'):'');"
+/* Hardware card (v2.76): board identity, so a suspect module can be compared
+ * against the reference unit over HTTP instead of a serial cable. The PSRAM row
+ * is the load-bearing one — configured mode/clock vs MB actually detected, red
+ * when a mode is configured but nothing came up. */
+"$g('dHw').innerHTML="
+"drow('Chip',(d.chipModel||'?')+' rev '+(d.chipRev||'?')+', '+(d.chipCores||0)"
+"+' cores @ '+(d.cpuMhz||0)+' MHz')+"
+"drow('Features',d.chipFeat||'\\u2014')+"
+"drow('PSRAM',(d.psramMode==='disabled')?'disabled in this build':"
+"((d.psramMode||'?')+' @ '+(d.psramSpeedMhz||0)+' MHz \\u2014 '+(d.psramMB||0)+' MB detected'),"
+"(d.psramMode==='disabled')?'':((d.psramMB>0)?'ok':'bad'))+"
+/* Identity, NOT health — deliberately uncoloured. The working reference unit
+ * reports "no" here (its 8 MB octal PSRAM is a separate die on the module,
+ * not in the chip package), so flagging "yes" as good would be backwards. */
+"drow('Embedded PSRAM (efuse)',d.chipEmbPsram?'yes \\u2014 in chip package':'no \\u2014 external to chip')+"
+"drow('Flash',(d.flashMB||0)+' MB, '+(d.flashMode||'?')+' @ '+(d.flashFreq||'?')"
+"+' (id '+(d.flashId||'?')+')')+"
+"drow('Build',(d.buildDate||'?')+' \\u2014 IDF '+(d.idfVer||'?'));"
 "$g('dWifi').innerHTML="
 "drow('Network',d.apSsid||'\\u2014')+"
 "drow('RSSI',d.rssi+' dBm')+drow('Channel',d.ch)+drow('Own MAC',d.mac);"
@@ -3820,8 +3852,89 @@ static const char *reset_reason_str(void)
     }
 }
 
+/* Hardware identity, for the Debug tab's Hardware card (v2.76).
+ *
+ * Why this exists: the box reported its firmware but nothing about the silicon
+ * underneath, so a candidate board that boot-loops before the web server ever
+ * starts could not be compared against the known-good reference unit without a
+ * serial cable. The fields chosen are exactly the ones that decide whether a
+ * given ESP32-S3 module can run BirdBox at all: the chip's embedded-PSRAM
+ * feature bit, the PSRAM mode/speed this image was built for, and whether the
+ * PSRAM actually initialised. They line up 1:1 with what esptool prints, so a
+ * board's HTTP answer can be read against a bench log directly.
+ *
+ * Writes a JSON fragment (no braces, leading comma) for splicing into sysinfo. */
+static void hw_info_json(char *out, size_t out_sz)
+{
+    esp_chip_info_t ci;
+    esp_chip_info(&ci);
+
+    const char *model;
+    switch (ci.model) {
+        case CHIP_ESP32:   model = "ESP32";    break;
+        case CHIP_ESP32S2: model = "ESP32-S2"; break;
+        case CHIP_ESP32S3: model = "ESP32-S3"; break;
+        default:           model = CONFIG_IDF_TARGET; break;
+    }
+
+    /* Same feature list esptool reports, so the two can be compared by eye.
+     * "embedded PSRAM" is the one that answers the module-variant question. */
+    char feat[96];
+    int fl = 0;
+    feat[0] = '\0';
+    #define HWFEAT(bit, name) \
+        if (ci.features & (bit)) \
+            fl += snprintf(feat + fl, sizeof(feat) - fl, "%s%s", fl ? ", " : "", name)
+    HWFEAT(CHIP_FEATURE_WIFI_BGN,  "WiFi");
+    HWFEAT(CHIP_FEATURE_BT,        "BT");
+    HWFEAT(CHIP_FEATURE_BLE,       "BLE");
+    HWFEAT(CHIP_FEATURE_EMB_FLASH, "embedded flash");
+    HWFEAT(CHIP_FEATURE_EMB_PSRAM, "embedded PSRAM");
+    #undef HWFEAT
+    if (!fl) snprintf(feat, sizeof(feat), "none reported");
+
+    uint32_t fsize = 0, fid = 0;
+    esp_flash_get_size(NULL, &fsize);
+    esp_flash_read_id(NULL, &fid);
+
+    /* Configured mode/speed come from Kconfig (what this image asks the module
+     * for); psramMB is what the driver actually found and sized at boot. A
+     * nonzero configured mode with psramMB 0 is the signature of PSRAM that
+     * enumerated but failed — the exact case this card was added to diagnose. */
+#if CONFIG_SPIRAM
+    const char *pmode  = CONFIG_SPIRAM_MODE_OCT ? "octal" : "quad";
+    int         pspeed = CONFIG_SPIRAM_SPEED;
+    unsigned    pmb    = esp_psram_is_initialized()
+                         ? (unsigned) (esp_psram_get_size() / (1024 * 1024)) : 0;
+#else
+    const char *pmode  = "disabled";
+    int         pspeed = 0;
+    unsigned    pmb    = 0;
+#endif
+
+    const esp_app_desc_t *ad = esp_app_get_description();
+
+    snprintf(out, out_sz,
+        ",\"chipModel\":\"%s\",\"chipRev\":\"v%u.%u\",\"chipCores\":%u,"
+        "\"chipFeat\":\"%s\",\"chipEmbPsram\":%s,\"cpuMhz\":%d,"
+        "\"flashMB\":%u,\"flashId\":\"0x%06lx\",\"flashMode\":\"%s\",\"flashFreq\":\"%s\","
+        "\"psramMode\":\"%s\",\"psramSpeedMhz\":%d,\"psramMB\":%u,"
+        "\"idfVer\":\"%s\",\"buildDate\":\"%s %s\"",
+        model,
+        (unsigned) (ci.revision / 100), (unsigned) (ci.revision % 100),
+        (unsigned) ci.cores, feat,
+        (ci.features & CHIP_FEATURE_EMB_PSRAM) ? "true" : "false",
+        CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        (unsigned) (fsize / (1024 * 1024)), (unsigned long) fid,
+        CONFIG_ESPTOOLPY_FLASHMODE, CONFIG_ESPTOOLPY_FLASHFREQ,
+        pmode, pspeed, pmb,
+        ad ? ad->idf_ver : "?",
+        ad ? ad->date : "?", ad ? ad->time : "?");
+}
+
 /* GET /api/sysinfo — Debug tab: heap/low-water/uptime/reconnects, WiFi link,
- * SD card health, camera sensor status, last-inference timing (FSD §5, §6) */
+ * SD card health, camera sensor status, last-inference timing, hardware
+ * identity (FSD §5, §6) */
 static esp_err_t h_sysinfo(httpd_req_t *req)
 {
     uint8_t mac[6] = {0};
@@ -3858,7 +3971,12 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
     uint32_t g_grb_count = 0, g_grb_block = 0, g_grb_free = 0, g_grb_uptime = 0;
     guard_last_reboot(&g_grb_count, &g_grb_block, &g_grb_free, &g_grb_uptime);
 
-    char buf[1152];
+    char hw[512];
+    hw_info_json(hw, sizeof(hw));
+
+    /* buf grew with the hardware fragment (v2.76) — snprintf truncates silently,
+     * so this must stay ahead of the format above plus hw[]. */
+    char buf[1792];
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
         "\"heapInt\":%lu,\"heapIntBig\":%lu,\"heapPsram\":%lu,\"heapPsramBig\":%lu,"
@@ -3878,7 +3996,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
          * so a "software" reset is provably a guard reboot, not a crash (v2.55). */
         "\"heapIntBig8\":%lu,\"guardReboots\":%lu,\"guardBlock\":%lu,"
         "\"guardFree\":%lu,\"guardUptime\":%lu,"
-        "\"fastLastMs\":%lu,\"fastAvgMs\":%lu}",
+        "\"fastLastMs\":%lu,\"fastAvgMs\":%lu%s}",
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) g_heap_min,
         (long long) ((now_us - g_heap_min_ts_us) / 1000000),
@@ -3910,7 +4028,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned long) g_grb_count, (unsigned long) g_grb_block,
         (unsigned long) g_grb_free, (unsigned long) g_grb_uptime,
-        (unsigned long) motion_fast_last_ms(), (unsigned long) motion_fast_avg_ms());
+        (unsigned long) motion_fast_last_ms(), (unsigned long) motion_fast_avg_ms(),
+        hw);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
     return ESP_OK;

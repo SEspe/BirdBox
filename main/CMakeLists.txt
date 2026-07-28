@@ -39,4 +39,6 @@ idf_component_register(
         fatfs
         sdmmc
         esp_driver_sdmmc
+        spi_flash        # esp_flash_get_size/read_id — Debug hardware card (v2.76)
+        esp_psram        # esp_psram_get_size/is_initialized — same
 )
