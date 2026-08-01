@@ -50,3 +50,9 @@ tools/streamtest/managed_components/
 tools/streamtest/dependencies.lock
 build_esp32/
 sdkconfig.esp32
+
+# QIO flash-mode A/B experiment scratch (2026-08-01) — throwaway build dir and
+# the sdkconfigs it was driven from; the finding lives in SESSION_NOTES.md
+build_tqio/
+sdkconfig.tqio
+sdkconfig.testqio

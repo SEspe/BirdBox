@@ -8,3 +8,22 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-esp32s3.csv"
 # embedded 8 MB PSRAM (N16R8/N8R8); Freenove ESP32-S3 CAM is quad (R2).
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
+
+# QIO flash, NOT the IDF default DIO. With octal PSRAM the flash and the PSRAM
+# share the MSPI pins; in DIO the flash's IO2/IO3 stay in their WP#/HOLD#
+# control roles instead of being released as bus data lines. Macronix flash
+# (0xc22018, fitted to some S3-CAM boards) then contends on the shared bus the
+# instant core 1 makes its first bulk PSRAM access — both cores fault, the panic
+# handler re-faults, and the board boot-loops with nothing printed. Boya flash
+# (0x684018, the reference unit) tolerates DIO. QIO puts IO2/IO3 into a defined
+# data-line state, works on both, and is ~2x the flash read bandwidth.
+# Diagnosed 2026-08-01; see SESSION_NOTES.md. Changing this requires deleting
+# the generated sdkconfig or it has no effect.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# OV5640 autofocus (esp_camera_af API). Off by default in the component; the
+# firmware needs it compiled in to offer focus control on boards that carry an
+# OV5640 with a VCM lens. Costs a few KB of AF firmware blob in the image and
+# nothing at runtime — camera.c only downloads it to the sensor when
+# focus_mode != FOCUS_OFF, so an OV2640 box never pays the ~1 s init.
+CONFIG_CAMERA_AF_SUPPORT=y

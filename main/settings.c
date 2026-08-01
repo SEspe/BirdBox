@@ -27,6 +27,12 @@ settings_t g_settings = {
                                 * aspect again (§3.2.3). */
     .contrast           = 0,
     .ae_level           = 0,
+    .sharpness          = 0,   /* neutral. OV5640-class only; ignored elsewhere */
+    .denoise            = 0,   /* off — smoothing costs the feather detail that
+                                * species ID depends on (§5) */
+    .focus_mode         = FOCUS_OFF, /* most OV5640 modules are fixed-focus, and
+                                      * OFF also skips the AF firmware download */
+    .focus_pos          = 0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
     .region             = "",
     .ntp_server         = "pool.ntp.org",
@@ -79,6 +85,10 @@ esp_err_t settings_load(void)
     int8_t i8;
     if (nvs_get_i8 (h, "s_ctr",  &i8)  == ESP_OK) g_settings.contrast = i8;
     if (nvs_get_i8 (h, "s_ael",  &i8)  == ESP_OK) g_settings.ae_level = i8;
+    if (nvs_get_i8 (h, "s_shrp", &i8)  == ESP_OK) g_settings.sharpness = i8;
+    if (nvs_get_u8 (h, "s_dnz",  &u8)  == ESP_OK) g_settings.denoise = u8;
+    if (nvs_get_u8 (h, "s_fmode",&u8)  == ESP_OK) g_settings.focus_mode = u8;
+    if (nvs_get_u16(h, "s_fpos", &u16) == ESP_OK) g_settings.focus_pos = u16;
     l = sizeof(g_settings.timezone);
     nvs_get_str(h, "s_tz", g_settings.timezone, &l);
     l = sizeof(g_settings.region);
@@ -148,6 +158,10 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_res",  g_settings.resolution);
     nvs_set_i8 (h, "s_ctr",  g_settings.contrast);
     nvs_set_i8 (h, "s_ael",  g_settings.ae_level);
+    nvs_set_i8 (h, "s_shrp", g_settings.sharpness);
+    nvs_set_u8 (h, "s_dnz",  g_settings.denoise);
+    nvs_set_u8 (h, "s_fmode",g_settings.focus_mode);
+    nvs_set_u16(h, "s_fpos", g_settings.focus_pos);
     nvs_set_str(h, "s_tz",   g_settings.timezone);
     nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);

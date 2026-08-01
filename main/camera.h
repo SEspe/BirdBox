@@ -79,3 +79,74 @@ esp_err_t camera_set_rotation(rotation_t rot);
 
 /* Sensor PID for the Debug card (FSD §5); 0 when no camera. */
 int camera_get_pid(void);
+
+/* ── Sensor capabilities (FSD §2.1) ─────────────────────────────────────────
+ * BirdBox runs on whatever sensor the board carries — an OV2640 (2 MP, the
+ * reference unit) or an OV5640 (5 MP), with OV3660 in between. Rather than
+ * branch on PID all over the firmware, camera.c probes the sensor once at init
+ * and publishes what it can actually do. Everything else (Settings UI, the
+ * /api/settings clamp, the Debug card) reads this, so adding a sensor is a
+ * driver matter, not a firmware-wide edit.
+ *
+ * The probes are empirical, not a hardcoded PID table: max_res comes from the
+ * driver's own camera_sensor[] max_size, and sharpness/denoise are detected by
+ * *calling* the setter and checking for the -1 the OV2640 stubs return. A
+ * sensor the driver supports but this file has never heard of therefore still
+ * gets the right controls. */
+typedef struct {
+    int         pid;          /* sensor PID, 0 when no camera                  */
+    const char *name;         /* "OV2640"/"OV5640"/… from the driver's table,
+                                 "none" when no camera, "unknown" if the PID
+                                 isn't in camera_sensor[]                      */
+    uint8_t     max_res;      /* highest RES-table index this sensor supports;
+                                 CAMERA_RES_NONE when no camera                */
+    bool        sharpness;    /* true = a real sharpness control (OV5640-class;
+                                 the OV2640's set_sharpness is a -1 stub)      */
+    bool        denoise;      /* true = a real denoise control, same story      */
+    bool        autofocus;    /* true = AF firmware loaded into the sensor OK.
+                                 NOT proof a VCM lens is fitted — plenty of
+                                 OV5640 modules are fixed-focus and still take
+                                 the firmware. Focus status is the honest tell. */
+} camera_caps_t;
+
+/* Never NULL — with no camera it reports pid 0 / "none" / max_res
+ * CAMERA_RES_NONE and every capability false. */
+const camera_caps_t *camera_caps(void);
+
+/* Number of entries in camera.c's RES table (frame sizes the firmware knows).
+ * The Settings dropdown offers indices 0..camera_caps()->max_res of these. */
+uint8_t camera_res_count(void);
+
+/* Human-readable label for a RES-table index, e.g. "HD 1280x720"; NULL when
+ * the index is out of range. */
+const char *camera_res_str(uint8_t idx);
+
+/* OV5640-class sharpness, clamped to -3..+3, applied live (FSD §5). Returns
+ * ESP_ERR_NOT_SUPPORTED on a sensor without one (the OV2640), which is not an
+ * error — the Settings UI hides the control there. */
+esp_err_t camera_set_sharpness(int level);
+
+/* OV5640-class denoise strength 0..8, 0 = off, applied live (FSD §5). Same
+ * ESP_ERR_NOT_SUPPORTED contract as camera_set_sharpness. */
+esp_err_t camera_set_denoise(int level);
+
+/* Autofocus (OV5640 + a VCM lens, FSD §5). mode is a focus_mode_t: OFF leaves
+ * the lens wherever it sits, AUTO runs the sensor's continuous AF loop, MANUAL
+ * pins it at `pos` (0..1023, near→far). ESP_ERR_NOT_SUPPORTED when AF never
+ * initialized. */
+esp_err_t camera_set_focus(uint8_t mode, uint16_t pos);
+
+/* One-shot refocus, for the Settings "Focus now" button — meaningful in any
+ * mode, and the only way to refocus in OFF/MANUAL. Blocks up to ~2 s waiting
+ * for the sensor to settle. */
+esp_err_t camera_focus_now(void);
+
+/* Focus state for the Debug card: true when the sensor last reported a
+ * successful lock. Always false without AF. */
+bool camera_focus_locked(void);
+
+/* Why autofocus is unavailable, for the Debug card — "" when it IS available.
+ * Distinguishes "switched off" from "the sensor refused the AF firmware", which
+ * is the answer someone needs when working out whether their OV5640 module
+ * actually has a focus motor. */
+const char *camera_af_error(void);

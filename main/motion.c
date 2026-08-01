@@ -45,12 +45,22 @@
 static const char *TAG = "motion";
 
 /* 1/8-scale detection frame must fit the largest selectable resolution, which
- * is the SXGA ceiling (1280x1024 -> 160x128); HD (1280x720 -> 160x90) fits too.
- * These were sized for the old XGA ceiling (128x96); once SXGA/HD were added in
- * v1.21 an SXGA frame (160x128 = 20480 px) overran DETECT_MAX_PX and every
- * detect frame was rejected — motion detection silently died at high res. */
-#define DETECT_MAX_W      160            /* 1/8 of SXGA width  (1280) */
-#define DETECT_MAX_H      128            /* 1/8 of SXGA height (1024) */
+ * is now camera.c's QSXGA entry (2560x1920 -> 320x240) — the OV5640 ceiling
+ * (v2.81). HD (1280x720 -> 160x90) and everything below fit inside it.
+ *
+ * THIS MUST BE RAISED WHENEVER camera.c's RES TABLE GAINS A LARGER SIZE. These
+ * were sized for the old XGA ceiling (128x96); once SXGA/HD were added in v1.21
+ * an SXGA frame (160x128 = 20480 px) overran DETECT_MAX_PX and every detect
+ * frame was rejected by the px > DETECT_MAX_PX guard below — motion detection
+ * silently died at high res, with no error anywhere. Same trap, same fix.
+ *
+ * Cost is 4 PSRAM buffers (3 grayscale + one RGB565 decode target), 384 KB at
+ * this ceiling against 102 KB at the old one. PSRAM idles at ~7.9 MB free, and
+ * they are allocated once at startup regardless of the resolution actually
+ * selected, so a box running HD pays the QSXGA-sized allocation too — cheap
+ * next to making the sizing depend on a setting that needs a reboot anyway. */
+#define DETECT_MAX_W      320            /* 1/8 of QSXGA width  (2560) */
+#define DETECT_MAX_H      240            /* 1/8 of QSXGA height (1920) */
 #define DETECT_MAX_PX     (DETECT_MAX_W * DETECT_MAX_H)
 #define DETECT_PERIOD_MS  250
 #define PIX_DIFF_THR      25             /* per-pixel gray delta that counts as changed */

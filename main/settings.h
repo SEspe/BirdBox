@@ -12,6 +12,10 @@ typedef enum { LANG_EN = 0, LANG_NO = 1 } species_lang_t;
  * so those are corrected in software per-consumer instead (see camera.c and
  * classify.cpp). */
 typedef enum { ROTATE_0 = 0, ROTATE_90 = 1, ROTATE_180 = 2, ROTATE_270 = 3 } rotation_t;
+/* Autofocus mode (FSD §5), OV5640-class sensors with a VCM lens only. OFF is
+ * the default and also what every fixed-focus module gets: it skips the AF
+ * firmware download entirely, so an OV2640 box pays nothing for this existing. */
+typedef enum { FOCUS_OFF = 0, FOCUS_AUTO = 1, FOCUS_MANUAL = 2 } focus_mode_t;
 
 typedef struct {
     placement_mode_t mode;
@@ -30,12 +34,31 @@ typedef struct {
     uint8_t  resolution;            /* camera frame-size index into camera.c's
                                        RES table; applied at camera_init, so a
                                        change needs a reboot. default = HD (1280x720) */
-    int8_t   contrast;              /* OV2640 contrast -2..+2 (the sensor has no
-                                       sharpness control); applied live. default 0 */
-    int8_t   ae_level;              /* OV2640 auto-exposure level -2..+2: shifts the
+    int8_t   contrast;              /* sensor contrast -2..+2; on the OV2640, which
+                                       has no sharpness control, this is the only
+                                       "crispness" knob. Applied live. default 0 */
+    int8_t   ae_level;              /* auto-exposure level -2..+2: shifts the
                                        AE target brighter/darker for scenes the
                                        default metering renders too dark/bright.
                                        Applied live. default 0 */
+    int8_t   sharpness;             /* OV5640-class edge sharpening -3..+3, applied
+                                       live (FSD §5). Ignored on a sensor without
+                                       one (the OV2640's setter is a -1 stub) —
+                                       the Settings UI hides the control there
+                                       rather than offering a dead knob. default 0 */
+    uint8_t  denoise;               /* OV5640-class denoise 0..8, 0 = off. Same
+                                       sensor-gating as sharpness. Worth raising
+                                       only in poor light, where it trades feather
+                                       detail for less chroma noise — which is the
+                                       wrong trade for species ID, hence default 0 */
+    uint8_t  focus_mode;            /* focus_mode_t: 0 off (default), 1 continuous
+                                       autofocus, 2 manual at focus_pos. Non-OFF
+                                       costs a ~1 s AF firmware download at each
+                                       camera init and only does anything on an
+                                       OV5640 module with a VCM lens (FSD §5) */
+    uint16_t focus_pos;             /* manual focus position 0..1023, near→far;
+                                       only read when focus_mode == FOCUS_MANUAL.
+                                       default 0 */
     char     timezone[48];          /* default "Europe/Oslo" posix TZ */
     char     region[32];            /* species-model region: filename under
                                        /sd/model (FSD §3.2), "" = auto */

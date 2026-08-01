@@ -666,9 +666,38 @@ static const char INDEX_HTML[] =
 "<select class='wi' id='stRes'>"
 "<option value='3'>HD 1280&times;720 &mdash; recommended (best motion)</option>"
 "<option value='4'>SXGA 1280&times;1024 &mdash; +vertical detail, weaker motion</option>"
+"<option value='5'>UXGA 1600&times;1200 &mdash; 2 MP full frame</option>"
+"<option value='6'>QXGA 2048&times;1536 &mdash; 3 MP sensors only</option>"
+"<option value='7'>QSXGA 2560&times;1920 &mdash; 5 MP sensors only</option>"
 "</select>"
+/* Options above the detected sensor's ceiling are removed by stApplyCaps(), so
+ * an OV2640 box never sees the 3/5 MP entries it would only fail to boot at. */
+"<p class='sts' id='stCamCaps' style='margin-top:2px;opacity:.75'></p>"
 "<p class='sts' id='stResWarn' style='display:none;color:#e0a030;margin-top:2px'></p>"
-"<label class='wl'>Contrast (the OV2640 has no sharpness control)<span class='inf' onclick='sInfo(\"contrast\")'>i</span></label>"
+"<label class='wl' id='stSharpL'>Sharpness<span class='inf' onclick='sInfo(\"sharp\")'>i</span></label>"
+"<select class='wi' id='stSharp'>"
+"<option value='-3'>-3 (softest)</option><option value='-2'>-2</option>"
+"<option value='-1'>-1</option><option value='0'>0 (default)</option>"
+"<option value='1'>+1</option><option value='2'>+2</option>"
+"<option value='3'>+3 (crispest)</option></select>"
+"<label class='wl' id='stDenL'>Denoise<span class='inf' onclick='sInfo(\"denoise\")'>i</span></label>"
+"<select class='wi' id='stDen'>"
+"<option value='0'>Off (default)</option><option value='2'>Light</option>"
+"<option value='4'>Medium</option><option value='6'>Strong</option>"
+"<option value='8'>Maximum</option></select>"
+"<label class='wl' id='stFocusL'>Autofocus<span class='inf' onclick='sInfo(\"focus\")'>i</span></label>"
+"<select class='wi' id='stFocus' onchange='stFocusChange()'>"
+"<option value='0'>Off &mdash; fixed lens (default)</option>"
+"<option value='1'>Continuous autofocus</option>"
+"<option value='2'>Manual position</option></select>"
+"<div id='stFocusManual' style='display:none;margin-top:6px'>"
+"<label class='wl'>Focus position (0 = near, 1023 = far)</label>"
+"<input class='wi' type='number' min='0' max='1023' id='stFocusPos'>"
+"</div>"
+"<button class='act' id='stFocusNow' style='margin-left:0;display:none'"
+" onclick='focusNow()'>&#127919; Focus now</button>"
+"<span class='sts' id='stFocusSts'></span>"
+"<label class='wl'>Contrast<span class='inf' onclick='sInfo(\"contrast\")'>i</span></label>"
 "<select class='wi' id='stContrast'>"
 "<option value='-2'>-2 (soft)</option><option value='-1'>-1</option>"
 "<option value='0'>0 (default)</option><option value='1'>+1</option>"
@@ -1562,14 +1591,28 @@ static const char INDEX_HTML[] =
 " Lower numbers mean better quality and bigger files; Best (8) gives species ID the most detail"
 " to work with.',"
 "'Standard (12)','Best 8, High 10, Standard 12, Low 18, Lowest 25.'],"
-"res:['Resolution','HD and SXGA share the same 1280 px width, so the bird gets the same horizontal"
-" detail either way. <b>HD</b> keeps motion detection the most responsive; <b>SXGA</b> adds"
-" vertical field of view but its larger frames slow the motion loop, so it triggers less reliably."
-" Nothing higher is offered &mdash; UXGA frames leave too little free memory. Takes effect after"
-" a reboot.',"
-"'HD 1280&times;720','SXGA 1280&times;1024.'],"
-"contrast:['Contrast','Sensor contrast &mdash; the OV2640 has no sharpness control, so this is the"
-" closest lever. Applies immediately to the stream and saved photos.',"
+"res:['Resolution','Only sizes this camera can actually produce are listed &mdash; a 2 MP OV2640"
+" stops at UXGA, a 5 MP OV5640 goes to QSXGA. <b>HD</b> is still the recommendation: bigger frames"
+" slow the motion loop, so they trigger less reliably, and the 4:3 and 5:4 sizes see a narrower"
+" view than 16:9 HD. Reach for the big ones when the birds are far from a well-lit feeder and you"
+" need the pixels more than the reaction time. Takes effect after a reboot.',"
+"'HD 1280&times;720','HD up to whatever the fitted sensor supports.'],"
+"sharp:['Sharpness','Edge sharpening in the sensor. Helps feather detail on a 5 MP sensor, which is"
+" what species ID reads. Only shown when the fitted camera has the control &mdash; the OV2640 has"
+" none, and uses Contrast as the nearest lever instead. Applies immediately.',"
+"'0','-3 (softest) to +3 (crispest).'],"
+"denoise:['Denoise','Sensor noise reduction, 5 MP sensors only. Raise it only in poor light: it"
+" smooths away chroma noise, but it smooths feather texture with it, which is exactly the detail"
+" species ID depends on. Off is the right default. Applies immediately.',"
+"'Off','Off to Maximum.'],"
+"focus:['Autofocus','Only OV5640 modules with a movable (VCM) lens can focus &mdash; most camera"
+" modules are fixed-focus, where this does nothing however it is set. <b>Continuous</b> lets the"
+" sensor hunt on its own; <b>Manual</b> pins the lens at one position, which suits a feeder at a"
+" fixed distance far better. <b>Focus now</b> does a single refocus in any mode. Turning this on"
+" adds about a second to every camera start.',"
+"'Off','Off, Continuous, or Manual 0 (near) to 1023 (far).'],"
+"contrast:['Contrast','Sensor contrast. On a camera with no sharpness control (the OV2640) this is"
+" the closest lever to it. Applies immediately to the stream and saved photos.',"
 "'0','-2 (soft) to +2 (punchy).'],"
 "ae:['Brightness (auto-exposure level)','Biases the camera&rsquo;s auto-exposure target darker or"
 " brighter. Applies immediately.',"
@@ -1637,6 +1680,9 @@ static const char INDEX_HTML[] =
 "if(![...rs.options].some(o=>o.value==c.res)){var ro=document.createElement('option');"
 "ro.value=c.res;ro.textContent='Current ('+c.res+')';rs.appendChild(ro);}"
 "$g('stRes').value=c.res;$g('stContrast').value=c.contrast;$g('stAe').value=c.ae_level;g_savedRes=c.res;"
+"$g('stSharp').value=c.sharpness;$g('stDen').value=c.denoise;"
+"$g('stFocus').value=c.focus_mode;$g('stFocusPos').value=c.focus_pos;"
+"stApplyCaps(c);stFocusChange();"
 /* The box can run at something other than the saved request — a boot-time
  * degrade (camera_init steps down when a size won't initialize), or a change
  * that hasn't been rebooted into. Say which, instead of showing the request
@@ -1664,6 +1710,43 @@ static const char INDEX_HTML[] =
 "});}"
 "function ntpSelChange(){var c=$g('stNtpSel').value==='__custom';"
 "$g('stNtpCustom').style.display=c?'block':'none';}"
+/* One firmware runs every supported sensor, so the Settings tab has to match
+ * itself to whatever camera this particular box has. The server reports the
+ * detected capabilities in /api/settings (cam*); everything the fitted sensor
+ * can't do is REMOVED rather than disabled, so nobody saves a setting that
+ * silently does nothing. */
+"function stApplyCaps(c){"
+"var mx=(c.camMaxRes==null?7:c.camMaxRes);"
+"var rs=$g('stRes');"
+"[...rs.options].forEach(function(o){"
+"if(o.value>mx&&o.value!=c.res)o.remove();});"
+"var cap=$g('stCamCaps');"
+"if(c.camName){var ex=[];if(c.camSharp)ex.push('sharpness');if(c.camDenoise)ex.push('denoise');"
+"if(c.camAF)ex.push('autofocus');"
+"cap.textContent='Detected camera: '+c.camName+' \\u2014 up to '+(c.camMaxResStr||'?')"
+"+(ex.length?', with '+ex.join(', '):'');}"
+"else cap.textContent='';"
+/* Sharpness/denoise exist on OV5640-class sensors only; the OV2640's driver
+ * setters are stubs that return an error for every value. */
+"var sh=c.camSharp?'':'none';"
+"$g('stSharp').style.display=sh;$g('stSharpL').style.display=sh;"
+"var dn=c.camDenoise?'':'none';"
+"$g('stDen').style.display=dn;$g('stDenL').style.display=dn;"
+/* Autofocus stays visible whenever the build supports it, because it can only
+ * be detected AFTER the operator turns it on (the AF firmware download is what
+ * proves it) — hiding it would make it unreachable. */
+"var af=c.camAFBuild?'':'none';"
+"$g('stFocus').style.display=af;$g('stFocusL').style.display=af;"
+"}"
+"function stFocusChange(){"
+"var m=$g('stFocus').value;"
+"$g('stFocusManual').style.display=(m=='2')?'':'none';"
+"$g('stFocusNow').style.display=(m=='0')?'none':'inline-block';"
+"}"
+"function focusNow(){var s=$g('stFocusSts');s.textContent='Focusing\\u2026';"
+"fetch('/api/focus',{method:'POST'}).then(r=>r.text()).then(function(t){"
+"s.textContent=t;setTimeout(function(){s.textContent='';},6000);})"
+".catch(function(){s.textContent='failed';});}"
 "function stSave(){"
 "var ntp=$g('stNtpSel').value==='__custom'?$g('stNtpCustom').value:$g('stNtpSel').value;"
 "var b='mode='+($g('stFeed').checked?'feeder':'nestbox')"
@@ -1675,6 +1758,8 @@ static const char INDEX_HTML[] =
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
 "+'&rot='+$g('stRot').value+'&res='+$g('stRes').value"
 "+'&contrast='+$g('stContrast').value+'&ael='+$g('stAe').value"
+"+'&sharp='+$g('stSharp').value+'&dn='+$g('stDen').value"
+"+'&fmode='+$g('stFocus').value+'&fpos='+$g('stFocusPos').value"
 "+'&tz='+encodeURIComponent($g('stTz').value)"
 "+'&ntp='+encodeURIComponent(ntp)"
 "+'&lang='+$g('stLang').value"
@@ -1823,7 +1908,15 @@ static const char INDEX_HTML[] =
 "drow('Auto-recoveries',(d.sdRemounts||0)+(d.sdRemounts?' \\u2014 card may be wearing':''),(d.sdRemounts?'':'ok')):"
 "drow('Status','no SD card','bad');"
 "$g('dCam').innerHTML=d.camPresent?"
-"drow('Sensor PID','0x'+d.camPid.toString(16))+drow('Resolution',d.camRes)+"
+"drow('Sensor',(d.camName||'?')+' (PID 0x'+d.camPid.toString(16)+')')+"
+/* What this particular sensor can do, so a board swap is visible here rather
+ * than only as a differently-populated Settings tab (v2.81). */
+"drow('Sensor max',(d.camMaxResStr||'\\u2014')+"
+"((d.camSharp||d.camDenoise||d.camAF)?' \\u2014 '+[d.camSharp?'sharpness':'',"
+"d.camDenoise?'denoise':'',d.camAF?'autofocus':''].filter(Boolean).join(', '):''))+"
+"drow('Focus',d.camAF?(d.camFocusLocked?'locked':'not locked')"
+":('unavailable \\u2014 '+(d.camAFErr||'?')))+"
+"drow('Resolution',d.camRes)+"
 "drow('JPEG quality',d.camQuality)+"
 "drow('Motion triggers',(d.motionTriggers||0))+"
 /* Fast-burst speed (v2.60): the true measured average gap between the 4 fast
@@ -2234,6 +2327,30 @@ static esp_err_t h_time_set(httpd_req_t *req)
                      set ? "true" : "false", (already || set) ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
+/* POST /api/focus — one-shot refocus, the Settings "Focus now" button (FSD §5).
+ * Replies plain text because the button just echoes it into a status span.
+ * Blocks up to ~2 s inside camera_focus_now() waiting for the lens to settle;
+ * that is the sensor's own AF timeout, not a poll loop of ours. */
+static esp_err_t h_focus(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    esp_err_t err = camera_focus_now();
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        /* Either an OV2640, or an OV5640 whose AF firmware never loaded, or
+         * focus is simply switched off — all three mean "nothing to do here",
+         * and none of them is a server error. */
+        httpd_resp_sendstr(req, "this camera has no autofocus");
+        return ESP_OK;
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_sendstr(req, "no camera");
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, camera_focus_locked() ? "focus locked"
+                                                  : "focus attempted, no lock");
     return ESP_OK;
 }
 
@@ -3392,9 +3509,12 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[880];   /* truncation here would emit malformed JSON and take the
+    char buf[1120];  /* truncation here would emit malformed JSON and take the
                         whole Settings tab down — keep headroom (v1.96 added
-                        resActive/resActiveStr, ~45 B; inat fields ~28 B) */
+                        resActive/resActiveStr, ~45 B; inat fields ~28 B; v2.81
+                        added the sharpness/denoise/focus values plus the cam*
+                        capability block, ~190 B) */
+    const camera_caps_t *cc = camera_caps();
     /* ckey_set, never the key itself: this reply is world-readable on the LAN,
      * and the same posture as /api/wificfg (which reports configured SSIDs but
      * never the passwords). */
@@ -3402,7 +3522,17 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
         "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"resActive\":%d,\"resActiveStr\":\"%s\","
-        "\"contrast\":%d,\"ae_level\":%d,\"tz\":\"%s\","
+        "\"contrast\":%d,\"ae_level\":%d,"
+        "\"sharpness\":%d,\"denoise\":%u,\"focus_mode\":%u,\"focus_pos\":%u,"
+        /* Detected-sensor capabilities. One firmware serves every supported
+         * camera, so the Settings tab can only know which controls are real by
+         * asking the box what it found (v2.81). camAFBuild is the compile-time
+         * answer and camAF the runtime one — they differ because AF can only be
+         * confirmed by loading its firmware, which only happens once the
+         * operator opts in. */
+        "\"camName\":\"%s\",\"camMaxRes\":%d,\"camMaxResStr\":\"%s\","
+        "\"camSharp\":%s,\"camDenoise\":%s,\"camAF\":%s,\"camAFBuild\":%s,"
+        "\"tz\":\"%s\","
         "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
@@ -3423,6 +3553,19 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         camera_framesize_str(),
         (int) g_settings.contrast,
         (int) g_settings.ae_level,
+        (int) g_settings.sharpness, (unsigned) g_settings.denoise,
+        (unsigned) g_settings.focus_mode, (unsigned) g_settings.focus_pos,
+        cc->name,
+        cc->max_res == CAMERA_RES_NONE ? -1 : (int) cc->max_res,
+        cc->max_res == CAMERA_RES_NONE ? "" : camera_res_str(cc->max_res),
+        cc->sharpness ? "true" : "false",
+        cc->denoise   ? "true" : "false",
+        cc->autofocus ? "true" : "false",
+#if CONFIG_CAMERA_AF_SUPPORT
+        "true",
+#else
+        "false",
+#endif
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
@@ -3554,9 +3697,24 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
     g_settings.rotation  = (rotation_t) field_num(body, "rot=", 0,  3,    g_settings.rotation);
     g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
-    g_settings.resolution          = field_num(body, "res=",  0,   4,    g_settings.resolution);
+    /* Upper bound is what the DETECTED sensor can do, not a constant: one
+     * firmware serves an OV2640 (UXGA) and an OV5640 (QSXGA), and accepting a
+     * size this camera can't produce would just boot-degrade forever while the
+     * Settings tab kept showing the request as if it had taken (v2.81). Falls
+     * back to the full table when no camera answered, so a save with the sensor
+     * down can't quietly clamp a valid choice to VGA. */
+    {
+        const camera_caps_t *cc = camera_caps();
+        int res_max = cc->max_res == CAMERA_RES_NONE ? (int) camera_res_count() - 1
+                                                     : (int) cc->max_res;
+        g_settings.resolution      = field_num(body, "res=",  0, res_max, g_settings.resolution);
+    }
     g_settings.contrast            = field_num(body, "contrast=", -2, 2, g_settings.contrast);
     g_settings.ae_level            = field_num(body, "ael=", -2, 2, g_settings.ae_level);
+    g_settings.sharpness           = field_num(body, "sharp=", -3, 3, g_settings.sharpness);
+    g_settings.denoise             = field_num(body, "dn=",   0,  8, g_settings.denoise);
+    g_settings.focus_mode          = field_num(body, "fmode=", 0, 2, g_settings.focus_mode);
+    g_settings.focus_pos           = field_num(body, "fpos=", 0, 1023, g_settings.focus_pos);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
     /* region names the active model file (§3.2); "" = auto-pick. Apply ONLY
@@ -3713,6 +3871,15 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     camera_set_rotation(g_settings.rotation);        /* no-op without camera */
     camera_set_contrast(g_settings.contrast);        /* no-op without camera */
     camera_set_ae_level(g_settings.ae_level);        /* no-op without camera */
+    /* Sensor-gated: these return ESP_ERR_NOT_SUPPORTED on an OV2640 rather
+     * than failing, and the Settings tab doesn't show the controls there. */
+    camera_set_sharpness(g_settings.sharpness);
+    camera_set_denoise(g_settings.denoise);
+    /* Switching focus ON needs the AF firmware downloaded to the sensor, which
+     * only happens in caps_probe at camera_init — so OFF→AUTO/MANUAL takes a
+     * reboot the first time. Applying it here still covers every later change
+     * (mode swaps and manual-position nudges) without one. */
+    camera_set_focus(g_settings.focus_mode, g_settings.focus_pos);
     /* fast_shutter is applied by motion.c's ambient-dark check (FSD v1.38),
      * not here — it only engages when the scene actually reads dark, and
      * forcing it unconditionally on every save is what caused v1.37's
@@ -3742,10 +3909,11 @@ static esp_err_t h_settings_export(httpd_req_t *req)
      * this file gets mailed around and dropped into cloud folders. Omitting
      * ckey/gkey reads as "keep current" on restore (see h_settings_post), so the
      * only cost is re-pasting a key after an NVS wipe. */
-    char buf[700];
+    char buf[768];   /* v2.81 added sharp/dn/fmode/fpos, ~32 B */
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
-        "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d&tz=%s&region=%s&ntp=%s"
+        "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
+        "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&region=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
         "&ondev=%u&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -3755,6 +3923,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         g_settings.ir_led_mode, (unsigned) g_settings.rotation,
         (unsigned) g_settings.region_filter, (unsigned) g_settings.resolution,
         (int) g_settings.contrast, (int) g_settings.ae_level,
+        (int) g_settings.sharpness, (unsigned) g_settings.denoise,
+        (unsigned) g_settings.focus_mode, (unsigned) g_settings.focus_pos,
         g_settings.timezone, g_settings.region, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
@@ -3966,6 +4136,21 @@ static void hw_info_json(char *out, size_t out_sz)
     unsigned    pmb    = 0;
 #endif
 
+    /* CONFIG_ESPTOOLPY_FLASHMODE is the *image header* mode, which IDF pins to
+     * "dio" even on a QIO build (the ROM loads in DIO; the flash driver
+     * switches to QIO at runtime). Report the Kconfig booleans instead, or the
+     * Debug card cannot tell the two apart — and on octal-PSRAM boards that
+     * distinction is the difference between booting and a silent boot loop. */
+#if CONFIG_ESPTOOLPY_FLASHMODE_QIO
+    const char *fmode = "qio";
+#elif CONFIG_ESPTOOLPY_FLASHMODE_QOUT
+    const char *fmode = "qout";
+#elif CONFIG_ESPTOOLPY_FLASHMODE_DOUT
+    const char *fmode = "dout";
+#else
+    const char *fmode = "dio";
+#endif
+
     const esp_app_desc_t *ad = esp_app_get_description();
 
     snprintf(out, out_sz,
@@ -3980,7 +4165,7 @@ static void hw_info_json(char *out, size_t out_sz)
         (ci.features & CHIP_FEATURE_EMB_PSRAM) ? "true" : "false",
         CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
         (unsigned) (fsize / (1024 * 1024)), (unsigned long) fid,
-        CONFIG_ESPTOOLPY_FLASHMODE, CONFIG_ESPTOOLPY_FLASHFREQ,
+        fmode, CONFIG_ESPTOOLPY_FLASHFREQ,
         pmode, pspeed, pmb,
         ad ? ad->idf_ver : "?",
         ad ? ad->date : "?", ad ? ad->time : "?");
@@ -4030,7 +4215,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     /* buf grew with the hardware fragment (v2.76) — snprintf truncates silently,
      * so this must stay ahead of the format above plus hw[]. */
-    char buf[1792];
+    char buf[1984];  /* v2.81 added the cam* sensor-capability fields, ~130 B */
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
         "\"heapInt\":%lu,\"heapIntBig\":%lu,\"heapPsram\":%lu,\"heapPsramBig\":%lu,"
@@ -4041,6 +4226,12 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"sdPresent\":%s,\"sdCard\":\"%s\",\"sdTotalMB\":%llu,\"sdFreeMB\":%llu,"
         "\"sdWriteOk\":%s,\"sdRemounts\":%lu,"
         "\"camPresent\":%s,\"camPid\":%d,\"camRes\":\"%s\",\"camQuality\":%u,"
+        /* Sensor identity + capabilities (v2.81): one firmware runs OV2640 and
+         * OV5640 boards, so "which camera is in this box" is a runtime answer
+         * the Debug card has to ask for. */
+        "\"camName\":\"%s\",\"camMaxResStr\":\"%s\",\"camSharp\":%s,"
+        "\"camDenoise\":%s,\"camAF\":%s,\"camFocusLocked\":%s,"
+        "\"camAFErr\":\"%s\","
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
@@ -4069,6 +4260,14 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         (unsigned long) storage_remount_count(),
         camera_available() ? "true" : "false", camera_get_pid(),
         camera_framesize_str(), g_settings.stream_quality,
+        camera_caps()->name,
+        camera_caps()->max_res == CAMERA_RES_NONE ? ""
+            : camera_res_str(camera_caps()->max_res),
+        camera_caps()->sharpness ? "true" : "false",
+        camera_caps()->denoise   ? "true" : "false",
+        camera_caps()->autofocus ? "true" : "false",
+        camera_focus_locked()    ? "true" : "false",
+        camera_af_error(),   /* fixed set of literals + esp_err_to_name — JSON-safe */
         (unsigned long) camera_recovery_count(), camera_last_recovery_ago_s(),
         camera_fault() ? "true" : "false",
         soc_temp_c(), (unsigned long) motion_trigger_count(),
@@ -5368,6 +5567,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/motion",  .method = HTTP_GET,  .handler = h_motion     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
+        { .uri = "/api/focus",   .method = HTTP_POST, .handler = h_focus      },
         { .uri = "/api/detect",  .method = HTTP_POST, .handler = h_detect     },
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },

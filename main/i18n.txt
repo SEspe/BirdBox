@@ -133,7 +133,24 @@ Lowest	Lavest
 Resolution (needs reboot)	Oppløsning (krever omstart)
 HD 1280×720 — recommended (best motion)	HD 1280×720 — anbefalt (best bevegelse)
 SXGA 1280×1024 — +vertical detail, weaker motion	SXGA 1280×1024 — +vertikal detalj, svakere bevegelse
-Contrast (the OV2640 has no sharpness control)	Kontrast (OV2640 mangler skarphetskontroll)
+UXGA 1600×1200 — 2 MP full frame	UXGA 1600×1200 — 2 MP fullformat
+QXGA 2048×1536 — 3 MP sensors only	QXGA 2048×1536 — kun 3 MP-sensorer
+QSXGA 2560×1920 — 5 MP sensors only	QSXGA 2560×1920 — kun 5 MP-sensorer
+Sharpness	Skarphet
+-3 (softest)	-3 (mykest)
++3 (crispest)	+3 (skarpest)
+Denoise	Støyreduksjon
+Off (default)	Av (standard)
+Light	Svak
+Medium	Middels
+Strong	Sterk
+Maximum	Maksimal
+Autofocus	Autofokus
+Off — fixed lens (default)	Av — fast objektiv (standard)
+Continuous autofocus	Kontinuerlig autofokus
+Manual position	Manuell posisjon
+Focus position (0 = near, 1023 = far)	Fokusposisjon (0 = nær, 1023 = fjern)
+Contrast	Kontrast
 -2 (soft)	-2 (myk)
 0 (default)	0 (standard)
 +2 (punchy)	+2 (kraftig)
@@ -159,6 +176,7 @@ Illuminator LED	Lys-LED
 Off (default)	Av (standard)
 Auto (on during dark hours)	Auto (på når det er mørkt)
 Settings apply immediately — no reboot needed (resolution excepted).	Innstillinger trer i kraft umiddelbart — ingen omstart nødvendig (unntatt oppløsning).
+Focus now	Fokuser nå
 Save Settings	Lagre innstillinger
 Backup & Restore	Sikkerhetskopi og gjenoppretting
 Download all settings to a file, or restore them from one after a reset or NVS wipe — so your tuning (zone, sensitivity, confidence…) survives a re-provision without re-entering it by hand.	Last ned alle innstillinger til en fil, eller gjenopprett dem fra en etter nullstilling eller NVS-sletting — slik at justeringene dine (sone, følsomhet, konfidens…) overlever re-provisjonering uten å måtte tastes inn på nytt.
@@ -324,11 +342,23 @@ optional	valgfritt
 @sinfo:qual:def	Standard (12)
 @sinfo:qual:alt	Best 8, Høy 10, Standard 12, Lav 18, Lavest 25.
 @sinfo:res:t	Oppløsning
-@sinfo:res:d	HD og SXGA deler samme bredde på 1280 px, så fuglen får samme horisontale detalj uansett. <b>HD</b> holder bevegelsesdeteksjonen mest responsiv; <b>SXGA</b> gir mer vertikalt synsfelt, men de større bildene bremser bevegelsesløkken, så den utløses mindre pålitelig. Ingenting høyere tilbys — UXGA-bilder etterlater for lite ledig minne. Trer i kraft etter omstart.
+@sinfo:res:d	Bare størrelser dette kameraet faktisk kan levere vises — en 2 MP OV2640 stopper på UXGA, en 5 MP OV5640 går til QSXGA. <b>HD</b> er fortsatt anbefalingen: større bilder bremser bevegelsesløkken, så de utløses mindre pålitelig, og 4:3- og 5:4-størrelsene ser et smalere utsnitt enn 16:9 HD. Ta de store når fuglene er langt fra et godt opplyst matfat og du trenger pikslene mer enn reaksjonstiden. Trer i kraft etter omstart.
 @sinfo:res:def	HD 1280×720
-@sinfo:res:alt	SXGA 1280×1024.
+@sinfo:res:alt	HD opp til det den monterte sensoren støtter.
+@sinfo:sharp:t	Skarphet
+@sinfo:sharp:d	Kantskarping i sensoren. Hjelper på fjærdetaljer på en 5 MP-sensor, som er nettopp det arts-ID leser. Vises bare når kameraet har kontrollen — OV2640 har ingen, og bruker Kontrast som nærmeste virkemiddel i stedet. Gjelder umiddelbart.
+@sinfo:sharp:def	0
+@sinfo:sharp:alt	-3 (mykest) til +3 (skarpest).
+@sinfo:denoise:t	Støyreduksjon
+@sinfo:denoise:d	Sensorens støyreduksjon, kun 5 MP-sensorer. Skru den opp bare i dårlig lys: den glatter bort fargestøy, men den glatter bort fjærtekstur med den — nettopp detaljen arts-ID er avhengig av. Av er riktig standard. Gjelder umiddelbart.
+@sinfo:denoise:def	Av
+@sinfo:denoise:alt	Av til Maksimal.
+@sinfo:focus:t	Autofokus
+@sinfo:focus:d	Bare OV5640-moduler med bevegelig (VCM) objektiv kan fokusere — de fleste kameramoduler har fast fokus, der dette ikke gjør noe uansett hvordan det står. <b>Kontinuerlig</b> lar sensoren lete på egen hånd; <b>Manuell</b> låser objektivet i én posisjon, noe som passer et matfat på fast avstand langt bedre. <b>Fokuser nå</b> gjør én enkelt refokusering i alle moduser. Å slå dette på legger omtrent ett sekund til hver kamerastart.
+@sinfo:focus:def	Av
+@sinfo:focus:alt	Av, Kontinuerlig eller Manuell 0 (nær) til 1023 (fjern).
 @sinfo:contrast:t	Kontrast
-@sinfo:contrast:d	Sensorkontrast — OV2640 har ingen skarphetskontroll, så dette er nærmeste virkemiddel. Gjelder umiddelbart for strøm og lagrede bilder.
+@sinfo:contrast:d	Sensorkontrast. På et kamera uten skarphetskontroll (OV2640) er dette det nærmeste virkemiddelet. Gjelder umiddelbart for strøm og lagrede bilder.
 @sinfo:contrast:def	0
 @sinfo:contrast:alt	-2 (myk) til +2 (kraftig).
 @sinfo:ae:t	Lysstyrke (autoeksponering)

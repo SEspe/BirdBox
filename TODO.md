@@ -4,6 +4,28 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Do next (2026-08-01)
+- [x] ~~**Switch the S3 target to QIO flash**~~ — **DONE, shipped 0.74.46 / FSD v2.80.**
+      `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` in `sdkconfig.defaults.esp32s3`.
+  - [x] ~~Verify the Boya reference unit on QIO~~ — `192.168.1.111` **serially reflashed**
+        over COM12 and healthy. NVS + SD survived; the visit log is intact.
+  - [x] ~~`flashMode` reports `"dio"` on a QIO build~~ — now reports the Kconfig booleans.
+  - [ ] Re-test the second "dead" board (`28:84:85:65:68:f4`, currently running stock
+        `hello_world`) with a QIO build. Likely recoverable too.
+  - [ ] **`.199` is still on a DIO-era bootloader** (OTA can't replace it). It boots fine,
+        but re-flash it over cable before trusting it as a QIO reference.
+
+## Camera / sensor support (added 2026-08-01, 0.74.47-0.74.48)
+- [ ] **`camera_af_error()`'s "AF firmware timed out (no VCM lens?)" branch is dead code.**
+      `ov5640_af_init` collapses every failure to `-1` and `esp_camera_af_init` flattens
+      that to `ESP_FAIL` (`esp_camera_af.c:56-58`), so the timeout case never reaches us.
+      Reword to "AF firmware load failed (fixed-focus module?)" next time that file is open.
+- [ ] **The OV5640 on `.199` is fixed-focus** — AF firmware load fails (`ESP_FAIL`), while
+      SCCB is demonstrably healthy. No code fix; focus it by turning the lens thread.
+- [ ] **Nothing has run above HD yet.** UXGA/QXGA/QSXGA are offered and clamped to the
+      detected sensor, but no box has been booted at one — expect a slower detect loop and
+      a narrower field of view, and watch `resActive` for a boot-time degrade.
+
 ## Real bugs (small, located)
 - [x] ~~`gemini.c` handle leak (3 init vs 2 cleanup)~~ — **INVESTIGATED, NOT A LEAK
       (2026-07-22).** The "3rd init" was a grep false positive: line 174 is a *comment*
