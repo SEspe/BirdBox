@@ -257,10 +257,31 @@ static const char INDEX_HTML[] =
 ".pane{display:none;padding:16px;max-width:960px;margin:0 auto}.pane.on{display:block}"
 ".liveWrap{max-width:960px;margin:0 auto;position:relative;overflow:hidden;"
 "border-radius:8px;background:#000;padding-top:75%}"
-".liveWrap.r1,.liveWrap.r3{padding-top:133.33%}"
-".live{position:absolute;top:50%;left:50%;width:100%;transform:translate(-50%,-50%)}"
-".live.r1{width:133.33%;transform:translate(-50%,-50%) rotate(90deg)}"
-".live.r3{width:133.33%;transform:translate(-50%,-50%) rotate(270deg)}"
+/* ── Arbitrary view rotation + mirroring (v2.83) ───────────────────────────
+ * Any angle 0-359, not just quarter turns, because a camera zip-tied to a
+ * branch is rarely level and a 3 deg correction is the common case. Driven by
+ * three CSS custom properties set once on <body> by applyView():
+ *   --vrot    the angle to apply on screen (0 at exactly 180 — the sensor
+ *             already did that one in hardware, so rotating again would
+ *             double it)
+ *   --vscale  cover factor, so a rotated frame still fills its box instead of
+ *             showing black triangles in the corners. Computed in JS from the
+ *             real box aspect, since it differs between the live pane and the
+ *             thumbnails.
+ *   --vmx/--vmy  -1 when mirrored on that axis, else 1.
+ * Mirroring is display-side too, so the card's JPEG is never touched.
+ * Order matters: rotate THEN mirror reads as "flip what you see". */
+".live{position:absolute;top:50%;left:50%;width:100%;"
+"transform:translate(-50%,-50%) rotate(var(--vrot,0deg)) "
+"scale(calc(var(--vscale,1) * var(--vmx,1)),calc(var(--vscale,1) * var(--vmy,1)))}"
+/* Image grids (Gallery + the Stats per-species strip). Same variables, so one
+ * setting drives every view; the box keeps its 16:9 footprint and the rotated
+ * image is scaled to cover it, which keeps the grid tidy at any angle. */
+".gitem>a{display:block;position:relative;width:100%;aspect-ratio:16/9;"
+"overflow:hidden;background:#000}"
+".gitem>a img{position:absolute;top:50%;left:50%;width:100%;height:100%;"
+"object-fit:cover;transform:translate(-50%,-50%) rotate(var(--vrot,0deg)) "
+"scale(calc(var(--gscale,1) * var(--vmx,1)),calc(var(--gscale,1) * var(--vmy,1)))}"
 ".rotbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}"
 ".detbadge{position:absolute;top:8px;left:8px;z-index:3;display:none;"
 "align-items:center;gap:6px;background:rgba(200,40,40,.9);color:#fff;"
@@ -386,7 +407,9 @@ static const char INDEX_HTML[] =
 ".gprogtxt{font-size:.82rem;color:#7fc98b;white-space:nowrap}"
 ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}"
 ".gitem{background:#1e3826;border-radius:8px;overflow:hidden;position:relative}"
-".gitem img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}"
+/* Thumbnail geometry lives with the view-transform rules further up (v2.83):
+ * the 16:9 box is on .gitem>a and the image is absolutely positioned inside it
+ * so it can be rotated/mirrored without disturbing the grid. */
 ".gitem.sel{outline:3px solid #7fc98b;outline-offset:-3px}"
 ".glabel{position:absolute;top:6px;left:6px;background:rgba(20,40,28,.82);color:#7fc98b;"
 "font-size:.66rem;padding:2px 6px;border-radius:4px;max-width:82%;white-space:nowrap;"
@@ -479,10 +502,23 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='livep' class='pane on'>"
 "<div class='rotbar'><label class='sts' style='margin:0'>Rotation</label>"
-"<select id='lvRot' onchange='lvRotChange()'>"
-"<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
-"<option value='2'>180&deg;</option><option value='3'>270&deg;</option>"
-"</select></div>"
+"<input type='range' id='lvRot' min='0' max='359' step='1' style='flex:1;min-width:90px'"
+" oninput='lvRotDrag()' onchange='lvRotCommit()'>"
+"<input type='number' id='lvRotN' min='0' max='359' step='1' style='width:5.5em'"
+" oninput='lvRotNum()' onchange='lvRotCommit()'>"
+"<span class='sts' style='margin:0'>&deg;</span>"
+/* Quarter-turn shortcuts: arbitrary angles are the point of the slider, but
+ * 90/180/270 are still the common cases and hitting them exactly by dragging
+ * is fiddly. */
+"<button class='act' style='margin:0;padding:2px 7px' title='rotate 90&deg; left'"
+" onclick='lvRotStep(-90)'>&#8634;</button>"
+"<button class='act' style='margin:0;padding:2px 7px' title='rotate 90&deg; right'"
+" onclick='lvRotStep(90)'>&#8635;</button>"
+"<label class='sts' style='margin:0'><input type='checkbox' id='lvMirH'"
+" onchange='lvRotCommit()'> Mirror &#8596;</label>"
+"<label class='sts' style='margin:0'><input type='checkbox' id='lvMirV'"
+" onchange='lvRotCommit()'> Mirror &#8597;</label>"
+"</div>"
 "<div class='liveWrap' id='liveWrap'>"
 "<div class='detbadge' id='detbadge'><span class='dot'></span>DETECTING</div>"
 "<div class='clsbadge' id='clsbadge'><span class='dot'></span>CLASSIFYING</div>"
@@ -708,10 +744,10 @@ static const char INDEX_HTML[] =
 "<option value='0'>0 (default)</option><option value='1'>+1</option>"
 "<option value='2'>+2 (brighter)</option></select>"
 "<label class='wl'>Image rotation (correct mount vs. subject)<span class='inf' onclick='sInfo(\"rot\")'>i</span></label>"
-"<select class='wi' id='stRot'>"
-"<option value='0'>0&deg;</option><option value='1'>90&deg;</option>"
-"<option value='2'>180&deg;</option><option value='3'>270&deg;</option>"
-"</select>"
+"<input class='wi' type='number' id='stRot' min='0' max='359' step='1'>"
+"<label class='wl'><input type='checkbox' id='stMirH'> Mirror horizontally"
+"<span class='inf' onclick='sInfo(\"mir\")'>i</span></label>"
+"<label class='wl'><input type='checkbox' id='stMirV'> Mirror vertically</label>"
 "<h3 class='sh'>System</h3>"
 "<label class='wl'>Timezone<span class='inf' onclick='sInfo(\"tz\")'>i</span></label>"
 "<select class='wi' id='stTz'>"
@@ -992,14 +1028,51 @@ static const char INDEX_HTML[] =
 "setTime();"
 "function snap(){setTime(function(){fetch('/api/capture',{method:'POST'}).then(r=>r.json())"
 ".then(o=>{alert(o.path?('Saved '+o.path):JSON.stringify(o));}).catch(()=>alert('failed'));});}"
-"function applyRot(v){v=String(v);var w=$g('liveWrap'),l=$g('live');"
-"w.classList.remove('r1','r3');l.classList.remove('r1','r3');"
-"if(v==='1'){w.classList.add('r1');l.classList.add('r1');}"
-"if(v==='3'){w.classList.add('r3');l.classList.add('r3');}}"
-"function lvRotChange(){var v=$g('lvRot').value;applyRot(v);"
-"if($g('stRot'))$g('stRot').value=v;"
+/* Scale needed for a w x h box, rotated by t, to still be fully covered by the
+ * image inside it — i.e. no black corners. The rotated frame's bounding box is
+ * (w|cos|+h|sin|) x (w|sin|+h|cos|); take whichever axis falls short. Exact at
+ * every angle, so 90 deg on the 4:3 live pane lands on 1.3333 by itself and
+ * matches what the old hardcoded r1/r3 classes did. */
+"function coverScale(t,w,h){if(!w||!h)return 1;"
+"var r=t*Math.PI/180,c=Math.abs(Math.cos(r)),s=Math.abs(Math.sin(r));"
+"return Math.max((w*c+h*s)/w,(w*s+h*c)/h);}"
+/* One transform for every image view. Writes CSS variables on <body>, so it
+ * also restyles thumbnails that are already on screen, with no re-render. */
+"function applyView(deg,mh,mv){"
+"deg=((+deg||0)%360+360)%360;"
+/* The sensor already did exactly 180 in hardware (hmirror+vflip) — rotating
+ * again here would cancel back to upright. Every other angle is ours. */
+"var css=(deg===180)?0:deg;"
+"var b=document.body.style;"
+"b.setProperty('--vrot',css+'deg');"
+"b.setProperty('--vmx',mh?-1:1);b.setProperty('--vmy',mv?-1:1);"
+"var w=$g('liveWrap');"
+"b.setProperty('--vscale',coverScale(css,w?w.clientWidth:16,w?w.clientHeight:12));"
+"b.setProperty('--gscale',coverScale(css,16,9));"
+"}"
+/* Kept as the name the rest of the UI already calls (settings load, tab sync). */
+"function applyRot(v){applyView(v,$g('lvMirH')&&$g('lvMirH').checked,"
+"$g('lvMirV')&&$g('lvMirV').checked);}"
+"function lvSyncView(){var d=+$g('lvRot').value||0;"
+"applyView(d,$g('lvMirH').checked,$g('lvMirV').checked);}"
+/* Dragging previews locally at every step but only POSTs on release — a slider
+ * fires oninput per pixel, and one settings write per pixel would hammer NVS. */
+"function lvRotDrag(){$g('lvRotN').value=$g('lvRot').value;lvSyncView();}"
+"function lvRotNum(){var d=((+$g('lvRotN').value||0)%360+360)%360;"
+"$g('lvRot').value=d;lvSyncView();}"
+"function lvRotStep(d){var v=((+$g('lvRot').value||0)+d+360)%360;"
+"$g('lvRot').value=v;$g('lvRotN').value=v;lvRotCommit();}"
+"function lvRotCommit(){var v=((+$g('lvRot').value||0)%360+360)%360;"
+"$g('lvRot').value=v;$g('lvRotN').value=v;"
+"var mh=$g('lvMirH').checked?1:0,mv=$g('lvMirV').checked?1:0;"
+"applyView(v,mh,mv);"
+"if($g('stRot')){$g('stRot').value=v;$g('stMirH').checked=!!mh;$g('stMirV').checked=!!mv;}"
 "fetch('/api/settings',{method:'POST',"
-"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'rot='+v});}"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+"body:'rot='+v+'&mirh='+mh+'&mirv='+mv});}"
+/* The live pane's cover factor depends on its rendered size, which changes with
+ * the viewport — recompute on resize or a rotated view develops black corners. */
+"addEventListener('resize',function(){if($g('lvRot'))lvSyncView();});"
 "var g_zone=[];"
 /* UI language (v2.72 Phase 1): g_settings.lang drives the WHOLE HMI, not just
  * species names. LANGC maps the lang enum to a column code in /i18n.txt
@@ -1029,7 +1102,9 @@ static const char INDEX_HTML[] =
 "if(e.placeholder&&g_i18n[e.placeholder])e.placeholder=g_i18n[e.placeholder];"
 "var ti=e.getAttribute('title');if(ti&&g_i18n[ti])e.setAttribute('title',g_i18n[ti]);});}"
 "function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
-"$g('lvRot').value=c.rot;applyRot(c.rot);"
+"$g('lvRot').value=c.rot;$g('lvRotN').value=c.rot;"
+"$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
+"applyView(c.rot,c.mirh,c.mirv);"
 "if(c.zone&&c.zone.length===64)g_zone=c.zone.split('').map(function(x){return x==='1';});"
 "if(g_zoneEditing)zoneBuild();"
 "if(c.lang!=null&&c.lang!==g_lang){g_lang=c.lang;i18nLoad(applyLang);}"
@@ -1617,10 +1692,17 @@ static const char INDEX_HTML[] =
 "ae:['Brightness (auto-exposure level)','Biases the camera&rsquo;s auto-exposure target darker or"
 " brighter. Applies immediately.',"
 "'0','-2 (darker) to +2 (brighter).'],"
-"rot:['Image rotation','0&deg;/180&deg; rotate the sensor itself and apply to the stream, saved"
-" photos and species ID. 90&deg;/270&deg; are not supported by this camera&rsquo;s hardware, so"
-" only the live view and species ID are corrected; saved photos keep the native orientation.',"
-"'0&deg;','90&deg;, 180&deg;, 270&deg;.'],"
+"rot:['Image rotation','Any angle from 0 to 359&deg;, for a camera that isn&rsquo;t mounted level"
+" &mdash; a 2&ndash;3&deg; correction is the usual case. This rotates <b>what you see</b>: the live"
+" view and the image thumbnails. <b>Saved photos keep the sensor&rsquo;s own orientation</b>, because"
+" turning a JPEG by an arbitrary angle means resampling it and losing quality. The one exception is"
+" exactly 180&deg;, which the camera does itself for free &mdash; at that angle the saved photos are"
+" rotated too. Species ID always reads the unrotated frame.',"
+"'0&deg;','0 to 359&deg;, plus horizontal and vertical mirroring.'],"
+"mir:['Mirroring','Flips the view left-right or top-bottom. Like rotation this is applied to the"
+" display only, so saved photos are untouched. Useful when the camera looks at the nest through a"
+" mirror, or is mounted facing back towards itself.',"
+"'off','Horizontal and vertical, independently.'],"
 "tz:['Timezone','POSIX timezone used for timestamps, day folders and daily stats; daylight-saving"
 " rules are included in each preset.',"
 "'Central Europe (Oslo/Berlin)','Presets for UK, Eastern Europe, UTC and US zones; a saved custom"
@@ -1674,7 +1756,10 @@ static const char INDEX_HTML[] =
 "$g('stGkey').placeholder=c.gkey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stGkeyClr').style.display=c.gkey_set?'':'none';"
 "$g('stGmodel').value=c.gmodel||'';"
-"$g('stRot').value=c.rot;$g('lvRot').value=c.rot;applyRot(c.rot);"
+"$g('stRot').value=c.rot;$g('lvRot').value=c.rot;$g('lvRotN').value=c.rot;"
+"$g('stMirH').checked=!!c.mirh;$g('stMirV').checked=!!c.mirv;"
+"$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
+"applyView(c.rot,c.mirh,c.mirv);"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
 "if(![...rs.options].some(o=>o.value==c.res)){var ro=document.createElement('option');"
@@ -1757,6 +1842,7 @@ static const char INDEX_HTML[] =
 "+'&rfilt='+$g('stRfilt').value"
 "+'&qual='+$g('stQual').value+'&ir='+$g('stIr').value"
 "+'&rot='+$g('stRot').value+'&res='+$g('stRes').value"
+"+'&mirh='+($g('stMirH').checked?1:0)+'&mirv='+($g('stMirV').checked?1:0)"
 "+'&contrast='+$g('stContrast').value+'&ael='+$g('stAe').value"
 "+'&sharp='+$g('stSharp').value+'&dn='+$g('stDen').value"
 "+'&fmode='+$g('stFocus').value+'&fpos='+$g('stFocusPos').value"
@@ -1787,7 +1873,9 @@ static const char INDEX_HTML[] =
 "$g('stGkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "if(o.ok&&$g('stIkey').value){$g('stIkey').value='';"
 "$g('stIkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
-"$g('lvRot').value=$g('stRot').value;applyRot($g('stRot').value);"
+"$g('lvRot').value=$g('stRot').value;$g('lvRotN').value=$g('stRot').value;"
+"$g('lvMirH').checked=$g('stMirH').checked;$g('lvMirV').checked=$g('stMirV').checked;"
+"applyView($g('stRot').value,$g('stMirH').checked,$g('stMirV').checked);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
 "if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
@@ -3520,7 +3608,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
      * never the passwords). */
     int n = snprintf(buf, sizeof(buf),
         "{\"mode\":%d,\"sens\":%u,\"ccnt\":%u,\"civl\":%u,\"cool\":%u,"
-        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,\"rfilt\":%u,"
+        "\"conf\":%u,\"cap\":%u,\"qual\":%u,\"ir\":%u,\"rot\":%u,"
+        "\"mirh\":%u,\"mirv\":%u,\"rfilt\":%u,"
         "\"res\":%u,\"resActive\":%d,\"resActiveStr\":\"%s\","
         "\"contrast\":%d,\"ae_level\":%d,"
         "\"sharpness\":%d,\"denoise\":%u,\"focus_mode\":%u,\"focus_pos\":%u,"
@@ -3542,7 +3631,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
-        g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rotation,
+        g_settings.stream_quality, g_settings.ir_led_mode, (unsigned) g_settings.rot_deg,
+        (unsigned) g_settings.mirror_h, (unsigned) g_settings.mirror_v,
         (unsigned) g_settings.region_filter,
         /* res = the standing request (what's in NVS); resActive = what the
          * camera actually came up at. They differ after a degraded boot, or
@@ -3695,7 +3785,12 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.sd_cap_pct          = field_num(body, "cap=",  50,  95,    g_settings.sd_cap_pct);
     g_settings.stream_quality      = field_num(body, "qual=", 5,   40,    g_settings.stream_quality);
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
-    g_settings.rotation  = (rotation_t) field_num(body, "rot=", 0,  3,    g_settings.rotation);
+    /* Free degrees since v2.83, not the old 0-3 quarter turns. Clamped rather
+     * than wrapped: a wrap would turn a fat-fingered 400 into 40, which reads
+     * as the box ignoring you. */
+    g_settings.rot_deg   = field_num(body, "rot=",  0, 359, g_settings.rot_deg);
+    g_settings.mirror_h  = field_num(body, "mirh=", 0, 1,   g_settings.mirror_h);
+    g_settings.mirror_v  = field_num(body, "mirv=", 0, 1,   g_settings.mirror_v);
     g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
     /* Upper bound is what the DETECTED sensor can do, not a constant: one
      * firmware serves an OV2640 (UXGA) and an OV5640 (QSXGA), and accepting a
@@ -3868,7 +3963,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     setenv("TZ", g_settings.timezone, 1);
     tzset();
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
-    camera_set_rotation(g_settings.rotation);        /* no-op without camera */
+    camera_set_rotation(g_settings.rot_deg);         /* no-op without camera */
     camera_set_contrast(g_settings.contrast);        /* no-op without camera */
     camera_set_ae_level(g_settings.ae_level);        /* no-op without camera */
     /* Sensor-gated: these return ESP_ERR_NOT_SUPPORTED on an OV2640 rather
@@ -3912,7 +4007,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     char buf[768];   /* v2.81 added sharp/dn/fmode/fpos, ~32 B */
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
-        "&rot=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
+        "&rot=%u&mirh=%u&mirv=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
         "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&region=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
         "&ondev=%u&inatcv=%u&loc=%s",
@@ -3920,7 +4015,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct, g_settings.stream_quality,
-        g_settings.ir_led_mode, (unsigned) g_settings.rotation,
+        g_settings.ir_led_mode, (unsigned) g_settings.rot_deg,
+        (unsigned) g_settings.mirror_h, (unsigned) g_settings.mirror_v,
         (unsigned) g_settings.region_filter, (unsigned) g_settings.resolution,
         (int) g_settings.contrast, (int) g_settings.ae_level,
         (int) g_settings.sharpness, (unsigned) g_settings.denoise,

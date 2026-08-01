@@ -271,7 +271,7 @@ static esp_err_t camera_hw_init(void)
              RES[idx].str);
     caps_probe(s);              /* before the setters below — they consult it */
     s_available = true;
-    camera_set_rotation(g_settings.rotation);   /* settings_load ran first */
+    camera_set_rotation(g_settings.rot_deg);    /* settings_load ran first */
     camera_set_contrast(g_settings.contrast);
     camera_set_ae_level(g_settings.ae_level);
     camera_set_sharpness(g_settings.sharpness); /* no-ops on a sensor without */
@@ -654,15 +654,22 @@ const char *camera_framesize_str(void)
 
 uint8_t camera_active_res(void) { return s_active_idx; }
 
-esp_err_t camera_set_rotation(rotation_t rot)
+esp_err_t camera_set_rotation(uint16_t deg)
 {
     if (!s_available) return ESP_ERR_INVALID_STATE;
     sensor_t *s = esp_camera_sensor_get();
     if (!s) return ESP_FAIL;
-    bool flip180 = (rot == ROTATE_180);
+    /* EXACTLY 180 is the only angle any OV sensor can do itself, as
+     * hmirror+vflip — free, lossless, and it fixes the stored JPEG too, not
+     * just the screen. Every other angle (including 90/270: no OV sensor
+     * rotates a quarter turn in hardware) is a browser-side transform on the
+     * live view and the image grids, so the file on the card keeps the sensor's
+     * own orientation. applyView() must therefore skip the CSS rotation at 180
+     * or it would be applied twice. */
+    bool flip180 = (deg == 180);
     s->set_hmirror(s, flip180);
     s->set_vflip(s, flip180);
-    ESP_LOGI(TAG, "rotation %u deg requested; sensor set to %u deg (90/270 handled in software)",
-             rot * 90, flip180 ? 180 : 0);
+    ESP_LOGI(TAG, "view rotation %u deg — sensor applies %s, the rest is display-side",
+             (unsigned) deg, flip180 ? "180" : "nothing");
     return ESP_OK;
 }

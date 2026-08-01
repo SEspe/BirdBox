@@ -158,6 +158,8 @@ Brightness (auto-exposure level)	Lysstyrke (autoeksponering)
 -2 (darker)	-2 (mørkere)
 +2 (brighter)	+2 (lysere)
 Image rotation (correct mount vs. subject)	Bilderotasjon (korriger montering mot motiv)
+Mirror horizontally	Speil vannrett
+Mirror vertically	Speil loddrett
 Timezone	Tidssone
 Central Europe (Oslo/Berlin)	Sentral-Europa (Oslo/Berlin)
 UK / Ireland	Storbritannia / Irland
@@ -366,9 +368,13 @@ optional	valgfritt
 @sinfo:ae:def	0
 @sinfo:ae:alt	-2 (mørkere) til +2 (lysere).
 @sinfo:rot:t	Bilderotasjon
-@sinfo:rot:d	0°/180° roterer selve sensoren og gjelder strøm, lagrede bilder og arts-ID. 90°/270° støttes ikke av kameraets maskinvare, så bare direktevisningen og arts-ID korrigeres; lagrede bilder beholder original retning.
+@sinfo:rot:d	Hvilken som helst vinkel fra 0 til 359°, for et kamera som ikke er montert i vater — 2–3° korreksjon er det vanlige. Dette roterer <b>det du ser</b>: direktevisningen og miniatyrbildene. <b>Lagrede bilder beholder sensorens egen retning</b>, fordi å dreie en JPEG en vilkårlig vinkel betyr resampling og tap av kvalitet. Eneste unntak er nøyaktig 180°, som kameraet gjør selv gratis — ved den vinkelen roteres lagrede bilder også. Arts-ID leser alltid det uroterte bildet.
 @sinfo:rot:def	0°
-@sinfo:rot:alt	90°, 180°, 270°.
+@sinfo:rot:alt	0 til 359°, pluss speiling vannrett og loddrett.
+@sinfo:mir:t	Speiling
+@sinfo:mir:d	Vender visningen venstre-høyre eller opp-ned. Som rotasjon gjelder dette bare visningen, så lagrede bilder er urørt. Nyttig når kameraet ser inn i redet via et speil, eller er montert vendt tilbake mot seg selv.
+@sinfo:mir:def	av
+@sinfo:mir:alt	Vannrett og loddrett, uavhengig av hverandre.
 @sinfo:tz:t	Tidssone
 @sinfo:tz:d	POSIX-tidssone brukt for tidsstempler, dagmapper og daglig statistikk; sommertidsregler er inkludert i hvert forvalg.
 @sinfo:tz:def	Sentral-Europa (Oslo/Berlin)

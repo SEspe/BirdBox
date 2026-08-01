@@ -19,6 +19,21 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
         else bootloader-level (flash mode, PSRAM mode, partition layout) has to wait for
         physical access.
 
+## View rotation / mirroring (added 2026-08-01, 0.74.49)
+- [ ] **The `s_rot` → `s_rotd` migration only ran its degenerate case.** Both units were at
+      rotation 0, so the fallback branch executed and correctly produced 0°, but the `× 90`
+      conversion never had a non-zero input on real hardware. Check any box that was set to
+      90/180/270 before upgrading past 0.74.49.
+- [ ] **Species ID still reads the UNROTATED frame.** Fine for a 2-3° levelling tweak; if a
+      camera ends up genuinely mounted at 90°, iNat sees a sideways bird. Fixing it means a
+      full-frame decode + JPEG re-encode per event — the same trade already declined for
+      captures, but it's one frame per event there, not five, so it's cheaper than it looks.
+- [ ] Saved JPEGs keep the sensor orientation at every angle **except exactly 180°**, which
+      the sensor does itself. Deliberate (operator's call), but it means the training
+      pipeline and Windows Photos see un-levelled images. EXIF Orientation would fix the
+      quarter turns cheaply if that ever matters — note PIL ignores EXIF unless train.py
+      calls `ImageOps.exif_transpose`.
+
 ## Camera / sensor support (added 2026-08-01, 0.74.47-0.74.48)
 - [ ] **`camera_af_error()`'s "AF firmware timed out (no VCM lens?)" branch is dead code.**
       `ov5640_af_init` collapses every failure to `-1` and `esp_camera_af_init` flattens

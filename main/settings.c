@@ -19,7 +19,9 @@ settings_t g_settings = {
     .sd_cap_pct         = 80,
     .stream_quality     = 12,
     .ir_led_mode        = 0,
-    .rotation           = ROTATE_0,
+    .rot_deg            = 0,
+    .mirror_h           = 0,
+    .mirror_v           = 0,
     .region_filter      = 0,
     .resolution         = 3,   /* HD 1280x720 — matches camera.c RES table index.
                                 * ROI-crop makes classification aspect-independent,
@@ -79,7 +81,21 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_cap",  &u8)  == ESP_OK) g_settings.sd_cap_pct = u8;
     if (nvs_get_u8 (h, "s_qual", &u8)  == ESP_OK) g_settings.stream_quality = u8;
     if (nvs_get_u8 (h, "s_ir",   &u8)  == ESP_OK) g_settings.ir_led_mode = u8;
-    if (nvs_get_u8 (h, "s_rot",  &u8)  == ESP_OK) g_settings.rotation = (rotation_t) u8;
+    /* Rotation migration (v2.83). The old key `s_rot` held a quarter-turn enum
+     * 0-3; the new `s_rotd` holds degrees 0-359. They cannot share a key —
+     * a stored 3 would be 270 deg under the old meaning and 3 deg under the
+     * new. So: prefer s_rotd, and fall back to s_rot x 90 exactly once, on a
+     * box that has never saved since upgrading. The first save writes s_rotd
+     * and this fallback stops mattering. */
+    if (nvs_get_u16(h, "s_rotd", &u16) == ESP_OK) {
+        g_settings.rot_deg = u16 % 360;
+    } else if (nvs_get_u8(h, "s_rot", &u8) == ESP_OK && u8 < 4) {
+        g_settings.rot_deg = (uint16_t) u8 * 90;
+        ESP_LOGI(TAG, "migrated stored rotation %u (quarter turns) -> %u deg",
+                 (unsigned) u8, (unsigned) g_settings.rot_deg);
+    }
+    if (nvs_get_u8 (h, "s_mirh", &u8)  == ESP_OK) g_settings.mirror_h = u8 ? 1 : 0;
+    if (nvs_get_u8 (h, "s_mirv", &u8)  == ESP_OK) g_settings.mirror_v = u8 ? 1 : 0;
     if (nvs_get_u8 (h, "s_rfilt",&u8)  == ESP_OK) g_settings.region_filter = u8;
     if (nvs_get_u8 (h, "s_res",  &u8)  == ESP_OK) g_settings.resolution = u8;
     int8_t i8;
@@ -153,7 +169,9 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_cap",  g_settings.sd_cap_pct);
     nvs_set_u8 (h, "s_qual", g_settings.stream_quality);
     nvs_set_u8 (h, "s_ir",   g_settings.ir_led_mode);
-    nvs_set_u8 (h, "s_rot",  (uint8_t) g_settings.rotation);
+    nvs_set_u16(h, "s_rotd", g_settings.rot_deg);
+    nvs_set_u8 (h, "s_mirh", g_settings.mirror_h);
+    nvs_set_u8 (h, "s_mirv", g_settings.mirror_v);
     nvs_set_u8 (h, "s_rfilt", g_settings.region_filter);
     nvs_set_u8 (h, "s_res",  g_settings.resolution);
     nvs_set_i8 (h, "s_ctr",  g_settings.contrast);

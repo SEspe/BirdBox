@@ -71,11 +71,16 @@ const char *camera_framesize_str(void);
  * box degraded at boot and a reboot would retry the request. */
 uint8_t camera_active_res(void);
 
-/* Applies 0/180 rotation at the sensor (hmirror+vflip, free — fixes the
- * live stream, SD captures, and classifier input all at once). 90/270 aren't
- * supported by the OV2640 in hardware, so this leaves the sensor unrotated
- * for those angles; classify.cpp and the web UI correct 90/270 themselves. */
-esp_err_t camera_set_rotation(rotation_t rot);
+/* Applies the sensor's share of the view rotation (FSD §5). EXACTLY 180 deg is
+ * done in hardware as hmirror+vflip — free, lossless, and it corrects the SD
+ * captures and the classifier input as well as the screen. No OV sensor can
+ * rotate by any other angle (not even 90/270), so every other value leaves the
+ * sensor unrotated and is corrected browser-side on the live view and the image
+ * grids only; the JPEG on the card keeps the sensor's orientation.
+ *
+ * The web UI must therefore skip its own rotation at exactly 180, or it would
+ * be applied twice — see applyView() in web_server.c. */
+esp_err_t camera_set_rotation(uint16_t deg);
 
 /* Sensor PID for the Debug card (FSD §5); 0 when no camera. */
 int camera_get_pid(void);

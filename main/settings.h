@@ -7,10 +7,9 @@
 
 typedef enum { MODE_NESTBOX = 0, MODE_FEEDER = 1 } placement_mode_t;
 typedef enum { LANG_EN = 0, LANG_NO = 1 } species_lang_t;
-/* Mount-correction rotation (FSD §5). 0/180 are applied at the sensor
- * (OV2640 hmirror+vflip, free); 90/270 aren't supported in OV2640 hardware,
- * so those are corrected in software per-consumer instead (see camera.c and
- * classify.cpp). */
+/* Legacy quarter-turn rotation. Kept ONLY so the v2.83 NVS migration can read
+ * the old `s_rot` values (0-3) it is stored as on every deployed box; nothing
+ * new should use it. Superseded by settings_t.rot_deg, which is free degrees. */
 typedef enum { ROTATE_0 = 0, ROTATE_90 = 1, ROTATE_180 = 2, ROTATE_270 = 3 } rotation_t;
 /* Autofocus mode (FSD §5), OV5640-class sensors with a VCM lens only. OFF is
  * the default and also what every fixed-focus module gets: it skips the AF
@@ -27,7 +26,29 @@ typedef struct {
     uint8_t  sd_cap_pct;            /* retention cap, default 80 */
     uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
     uint8_t  ir_led_mode;           /* 0 off, 1 auto */
-    rotation_t rotation;            /* mount-correction rotation, default ROTATE_0 */
+    /* ── View transform (FSD §5, v2.83) ────────────────────────────────────
+     * Mount correction for a camera that isn't level or is facing the "wrong"
+     * way. This is a DISPLAY transform: the live view and the image grids are
+     * corrected in the browser, and the JPEGs written to the SD card are left
+     * exactly as the sensor produced them (operator's call — a non-quarter
+     * angle cannot be applied to a JPEG without resampling it, and quarter
+     * turns were not worth a re-encode either).
+     *
+     * The single exception is EXACTLY 180 deg, which the sensor does for free
+     * and losslessly via hmirror+vflip. That predates this field and stored
+     * captures already depend on it, so it stays at the sensor and the display
+     * must NOT rotate again on top (see camera_set_rotation / applyView). */
+    uint16_t rot_deg;               /* 0-359, any angle. default 0. Migrated
+                                       once from the old 0-3 quarter-turn enum
+                                       (s_rot) into the new NVS key s_rotd —
+                                       a bare 0-3 is ambiguous between the two
+                                       meanings, hence the separate key */
+    uint8_t  mirror_h;              /* 1 = flip the view left-right, display-side.
+                                       Corrects a camera shooting through a
+                                       mirror/prism or mounted facing back at
+                                       itself. default 0 */
+    uint8_t  mirror_v;              /* 1 = flip the view top-bottom, display-side.
+                                       default 0 */
     uint8_t  region_filter;         /* 0 = global model as-is, 1 = restrict IDs to
                                        the Northern-European species set (FSD §3.2.1),
                                        default 0 */
