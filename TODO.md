@@ -10,10 +10,14 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
   - [x] ~~Verify the Boya reference unit on QIO~~ — `192.168.1.111` **serially reflashed**
         over COM12 and healthy. NVS + SD survived; the visit log is intact.
   - [x] ~~`flashMode` reports `"dio"` on a QIO build~~ — now reports the Kconfig booleans.
-  - [ ] Re-test the second "dead" board (`28:84:85:65:68:f4`, currently running stock
-        `hello_world`) with a QIO build. Likely recoverable too.
-  - [ ] **`.199` is still on a DIO-era bootloader** (OTA can't replace it). It boots fine,
-        but re-flash it over cable before trusting it as a QIO reference.
+  - [x] ~~`.199` bootloader~~ — already QIO: it is the board that boot-loops under DIO, so
+        the QIO bootloader written during the A/B is the only reason it runs. Both units
+        are genuinely on QIO.
+  - [ ] **BLOCKED (needs a cable):** re-test the second "dead" board
+        (`28:84:85:65:68:f4`, still on stock `hello_world`) with a QIO build. Likely
+        recoverable. **Both live units are network/OTA-only now**, so this and anything
+        else bootloader-level (flash mode, PSRAM mode, partition layout) has to wait for
+        physical access.
 
 ## Camera / sensor support (added 2026-08-01, 0.74.47-0.74.48)
 - [ ] **`camera_af_error()`'s "AF firmware timed out (no VCM lens?)" branch is dead code.**
