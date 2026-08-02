@@ -50,7 +50,13 @@ extern const char inat_roots_pem[] asm("_binary_inat_roots_pem_start");
 #define INAT_UA        "BirdBox/" FIRMWARE_VERSION " (ESP32 nest-box camera)"
 #define INAT_BOUNDARY  "----BirdBoxCVb0undaryX9f2"
 
-#define INAT_MAX_JPEG  (300 * 1024)
+/* Two different caps (v2.84). INAT_MAX_JPEG is what we're willing to POST;
+ * anything larger is downscaled by cu_fit_jpeg instead of being rejected.
+ * INAT_MAX_SOURCE is what we're willing to load and shrink — big enough for a
+ * QSXGA OV5640 frame at the best quality setting with margin, small enough that
+ * a corrupt length can't ask for an absurd PSRAM buffer. */
+#define INAT_MAX_JPEG    (300 * 1024)
+#define INAT_MAX_SOURCE  (2 * 1024 * 1024)
 #define INAT_RESP_MAX  32768    /* CV replies are large (each result carries the
                                    taxon + its ancestors). We now walk several
                                    results for the region filter (v2.28), not just
@@ -157,14 +163,15 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         s_jwt_stale = false;
     }
     if (!inat_have_token()) { fail("no iNaturalist token"); return ESP_ERR_INVALID_STATE; }
-    if (!jpeg || len == 0 || len > INAT_MAX_JPEG) {
+    if (!jpeg || len == 0 || len > INAT_MAX_SOURCE) {
         fail("bad or oversized JPEG (%u B)", (unsigned) len);
         return ESP_ERR_INVALID_ARG;
     }
 
     /* Rate-limit cooldown: if a recent 429 put us in the sin bin, skip the call
      * entirely (don't hammer a throttled endpoint) — the event falls through to
-     * the next tier / Unidentified. */
+     * the next tier / Unidentified. Checked BEFORE the shrink below: no point
+     * paying for a decode + re-encode on a call we're not going to make. */
     int cd = inat_cooldown_s();
     if (cd > 0) {
         fail("iNaturalist rate-limit cooldown — %d s left", cd);
@@ -177,9 +184,27 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         vTaskDelay(pdMS_TO_TICKS((INAT_MIN_GAP_US - gap) / 1000));
     s_last_req_us = esp_timer_get_time();
 
+    /* Over the upload cap (a 5 MP OV5640 frame at quality 8 is ~450 KB): re-encode
+     * smaller rather than dropping the event. score_image resizes every upload to
+     * ~299² at the far end, so this costs no accuracy and saves upload time.
+     * `fit` owns the shrunken copy from here to `done:`. */
+    uint8_t *fit = NULL;
+    if (len > INAT_MAX_JPEG) {
+        size_t fl = 0;
+        if (cu_fit_jpeg(jpeg, len, INAT_MAX_JPEG, &fit, &fl) != ESP_OK) {
+            fail("cannot shrink JPEG to fit (%u B)", (unsigned) len);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        jpeg = fit;
+        len  = fl;
+    }
+
     char *resp = heap_caps_malloc(INAT_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     char *auth = heap_caps_malloc(900, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!resp || !auth) { free(resp); free(auth); fail("out of memory"); return ESP_ERR_NO_MEM; }
+    if (!resp || !auth) {
+        free(resp); free(auth); free(fit);
+        fail("out of memory"); return ESP_ERR_NO_MEM;
+    }
     bearer(auth, 900);
 
     char pre[400];
@@ -347,6 +372,7 @@ done:
     esp_http_client_cleanup(c);
     free(resp);
     free(auth);
+    free(fit);
     if (ret != ESP_OK) s_last_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
     return ret;
 }
@@ -358,7 +384,9 @@ esp_err_t inat_classify_file(const char *fs_path, classify_result_t *out)
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > INAT_MAX_JPEG) {
+    /* Read up to the SOURCE cap — inat_classify_jpeg shrinks anything over the
+     * upload cap itself, so a 5 MP capture identifies from the Gallery too. */
+    if (sz <= 0 || sz > INAT_MAX_SOURCE) {
         fclose(f);
         fail("bad or oversized JPEG (%ld B)", sz);
         return ESP_ERR_INVALID_SIZE;

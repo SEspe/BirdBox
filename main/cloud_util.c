@@ -13,6 +13,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
+#include "jpeg_decoder.h"     /* esp_jpeg — scaled decode of an oversized frame  */
+#include "img_converters.h"   /* fmt2jpg  — re-encode it small enough to upload  */
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -20,10 +22,21 @@
 #include <errno.h>
 #include <unistd.h>
 
+static const char *TAG = "cloud_util";
+
 #define B64_CHUNK_IN   3072            /* multiple of 3 => only the final chunk
                                           pads, so the stream is a valid single
                                           base64 document */
 #define B64_CHUNK_OUT  (B64_CHUNK_IN / 3 * 4 + 4)
+
+/* RGB888 budget for the shrink decode (cu_fit_jpeg). Same 1.5 MB as classify.cpp's
+ * CLS_DECODE_MAX and for the same reason: PSRAM is roomy but this runs while a TLS
+ * handshake is about to allocate, so don't take 3-4 MB for a picture nobody keeps.
+ * 1.5 MB lets a 5 MP frame land at 640x480 (1/4 scale). */
+#define CU_FIT_RGB_MAX  (1536 * 1024)
+/* Don't shrink past this on the long side. Well above what the models actually
+ * consume (iNat ~299², cloud vision ~1 MP), so the extra margin is free. */
+#define CU_FIT_MIN_SIDE 480
 
 const char *cu_json_seek(const char *j, const char *key)
 {
@@ -236,6 +249,74 @@ void cu_retry_backoff(int attempt)
      * stray high `attempt` can't overflow into a multi-minute sleep. */
     if (attempt > 3) attempt = 3;   /* cap at 16 s */
     vTaskDelay(pdMS_TO_TICKS(2000 << attempt));
+}
+
+esp_err_t cu_fit_jpeg(const uint8_t *jpeg, size_t len, size_t max_len,
+                      uint8_t **out_jpg, size_t *out_len)
+{
+    if (!jpeg || !len || !max_len || !out_jpg || !out_len) return ESP_ERR_INVALID_ARG;
+    *out_jpg = NULL;
+    *out_len = 0;
+
+    esp_jpeg_image_cfg_t cfg = { 0 };
+    cfg.indata      = (uint8_t *) jpeg;
+    cfg.indata_size = len;
+    cfg.out_format  = JPEG_IMAGE_FORMAT_RGB888;
+    esp_jpeg_image_output_t info = { 0 };
+    if (esp_jpeg_get_image_info(&cfg, &info) != ESP_OK || !info.width || !info.height) {
+        ESP_LOGW(TAG, "fit: not a decodable baseline JPEG (%u B)", (unsigned) len);
+        return ESP_FAIL;
+    }
+
+    /* esp_jpeg scales by 1/1, 1/2, 1/4, 1/8. Take the coarsest that fits the RGB
+     * budget, but stop before the long side drops under CU_FIT_MIN_SIDE — a frame
+     * small enough to need that is small enough to have fit in the first place. */
+    int scale = 0, w = info.width, h = info.height;
+    while (scale < 3 && (size_t) w * h * 3 > CU_FIT_RGB_MAX &&
+           (w > h ? w : h) / 2 >= CU_FIT_MIN_SIDE) {
+        w >>= 1; h >>= 1; scale++;
+    }
+    if ((size_t) w * h * 3 > CU_FIT_RGB_MAX) {
+        ESP_LOGW(TAG, "fit: %dx%d won't decode inside %d KB",
+                 info.width, info.height, CU_FIT_RGB_MAX / 1024);
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t   rgb_sz = (size_t) w * h * 3 + 16;
+    uint8_t *rgb = heap_caps_malloc(rgb_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb) return ESP_ERR_NO_MEM;
+    cfg.outbuf      = rgb;
+    cfg.outbuf_size = rgb_sz;
+    cfg.out_scale   = (esp_jpeg_image_scale_t) scale;
+    esp_jpeg_image_output_t out = { 0 };
+    if (esp_jpeg_decode(&cfg, &out) != ESP_OK) { free(rgb); return ESP_FAIL; }
+    w = out.width; h = out.height;
+
+    /* Quality ladder: a 640x480 re-encode at 85 is ~60 KB, so the first rung
+     * almost always lands. The lower rungs only matter for a big busy frame that
+     * couldn't be scaled down further. */
+    static const uint8_t Q[] = { 85, 70, 55 };
+    esp_err_t ret = ESP_FAIL;
+    for (unsigned i = 0; i < sizeof(Q) / sizeof(Q[0]); i++) {
+        uint8_t *jb = NULL; size_t jl = 0;
+        if (!fmt2jpg(rgb, (size_t) w * h * 3, w, h, PIXFORMAT_RGB888, Q[i], &jb, &jl))
+            break;                       /* encoder failed outright, no point retrying */
+        if (jl <= max_len) {
+            *out_jpg = jb;
+            *out_len = jl;
+            ret = ESP_OK;
+            ESP_LOGI(TAG, "fit: %dx%d %u KB -> %dx%d q%u %u KB",
+                     info.width, info.height, (unsigned) (len / 1024),
+                     w, h, Q[i], (unsigned) (jl / 1024));
+            break;
+        }
+        free(jb);
+    }
+    free(rgb);
+    if (ret != ESP_OK)
+        ESP_LOGW(TAG, "fit: %dx%d wouldn't encode under %u KB",
+                 w, h, (unsigned) (max_len / 1024));
+    return ret;
 }
 
 bool cu_stream_b64(esp_http_client_handle_t c, const uint8_t *data, size_t len)

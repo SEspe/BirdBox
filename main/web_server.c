@@ -4656,7 +4656,13 @@ static esp_err_t ident_dispatch(httpd_req_t *req, ident_kind_t kind,
  * classifier is verified end-to-end. The body is received here (network-bound,
  * ~1 s) then handed to the identify worker for the slow decode + inference, so
  * the httpd task isn't held for the inference. */
-#define CLASSIFY_MAX_BODY (300 * 1024)
+/* Biggest image any identify path will LOAD, not the biggest it will upload.
+ * This used to be 300 KB to match the providers' upload caps, which meant a 5 MP
+ * OV5640 frame (~450 KB at quality 8) was rejected here before a classifier ever
+ * saw it. The providers now downscale anything over their own cap (cu_fit_jpeg),
+ * so the only job left for this bound is keeping a bogus Content-Length from
+ * asking for an absurd PSRAM buffer. (v2.84) */
+#define CLASSIFY_MAX_BODY (2 * 1024 * 1024)
 static esp_err_t h_classify_run(httpd_req_t *req)
 {
     if (!classify_available()) {

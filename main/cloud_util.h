@@ -84,6 +84,26 @@ bool  cu_write(esp_http_client_handle_t c, const char *b, size_t n);
  * image. false on encode/transport error. */
 bool  cu_stream_b64(esp_http_client_handle_t c, const uint8_t *data, size_t len);
 
+/* Shrink an oversized JPEG so it fits an online classifier's upload cap.
+ *
+ * Every provider here caps the image it will POST (300 KB): a 5 MP OV5640 frame
+ * at quality 8 is ~450 KB and used to be rejected outright ("bad or oversized
+ * JPEG"), which killed classification for anything above UXGA. Downscaling costs
+ * nothing in accuracy — iNat's score_image resizes every upload to ~299² and the
+ * cloud vision models to ~1 MP — so a frame that doesn't fit is re-encoded
+ * smaller instead of dropped.
+ *
+ * Decodes at the coarsest esp_jpeg scale that still clears CU_FIT_MIN_SIDE, then
+ * re-encodes, stepping quality down until the result fits `max_len`. Baseline
+ * JPEG only (esp_jpeg's limit) — the camera's output is baseline.
+ *
+ * `*out_jpg` is set to a PSRAM buffer the CALLER FREES. Returns ESP_ERR_NO_MEM /
+ * ESP_FAIL if it can't be decoded or can't be squeezed under the cap; the caller
+ * then fails the call as before. Never called for an image that already fits —
+ * check `len > max_len` first. */
+esp_err_t cu_fit_jpeg(const uint8_t *jpeg, size_t len, size_t max_len,
+                      uint8_t **out_jpg, size_t *out_len);
+
 /* True for HTTP statuses worth retrying: 429 (rate limit — Gemini's free tier is
  * 10 RPM, a window that clears within a minute) and the 5xx a busy provider
  * returns under load (500/502/503/504 — e.g. Gemini's "high demand" 503). A 4xx

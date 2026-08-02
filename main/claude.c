@@ -53,7 +53,9 @@ static const char *TAG = "claude";
 #define CLAUDE_MODEL     "claude-opus-4-8"
 #define CLAUDE_API_VER   "2023-06-01"
 
-#define CLAUDE_MAX_JPEG   (300 * 1024)   /* matches CLASSIFY_MAX_BODY */
+#define CLAUDE_MAX_JPEG   (300 * 1024)   /* upload cap; bigger frames are shrunk
+                                            by cu_fit_jpeg, not rejected (v2.84) */
+#define CLAUDE_MAX_SOURCE (2 * 1024 * 1024)  /* biggest frame we'll load to shrink */
 #define CLAUDE_RESP_MAX   4096           /* schema'd reply is ~120 B; the slack
                                             is for API error bodies */
 
@@ -215,9 +217,23 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
         fail("no Claude API key");
         return ESP_ERR_INVALID_STATE;
     }
-    if (!jpeg || len == 0 || len > CLAUDE_MAX_JPEG) {
+    if (!jpeg || len == 0 || len > CLAUDE_MAX_SOURCE) {
         fail("bad or oversized JPEG (%u B)", (unsigned) len);
         return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Over the upload cap (a 5 MP OV5640 frame is ~450 KB): downscale rather than
+     * reject. The vision model resizes to ~1 MP anyway, and base64 makes every
+     * extra byte cost 4/3 on the wire. `fit` lives until `done:`. */
+    uint8_t *fit = NULL;
+    if (len > CLAUDE_MAX_JPEG) {
+        size_t fl = 0;
+        if (cu_fit_jpeg(jpeg, len, CLAUDE_MAX_JPEG, &fit, &fl) != ESP_OK) {
+            fail("cannot shrink JPEG to fit (%u B)", (unsigned) len);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        jpeg = fit;
+        len  = fl;
     }
 
     char prefix[3200];
@@ -225,6 +241,7 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
 
     char *resp = heap_caps_malloc(CLAUDE_RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp) {
+        free(fit);
         fail("out of memory");
         return ESP_ERR_NO_MEM;
     }
@@ -286,6 +303,7 @@ esp_err_t claude_classify_jpeg(const uint8_t *jpeg, size_t len,
 
 done:
     free(resp);
+    free(fit);
     if (ret != ESP_OK) s_last_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
     return ret;
 }
@@ -402,7 +420,7 @@ esp_err_t claude_classify_file(const char *fs_path, classify_result_t *out)
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > CLAUDE_MAX_JPEG) {
+    if (sz <= 0 || sz > CLAUDE_MAX_SOURCE) {
         fclose(f);
         fail("bad or oversized JPEG (%ld B)", sz);
         return ESP_ERR_INVALID_SIZE;
