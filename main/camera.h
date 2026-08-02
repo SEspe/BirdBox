@@ -71,16 +71,22 @@ const char *camera_framesize_str(void);
  * box degraded at boot and a reboot would retry the request. */
 uint8_t camera_active_res(void);
 
-/* Applies the sensor's share of the view rotation (FSD §5). EXACTLY 180 deg is
- * done in hardware as hmirror+vflip — free, lossless, and it corrects the SD
- * captures and the classifier input as well as the screen. No OV sensor can
- * rotate by any other angle (not even 90/270), so every other value leaves the
- * sensor unrotated and is corrected browser-side on the live view and the image
- * grids only; the JPEG on the card keeps the sensor's orientation.
+/* Applies the sensor's share of the view transform (FSD §5): BOTH mirrors and
+ * exactly 180 deg of rotation, all of which the sensor does for free as
+ * hmirror/vflip — lossless, and it corrects the SD captures and the classifier
+ * input, not just the screen.
  *
- * The web UI must therefore skip its own rotation at exactly 180, or it would
- * be applied twice — see applyView() in web_server.c. */
-esp_err_t camera_set_rotation(uint16_t deg);
+ * 180 deg IS both mirrors, so rotation and mirroring compose by XOR: at 180 a
+ * requested mirror cancels that axis instead of adding to it. Hence one call
+ * taking all three, rather than separate rotation and mirror setters that would
+ * fight over the same two registers.
+ *
+ * No OV sensor can rotate a quarter turn, so 90/270 is the only part left to
+ * the browser (live view and image grids); at those angles the JPEG on the card
+ * keeps the sensor's orientation. The web UI must skip its own rotation at
+ * exactly 180 or it would be applied twice — see applyView() in web_server.c.
+ * Since v2.89 the UI does NOT mirror at all; this owns it. */
+esp_err_t camera_set_view(uint16_t deg, bool mirror_h, bool mirror_v);
 
 /* Sensor PID for the Debug card (FSD §5); 0 when no camera. */
 int camera_get_pid(void);

@@ -26,18 +26,23 @@ typedef struct {
     uint8_t  sd_cap_pct;            /* retention cap, default 80 */
     uint8_t  stream_quality;        /* sensor JPEG quality, lower = better */
     uint8_t  ir_led_mode;           /* 0 off, 1 auto */
-    /* ── View transform (FSD §5, v2.83) ────────────────────────────────────
-     * Mount correction for a camera that isn't level or is facing the "wrong"
-     * way. This is a DISPLAY transform: the live view and the image grids are
-     * corrected in the browser, and the JPEGs written to the SD card are left
-     * exactly as the sensor produced them (operator's call — a non-quarter
-     * angle cannot be applied to a JPEG without resampling it, and quarter
-     * turns were not worth a re-encode either).
+    /* ── View transform (FSD §5, v2.83; split at the sensor line in v2.89) ──
+     * Mount correction for a camera that is sideways, upside down, or shooting
+     * through a mirror. Where each piece is applied matters, because only the
+     * sensor's share reaches the stored JPEG and the classifier:
      *
-     * The single exception is EXACTLY 180 deg, which the sensor does for free
-     * and losslessly via hmirror+vflip. That predates this field and stored
-     * captures already depend on it, so it stays at the sensor and the display
-     * must NOT rotate again on top (see camera_set_rotation / applyView). */
+     *   SENSOR (free, lossless, fixes the file AND species ID):
+     *     both mirrors, and exactly 180 deg — because 180 IS both mirrors.
+     *     They compose by XOR, so at 180 a requested mirror cancels that axis.
+     *     See camera_set_view().
+     *
+     *   BROWSER (live view + image grids only; the card keeps sensor
+     *     orientation): 90 and 270, which no OV sensor can do in hardware.
+     *     applyView() must skip its rotation at 180 or it doubles up, and must
+     *     not mirror at all or it cancels what the sensor did.
+     *
+     * So a 90/270 mount cannot be corrected for species ID by any setting —
+     * only by physically turning the camera. */
     uint16_t rot_deg;               /* Quarter turns only: 0, 90, 180 or 270,
                                        default 0 (v2.87 — v2.83's free 0-359
                                        angle is withdrawn). Still stored as
@@ -47,11 +52,11 @@ typedef struct {
                                        and degrees, and s_rotd is already on
                                        every deployed box. /api/settings snaps
                                        anything else to the nearest quarter */
-    uint8_t  mirror_h;              /* 1 = flip the view left-right, display-side.
-                                       Corrects a camera shooting through a
-                                       mirror/prism or mounted facing back at
-                                       itself. default 0 */
-    uint8_t  mirror_v;              /* 1 = flip the view top-bottom, display-side.
+    uint8_t  mirror_h;              /* 1 = flip left-right AT THE SENSOR (v2.89,
+                                       was display-side). Corrects a camera
+                                       shooting through a mirror/prism or
+                                       mounted facing back at itself. default 0 */
+    uint8_t  mirror_v;              /* 1 = flip top-bottom at the sensor.
                                        default 0 */
     uint8_t  region_filter;         /* 0 = iNat's global result list as-is, 1 =
                                        restrict IDs to the Norway allowlist

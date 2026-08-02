@@ -379,7 +379,7 @@ optional	valgfritt
 @sinfo:rot:def	0°
 @sinfo:rot:alt	90/180/270°, pluss speiling vannrett og loddrett.
 @sinfo:mir:t	Speiling
-@sinfo:mir:d	Vender visningen venstre-høyre eller opp-ned. Som rotasjon gjelder dette bare visningen, så lagrede bilder er urørt. Nyttig når kameraet ser inn i redet via et speil, eller er montert vendt tilbake mot seg selv.
+@sinfo:mir:d	Vender bildet venstre-høyre eller opp-ned. Gjøres <b>i sensoren</b>, så i motsetning til 90/270° rotasjon retter det også opp de lagrede bildene og det arts-ID ser. Nyttig når kameraet ser inn i redet via et speil, eller er montert vendt tilbake mot seg selv.
 @sinfo:mir:def	av
 @sinfo:mir:alt	Vannrett og loddrett, uavhengig av hverandre.
 @sinfo:tz:t	Tidssone

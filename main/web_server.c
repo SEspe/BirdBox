@@ -279,12 +279,12 @@ static const char INDEX_HTML[] =
  *             showing black triangles in the corners. Computed in JS from the
  *             real box aspect, since it differs between the live pane and the
  *             thumbnails.
- *   --vmx/--vmy  -1 when mirrored on that axis, else 1.
- * Mirroring is display-side too, so the card's JPEG is never touched.
- * Order matters: rotate THEN mirror reads as "flip what you see". */
+ * Mirroring is NOT here any more (v2.89): the sensor does both mirrors itself,
+ * for free, so they land in the stored JPEG and the classifier input too. The
+ * old --vmx/--vmy properties are gone rather than pinned to 1, so nothing can
+ * quietly re-apply a mirror the sensor has already done. */
 ".live{position:absolute;top:50%;left:50%;width:100%;"
-"transform:translate(-50%,-50%) rotate(var(--vrot,0deg)) "
-"scale(calc(var(--vscale,1) * var(--vmx,1)),calc(var(--vscale,1) * var(--vmy,1)))}"
+"transform:translate(-50%,-50%) rotate(var(--vrot,0deg)) scale(var(--vscale,1))}"
 /* Image grids (Gallery + the Stats per-species strip). Same variables, so one
  * setting drives every view; the box keeps its 16:9 footprint and the rotated
  * image is scaled to cover it, which keeps the grid tidy at any angle. */
@@ -292,7 +292,7 @@ static const char INDEX_HTML[] =
 "overflow:hidden;background:#000}"
 ".gitem>a img{position:absolute;top:50%;left:50%;width:100%;height:100%;"
 "object-fit:cover;transform:translate(-50%,-50%) rotate(var(--vrot,0deg)) "
-"scale(calc(var(--gscale,1) * var(--vmx,1)),calc(var(--gscale,1) * var(--vmy,1)))}"
+"scale(var(--gscale,1))}"
 ".rotbar{display:flex;align-items:center;gap:8px;margin-bottom:8px}"
 ".detbadge{position:absolute;top:8px;left:8px;z-index:3;display:none;"
 "align-items:center;gap:6px;background:rgba(200,40,40,.9);color:#fff;"
@@ -1062,32 +1062,33 @@ ROT_OPTIONS
 "return Math.max((w*c+h*s)/w,(w*s+h*c)/h);}"
 /* One transform for every image view. Writes CSS variables on <body>, so it
  * also restyles thumbnails that are already on screen, with no re-render. */
-"function applyView(deg,mh,mv){"
+/* Rotation only since v2.89 — the sensor owns both mirrors, so mirroring must
+ * NOT be re-applied here or it would cancel back out. Takes no mirror args at
+ * all rather than ignoring them, so a stale call site fails loudly. */
+"function applyView(deg){"
 "deg=((+deg||0)%360+360)%360;"
 /* The sensor already did exactly 180 in hardware (hmirror+vflip) — rotating
- * again here would cancel back to upright. Every other angle is ours. */
+ * again here would cancel back to upright. Only 90/270 is ours. */
 "var css=(deg===180)?0:deg;"
 "var b=document.body.style;"
 "b.setProperty('--vrot',css+'deg');"
-"b.setProperty('--vmx',mh?-1:1);b.setProperty('--vmy',mv?-1:1);"
 "var w=$g('liveWrap');"
 "b.setProperty('--vscale',coverScale(css,w?w.clientWidth:16,w?w.clientHeight:12));"
 "b.setProperty('--gscale',coverScale(css,16,9));"
 "}"
 /* Kept as the name the rest of the UI already calls (settings load, tab sync). */
-"function applyRot(v){applyView(v,$g('lvMirH')&&$g('lvMirH').checked,"
-"$g('lvMirV')&&$g('lvMirV').checked);}"
+"function applyRot(v){applyView(v);}"
 /* Snap to a quarter turn. Load-bearing on LOAD: a box that stored a free angle
  * under v2.83 (say 3) would otherwise set a <select> to a value it has no option
  * for, which blanks the control and reads as "no rotation set". */
 "function q90(v){return ((Math.round((+v||0)/90)*90)%360+360)%360;}"
 "function lvSyncView(){var d=q90($g('lvRot').value);"
-"applyView(d,$g('lvMirH').checked,$g('lvMirV').checked);}"
+"applyView(d);}"
 "function lvRotStep(d){$g('lvRot').value=q90(q90($g('lvRot').value)+d);lvRotCommit();}"
 "function lvRotCommit(){var v=q90($g('lvRot').value);"
 "$g('lvRot').value=v;"
 "var mh=$g('lvMirH').checked?1:0,mv=$g('lvMirV').checked?1:0;"
-"applyView(v,mh,mv);"
+"applyView(v);"
 "if($g('stRot')){$g('stRot').value=v;$g('stMirH').checked=!!mh;$g('stMirV').checked=!!mv;}"
 "fetch('/api/settings',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
@@ -1126,7 +1127,7 @@ ROT_OPTIONS
 "function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
 "$g('lvRot').value=q90(c.rot);"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
-"applyView(q90(c.rot),c.mirh,c.mirv);"
+"applyView(q90(c.rot));"
 "if(c.zone&&c.zone.length===64)g_zone=c.zone.split('').map(function(x){return x==='1';});"
 "if(g_zoneEditing)zoneBuild();"
 "if(c.lang!=null&&c.lang!==g_lang){g_lang=c.lang;i18nLoad(applyLang);}"
@@ -1741,8 +1742,9 @@ ROT_OPTIONS
 " always reads the unrotated frame, so rotation cannot fix a sideways mount for the classifier"
 " &mdash; only moving the camera does.',"
 "'0&deg;','90/180/270&deg;, plus horizontal and vertical mirroring.'],"
-"mir:['Mirroring','Flips the view left-right or top-bottom. Like rotation this is applied to the"
-" display only, so saved photos are untouched. Useful when the camera looks at the nest through a"
+"mir:['Mirroring','Flips the image left-right or top-bottom. Done <b>at the sensor</b>, so unlike"
+" 90/270&deg; rotation it also fixes the saved photos and what species ID sees. Useful when the"
+" camera looks at the nest through a"
 " mirror, or is mounted facing back towards itself.',"
 "'off','Horizontal and vertical, independently.'],"
 "tz:['Timezone','POSIX timezone used for timestamps, day folders and daily stats; daylight-saving"
@@ -1801,7 +1803,7 @@ ROT_OPTIONS
 "$g('stRot').value=q90(c.rot);$g('lvRot').value=q90(c.rot);"
 "$g('stMirH').checked=!!c.mirh;$g('stMirV').checked=!!c.mirv;"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
-"applyView(q90(c.rot),c.mirh,c.mirv);"
+"applyView(q90(c.rot));"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
 "if(![...rs.options].some(o=>o.value==c.res)){var ro=document.createElement('option');"
@@ -1917,7 +1919,7 @@ ROT_OPTIONS
 "$g('stIkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "$g('lvRot').value=$g('stRot').value;"
 "$g('lvMirH').checked=$g('stMirH').checked;$g('lvMirV').checked=$g('stMirV').checked;"
-"applyView($g('stRot').value,$g('stMirH').checked,$g('stMirV').checked);"
+"applyView($g('stRot').value);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
 "if(confirm('Resolution change needs a reboot to take effect. Reboot now?'))"
 "fetch('/api/reboot',{method:'POST'}).then(()=>alert('Rebooting\\u2026'));}"
@@ -4010,7 +4012,8 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     setenv("TZ", g_settings.timezone, 1);
     tzset();
     camera_set_quality(g_settings.stream_quality);   /* no-op without camera */
-    camera_set_rotation(g_settings.rot_deg);         /* no-op without camera */
+    camera_set_view(g_settings.rot_deg,              /* no-op without camera */
+                    g_settings.mirror_h, g_settings.mirror_v);
     camera_set_contrast(g_settings.contrast);        /* no-op without camera */
     camera_set_ae_level(g_settings.ae_level);        /* no-op without camera */
     /* Sensor-gated: these return ESP_ERR_NOT_SUPPORTED on an OV2640 rather

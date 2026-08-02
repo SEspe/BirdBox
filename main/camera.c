@@ -271,7 +271,8 @@ static esp_err_t camera_hw_init(void)
              RES[idx].str);
     caps_probe(s);              /* before the setters below — they consult it */
     s_available = true;
-    camera_set_rotation(g_settings.rot_deg);    /* settings_load ran first */
+    camera_set_view(g_settings.rot_deg,         /* settings_load ran first */
+                    g_settings.mirror_h, g_settings.mirror_v);
     camera_set_contrast(g_settings.contrast);
     camera_set_ae_level(g_settings.ae_level);
     camera_set_sharpness(g_settings.sharpness); /* no-ops on a sensor without */
@@ -654,22 +655,34 @@ const char *camera_framesize_str(void)
 
 uint8_t camera_active_res(void) { return s_active_idx; }
 
-esp_err_t camera_set_rotation(uint16_t deg)
+esp_err_t camera_set_view(uint16_t deg, bool mirror_h, bool mirror_v)
 {
     if (!s_available) return ESP_ERR_INVALID_STATE;
     sensor_t *s = esp_camera_sensor_get();
     if (!s) return ESP_FAIL;
-    /* EXACTLY 180 is the only angle any OV sensor can do itself, as
-     * hmirror+vflip — free, lossless, and it fixes the stored JPEG too, not
-     * just the screen. Every other angle (including 90/270: no OV sensor
-     * rotates a quarter turn in hardware) is a browser-side transform on the
-     * live view and the image grids, so the file on the card keeps the sensor's
-     * own orientation. applyView() must therefore skip the CSS rotation at 180
-     * or it would be applied twice. */
+    /* The sensor owns everything it can do for free: both mirrors, and EXACTLY
+     * 180 of rotation — which IS both mirrors (a 180 turn is a flip on each
+     * axis). So the two compose by XOR: at 180 a requested mirror CANCELS that
+     * axis rather than adding to it, which is the correct result and the reason
+     * this is one function instead of two.
+     *
+     * All of it is free, lossless, and lands in the stored JPEG and the
+     * classifier input, not just the screen — that is the point of doing it
+     * here (v2.89). Mirroring used to be browser-only, so the live view and the
+     * file on the card disagreed whenever a mirror was on.
+     *
+     * 90/270 is the only part left to the browser: no OV sensor rotates a
+     * quarter turn in hardware. applyView() must therefore skip its own
+     * rotation at 180, or it would be applied twice. */
     bool flip180 = (deg == 180);
-    s->set_hmirror(s, flip180);
-    s->set_vflip(s, flip180);
-    ESP_LOGI(TAG, "view rotation %u deg — sensor applies %s, the rest is display-side",
-             (unsigned) deg, flip180 ? "180" : "nothing");
+    bool hm = flip180 ^ mirror_h;
+    bool vf = flip180 ^ mirror_v;
+    s->set_hmirror(s, hm);
+    s->set_vflip(s, vf);
+    ESP_LOGI(TAG, "view %u deg mirror %c%c — sensor applies hmirror=%d vflip=%d, "
+                  "browser does %s",
+             (unsigned) deg, mirror_h ? 'H' : '-', mirror_v ? 'V' : '-',
+             (int) hm, (int) vf,
+             (deg == 90 || deg == 270) ? "the quarter turn" : "nothing");
     return ESP_OK;
 }
