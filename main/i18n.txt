@@ -158,6 +158,8 @@ Brightness (auto-exposure level)	Lysstyrke (autoeksponering)
 -2 (darker)	-2 (mørkere)
 +2 (brighter)	+2 (lysere)
 Image rotation (correct mount vs. subject)	Bilderotasjon (korriger montering mot motiv)
+90° right	90° høyre
+270° left	270° venstre
 Mirror horizontally	Speil vannrett
 Mirror vertically	Speil loddrett
 Timezone	Tidssone
@@ -368,9 +370,9 @@ optional	valgfritt
 @sinfo:ae:def	0
 @sinfo:ae:alt	-2 (mørkere) til +2 (lysere).
 @sinfo:rot:t	Bilderotasjon
-@sinfo:rot:d	Hvilken som helst vinkel fra 0 til 359°, for et kamera som ikke er montert i vater — 2–3° korreksjon er det vanlige. Dette roterer <b>det du ser</b>: direktevisningen og miniatyrbildene. <b>Lagrede bilder beholder sensorens egen retning</b>, fordi å dreie en JPEG en vilkårlig vinkel betyr resampling og tap av kvalitet. Eneste unntak er nøyaktig 180°, som kameraet gjør selv gratis — ved den vinkelen roteres lagrede bilder også. Arts-ID leser alltid det uroterte bildet.
+@sinfo:rot:d	Kvartomdreininger — 0°, 90° høyre, 180° eller 270° venstre — for et kamera montert på siden eller opp ned. Dette roterer <b>det du ser</b>: direktevisningen og miniatyrbildene. <b>Lagrede bilder beholder sensorens egen retning</b>, så rotasjon her koder ikke om noe. Eneste unntak er nøyaktig 180°, som kameraet gjør selv gratis — ved den vinkelen roteres lagrede bilder også. Arts-ID leser alltid det uroterte bildet, så rotasjon kan ikke rette opp en sidelengs montering for klassifiseringen — bare det å flytte kameraet kan det.
 @sinfo:rot:def	0°
-@sinfo:rot:alt	0 til 359°, pluss speiling vannrett og loddrett.
+@sinfo:rot:alt	90/180/270°, pluss speiling vannrett og loddrett.
 @sinfo:mir:t	Speiling
 @sinfo:mir:d	Vender visningen venstre-høyre eller opp-ned. Som rotasjon gjelder dette bare visningen, så lagrede bilder er urørt. Nyttig når kameraet ser inn i redet via et speil, eller er montert vendt tilbake mot seg selv.
 @sinfo:mir:def	av

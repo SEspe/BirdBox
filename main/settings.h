@@ -38,11 +38,15 @@ typedef struct {
      * and losslessly via hmirror+vflip. That predates this field and stored
      * captures already depend on it, so it stays at the sensor and the display
      * must NOT rotate again on top (see camera_set_rotation / applyView). */
-    uint16_t rot_deg;               /* 0-359, any angle. default 0. Migrated
-                                       once from the old 0-3 quarter-turn enum
-                                       (s_rot) into the new NVS key s_rotd —
-                                       a bare 0-3 is ambiguous between the two
-                                       meanings, hence the separate key */
+    uint16_t rot_deg;               /* Quarter turns only: 0, 90, 180 or 270,
+                                       default 0 (v2.87 — v2.83's free 0-359
+                                       angle is withdrawn). Still stored as
+                                       DEGREES in the NVS key s_rotd, which is
+                                       why this is not the old 0-3 enum: a bare
+                                       0-3 is ambiguous between quarter turns
+                                       and degrees, and s_rotd is already on
+                                       every deployed box. /api/settings snaps
+                                       anything else to the nearest quarter */
     uint8_t  mirror_h;              /* 1 = flip the view left-right, display-side.
                                        Corrects a camera shooting through a
                                        mirror/prism or mounted facing back at

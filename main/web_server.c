@@ -236,6 +236,17 @@ static const char WIFI_SETUP_HTML[] =
 "</script>"
 "</div></body></html>";
 
+/* The four rotation choices, shared by the Live bar and the Settings row so the
+ * two can't drift (v2.87 — rotation went back to quarter turns from v2.83's free
+ * 0-359 angle). Values stay DEGREES: rot_deg and the s_rotd NVS key are unchanged,
+ * only the set of accepted values shrank, so no migration and no ambiguity with
+ * the pre-v2.83 quarter-turn enum. */
+#define ROT_OPTIONS \
+    "<option value='0'>0&deg;</option>" \
+    "<option value='90'>90&deg; right</option>" \
+    "<option value='180'>180&deg;</option>" \
+    "<option value='270'>270&deg; left</option>"
+
 /* Tabbed dashboard (FSD §5): Live/Gallery/Stats/Settings/WiFi implemented;
  * Debug and OTA tabs land with their subsystems. */
 static const char INDEX_HTML[] =
@@ -502,14 +513,11 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='livep' class='pane on'>"
 "<div class='rotbar'><label class='sts' style='margin:0'>Rotation</label>"
-"<input type='range' id='lvRot' min='0' max='359' step='1' style='flex:1;min-width:90px'"
-" oninput='lvRotDrag()' onchange='lvRotCommit()'>"
-"<input type='number' id='lvRotN' min='0' max='359' step='1' style='width:5.5em'"
-" oninput='lvRotNum()' onchange='lvRotCommit()'>"
-"<span class='sts' style='margin:0'>&deg;</span>"
-/* Quarter-turn shortcuts: arbitrary angles are the point of the slider, but
- * 90/180/270 are still the common cases and hitting them exactly by dragging
- * is fiddly. */
+"<select id='lvRot' style='min-width:9em' onchange='lvRotCommit()'>"
+ROT_OPTIONS
+"</select>"
+/* The turn buttons stay: they step through the same four values, which is how
+ * you actually correct a sideways mount without opening the dropdown. */
 "<button class='act' style='margin:0;padding:2px 7px' title='rotate 90&deg; left'"
 " onclick='lvRotStep(-90)'>&#8634;</button>"
 "<button class='act' style='margin:0;padding:2px 7px' title='rotate 90&deg; right'"
@@ -744,7 +752,9 @@ static const char INDEX_HTML[] =
 "<option value='0'>0 (default)</option><option value='1'>+1</option>"
 "<option value='2'>+2 (brighter)</option></select>"
 "<label class='wl'>Image rotation (correct mount vs. subject)<span class='inf' onclick='sInfo(\"rot\")'>i</span></label>"
-"<input class='wi' type='number' id='stRot' min='0' max='359' step='1'>"
+"<select class='wi' id='stRot'>"
+ROT_OPTIONS
+"</select>"
 "<label class='wl'><input type='checkbox' id='stMirH'> Mirror horizontally"
 "<span class='inf' onclick='sInfo(\"mir\")'>i</span></label>"
 "<label class='wl'><input type='checkbox' id='stMirV'> Mirror vertically</label>"
@@ -1053,17 +1063,15 @@ static const char INDEX_HTML[] =
 /* Kept as the name the rest of the UI already calls (settings load, tab sync). */
 "function applyRot(v){applyView(v,$g('lvMirH')&&$g('lvMirH').checked,"
 "$g('lvMirV')&&$g('lvMirV').checked);}"
-"function lvSyncView(){var d=+$g('lvRot').value||0;"
+/* Snap to a quarter turn. Load-bearing on LOAD: a box that stored a free angle
+ * under v2.83 (say 3) would otherwise set a <select> to a value it has no option
+ * for, which blanks the control and reads as "no rotation set". */
+"function q90(v){return ((Math.round((+v||0)/90)*90)%360+360)%360;}"
+"function lvSyncView(){var d=q90($g('lvRot').value);"
 "applyView(d,$g('lvMirH').checked,$g('lvMirV').checked);}"
-/* Dragging previews locally at every step but only POSTs on release — a slider
- * fires oninput per pixel, and one settings write per pixel would hammer NVS. */
-"function lvRotDrag(){$g('lvRotN').value=$g('lvRot').value;lvSyncView();}"
-"function lvRotNum(){var d=((+$g('lvRotN').value||0)%360+360)%360;"
-"$g('lvRot').value=d;lvSyncView();}"
-"function lvRotStep(d){var v=((+$g('lvRot').value||0)+d+360)%360;"
-"$g('lvRot').value=v;$g('lvRotN').value=v;lvRotCommit();}"
-"function lvRotCommit(){var v=((+$g('lvRot').value||0)%360+360)%360;"
-"$g('lvRot').value=v;$g('lvRotN').value=v;"
+"function lvRotStep(d){$g('lvRot').value=q90(q90($g('lvRot').value)+d);lvRotCommit();}"
+"function lvRotCommit(){var v=q90($g('lvRot').value);"
+"$g('lvRot').value=v;"
 "var mh=$g('lvMirH').checked?1:0,mv=$g('lvMirV').checked?1:0;"
 "applyView(v,mh,mv);"
 "if($g('stRot')){$g('stRot').value=v;$g('stMirH').checked=!!mh;$g('stMirV').checked=!!mv;}"
@@ -1102,9 +1110,9 @@ static const char INDEX_HTML[] =
 "if(e.placeholder&&g_i18n[e.placeholder])e.placeholder=g_i18n[e.placeholder];"
 "var ti=e.getAttribute('title');if(ti&&g_i18n[ti])e.setAttribute('title',g_i18n[ti]);});}"
 "function loadRot(){fetch('/api/settings').then(r=>r.json()).then(function(c){"
-"$g('lvRot').value=c.rot;$g('lvRotN').value=c.rot;"
+"$g('lvRot').value=q90(c.rot);"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
-"applyView(c.rot,c.mirh,c.mirv);"
+"applyView(q90(c.rot),c.mirh,c.mirv);"
 "if(c.zone&&c.zone.length===64)g_zone=c.zone.split('').map(function(x){return x==='1';});"
 "if(g_zoneEditing)zoneBuild();"
 "if(c.lang!=null&&c.lang!==g_lang){g_lang=c.lang;i18nLoad(applyLang);}"
@@ -1692,13 +1700,14 @@ static const char INDEX_HTML[] =
 "ae:['Brightness (auto-exposure level)','Biases the camera&rsquo;s auto-exposure target darker or"
 " brighter. Applies immediately.',"
 "'0','-2 (darker) to +2 (brighter).'],"
-"rot:['Image rotation','Any angle from 0 to 359&deg;, for a camera that isn&rsquo;t mounted level"
-" &mdash; a 2&ndash;3&deg; correction is the usual case. This rotates <b>what you see</b>: the live"
-" view and the image thumbnails. <b>Saved photos keep the sensor&rsquo;s own orientation</b>, because"
-" turning a JPEG by an arbitrary angle means resampling it and losing quality. The one exception is"
-" exactly 180&deg;, which the camera does itself for free &mdash; at that angle the saved photos are"
-" rotated too. Species ID always reads the unrotated frame.',"
-"'0&deg;','0 to 359&deg;, plus horizontal and vertical mirroring.'],"
+"rot:['Image rotation','Quarter turns &mdash; 0&deg;, 90&deg; right, 180&deg; or 270&deg; left"
+" &mdash; for a camera mounted on its side or upside down. This rotates <b>what you see</b>: the"
+" live view and the image thumbnails. <b>Saved photos keep the sensor&rsquo;s own orientation</b>,"
+" so rotating here does not re-encode anything. The one exception is exactly 180&deg;, which the"
+" camera does itself for free &mdash; at that angle the saved photos are rotated too. Species ID"
+" always reads the unrotated frame, so rotation cannot fix a sideways mount for the classifier"
+" &mdash; only moving the camera does.',"
+"'0&deg;','90/180/270&deg;, plus horizontal and vertical mirroring.'],"
 "mir:['Mirroring','Flips the view left-right or top-bottom. Like rotation this is applied to the"
 " display only, so saved photos are untouched. Useful when the camera looks at the nest through a"
 " mirror, or is mounted facing back towards itself.',"
@@ -1756,10 +1765,10 @@ static const char INDEX_HTML[] =
 "$g('stGkey').placeholder=c.gkey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stGkeyClr').style.display=c.gkey_set?'':'none';"
 "$g('stGmodel').value=c.gmodel||'';"
-"$g('stRot').value=c.rot;$g('lvRot').value=c.rot;$g('lvRotN').value=c.rot;"
+"$g('stRot').value=q90(c.rot);$g('lvRot').value=q90(c.rot);"
 "$g('stMirH').checked=!!c.mirh;$g('stMirV').checked=!!c.mirv;"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
-"applyView(c.rot,c.mirh,c.mirv);"
+"applyView(q90(c.rot),c.mirh,c.mirv);"
 "$g('stRfilt').value=c.rfilt;"
 "var rs=$g('stRes');"
 "if(![...rs.options].some(o=>o.value==c.res)){var ro=document.createElement('option');"
@@ -1873,7 +1882,7 @@ static const char INDEX_HTML[] =
 "$g('stGkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
 "if(o.ok&&$g('stIkey').value){$g('stIkey').value='';"
 "$g('stIkey').placeholder='\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep';}"
-"$g('lvRot').value=$g('stRot').value;$g('lvRotN').value=$g('stRot').value;"
+"$g('lvRot').value=$g('stRot').value;"
 "$g('lvMirH').checked=$g('stMirH').checked;$g('lvMirV').checked=$g('stMirV').checked;"
 "applyView($g('stRot').value,$g('stMirH').checked,$g('stMirV').checked);"
 "if(o.ok&&$g('stRes').value!==String(g_savedRes)){g_savedRes=+$g('stRes').value;"
@@ -3785,10 +3794,15 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.sd_cap_pct          = field_num(body, "cap=",  50,  95,    g_settings.sd_cap_pct);
     g_settings.stream_quality      = field_num(body, "qual=", 5,   40,    g_settings.stream_quality);
     g_settings.ir_led_mode         = field_num(body, "ir=",   0,   1,     g_settings.ir_led_mode);
-    /* Free degrees since v2.83, not the old 0-3 quarter turns. Clamped rather
-     * than wrapped: a wrap would turn a fat-fingered 400 into 40, which reads
-     * as the box ignoring you. */
-    g_settings.rot_deg   = field_num(body, "rot=",  0, 359, g_settings.rot_deg);
+    /* Quarter turns only again (v2.87). The field is still DEGREES — rot_deg and
+     * the s_rotd NVS key are unchanged from v2.83, so nothing migrates — but the
+     * accepted set is back to 0/90/180/270. Snapped here, not just in the UI, so
+     * an API caller or a restored settings file carrying a free angle lands on a
+     * value the box can actually render instead of a half-supported one. */
+    {
+        int rq = field_num(body, "rot=", 0, 359, g_settings.rot_deg);
+        g_settings.rot_deg = (uint16_t) (((rq + 45) / 90) * 90 % 360);
+    }
     g_settings.mirror_h  = field_num(body, "mirh=", 0, 1,   g_settings.mirror_h);
     g_settings.mirror_v  = field_num(body, "mirv=", 0, 1,   g_settings.mirror_v);
     g_settings.region_filter       = field_num(body, "rfilt=", 0, 1,     g_settings.region_filter);
