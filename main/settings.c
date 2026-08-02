@@ -22,7 +22,7 @@ settings_t g_settings = {
     .rot_deg            = 0,
     .mirror_h           = 0,
     .mirror_v           = 0,
-    .region_filter      = 0,
+    .region_filter      = 1,
     .resolution         = 3,   /* HD 1280x720 — matches camera.c RES table index.
                                 * ROI-crop makes classification aspect-independent,
                                 * so we lock a high-detail default and never tune

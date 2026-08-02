@@ -49,9 +49,10 @@ typedef struct {
                                        itself. default 0 */
     uint8_t  mirror_v;              /* 1 = flip the view top-bottom, display-side.
                                        default 0 */
-    uint8_t  region_filter;         /* 0 = global model as-is, 1 = restrict IDs to
-                                       the Northern-European species set (FSD §3.2.1),
-                                       default 0 */
+    uint8_t  region_filter;         /* 0 = iNat's global result list as-is, 1 =
+                                       restrict IDs to the Norway allowlist
+                                       (species_in_region, 147 names — FSD §3.2.1),
+                                       default 1 */
     uint8_t  resolution;            /* camera frame-size index into camera.c's
                                        RES table; applied at camera_init, so a
                                        change needs a reboot. default = HD (1280x720) */

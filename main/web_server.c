@@ -1606,7 +1606,7 @@ static const char INDEX_HTML[] =
 "rfilt:['Species set','Norway only restricts identifications to the regional allowlist: a"
 " geographically impossible top hit (e.g. Pica hudsonia, the American magpie) is rejected and the"
 " best in-region candidate wins instead (e.g. Pica pica).',"
-"'All species (no region filter)','Norway only &mdash; recommended for a Norwegian feeder.'],"
+"'Norway only','All species (no region filter) &mdash; use it outside Norway.'],"
 "inatcv:['Identify with iNaturalist first','Sends each new motion event to iNaturalist&rsquo;s"
 " <b>online</b> Computer Vision model (the one behind the iNat app) as the primary classifier;"
 " the cloud provider, if one is selected, only gets the events iNat cannot identify. Free, no"

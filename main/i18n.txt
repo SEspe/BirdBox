@@ -293,8 +293,8 @@ optional	valgfritt
 @sinfo:conf:alt	15–95 %. Lavere slipper inn flere (mer risikable) automatiske merkelapper; høyere overlater mer til manuell gjennomgang.
 @sinfo:rfilt:t	Artsutvalg
 @sinfo:rfilt:d	Kun Norge begrenser identifikasjoner til den regionale tillatlisten: en geografisk umulig toppkandidat (f.eks. Pica hudsonia, den amerikanske skjæra) avvises, og den beste kandidaten i regionen vinner i stedet (f.eks. Pica pica).
-@sinfo:rfilt:def	Alle arter (uten regionfilter)
-@sinfo:rfilt:alt	Kun Norge — anbefalt for en norsk fôringsplass.
+@sinfo:rfilt:def	Kun Norge
+@sinfo:rfilt:alt	Alle arter (uten regionfilter) — bruk det utenfor Norge.
 @sinfo:inatcv:t	Identifiser med iNaturalist først
 @sinfo:inatcv:d	Sender hver ny bevegelseshendelse til iNaturalists <b>nettbaserte</b> bildegjenkjenningsmodell (den bak iNat-appen) som primær klassifisering; skyleverandøren, hvis valgt, får bare hendelsene iNat ikke klarer. Gratis, ingen kostnad per kall. Krever innloggingen eller et token nedenfor, pluss WiFi.
 @sinfo:inatcv:def	Av (opt-in)
