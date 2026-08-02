@@ -269,7 +269,7 @@ optional	valgfritt
 @sinfo:ccnt:alt	1–10. 1 slår av kravet om bekreftelse; 3–7 er det nyttige området.
 @sinfo:civl:t	Bildeintervall
 @sinfo:civl:d	Pause mellom bildene i én hendelse. Kort = nesten-serie av samme positur; langt = besøket fordelt over flere sekunder, med bedre sjanse for en tydelig positur, men noe risiko for at fuglen drar midt i hendelsen.
-@sinfo:civl:def	1500 ms
+@sinfo:civl:def	1000 ms
 @sinfo:civl:alt	250–10000 ms i steg på 250 ms.
 @sinfo:cool:t	Pause mellom hendelser
 @sinfo:cool:d	Etter at en hendelse er ferdig, ignoreres bevegelse så lenge — slik at ett langt besøk ikke blir titalls hendelser (og titalls identifikasjonskall).
@@ -333,8 +333,8 @@ optional	valgfritt
 @sinfo:gmodel:alt	Enhver modell-id nøkkelen din kan bruke, f.eks. gemini-flash-latest.
 @sinfo:lang:t	Språk
 @sinfo:lang:d	Språk for hele grensesnittet: artsnavn, faner, etiketter, knapper og hjelpetekst (last siden på nytt etter lagring). Oversettelser kommer fra den redigerbare kryssreferansefilen main/i18n.txt i fastvarekilden; strenger uten oversettelse forblir på engelsk. Det vitenskapelige (latinske) artsnavnet vises alltid i tillegg.
-@sinfo:lang:def	Engelsk
-@sinfo:lang:alt	Norsk.
+@sinfo:lang:def	Norsk
+@sinfo:lang:alt	Engelsk.
 @sinfo:cap:t	SD-lagringsgrense
 @sinfo:cap:d	Når kortet fylles forbi dette nivået, slettes de eldste dagmappene for å frigjøre plass — boksen slutter aldri å ta opp av plassmangel.
 @sinfo:cap:def	80 %

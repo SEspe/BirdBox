@@ -90,9 +90,9 @@ typedef struct {
                                        it (FSD §3.4). "" = count all. Non-
                                        destructive: the visit log is never deleted,
                                        so labels/ROIs (gallery + training) persist */
-    species_lang_t lang;            /* species display language (FSD §3.2),
-                                       default LANG_EN; scientific name is
-                                       always shown alongside it */
+    species_lang_t lang;            /* UI + species display language (FSD §3.2,
+                                       §5/v2.72), default LANG_NO; the scientific
+                                       name is always shown alongside it */
     uint64_t detect_zone;           /* 8x8 detection-zone mask (FSD §3.1), bit
                                        (row*8+col), row 0 = top. A set bit means
                                        that cell counts toward motion; cleared

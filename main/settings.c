@@ -13,7 +13,7 @@ settings_t g_settings = {
     .mode              = MODE_FEEDER,
     .motion_sensitivity = 50,
     .capture_count      = 4,
-    .capture_interval_ms = 1500,
+    .capture_interval_ms = 1000,
     .cooldown_s         = 120,
     .confidence_pct     = 30,
     .sd_cap_pct         = 80,
@@ -39,7 +39,7 @@ settings_t g_settings = {
     .region             = "",
     .ntp_server         = "pool.ntp.org",
     .stats_reset_ts     = "",
-    .lang               = LANG_EN,
+    .lang               = LANG_NO,
     .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
     .detect_zoom        = 0,   /* off: cropping HURTS the v1 iNat model — tight
                                 * crops read as "no bird" (whole-frame wins). Keep
