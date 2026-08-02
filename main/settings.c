@@ -208,3 +208,34 @@ esp_err_t settings_save(void)
     ESP_LOGI(TAG, "settings saved");
     return err;
 }
+
+esp_err_t settings_factory_reset(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset: nvs_open failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+    /* Erase the WHOLE namespace, not the s_* settings keys one at a time. WiFi
+     * credentials (ssid/pass/ssid2/pass2) and the static-IP block (ipmode/ip/
+     * mask/gw/dns) live in this same namespace, and wiping them is the point —
+     * this is the full factory reset, so the box comes up in the config portal.
+     * Erasing by name would also silently miss any key a later firmware adds. */
+    err = nvs_erase_all(h);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset: erase failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+    /* g_settings is deliberately NOT reloaded here. The caller reboots, and
+     * settings_load() then finds an empty namespace and keeps the compiled-in
+     * defaults — one code path for "no stored settings", the same one a
+     * freshly-flashed board takes. Mutating the live struct first would only
+     * create a window where the running box has defaults but the reboot has
+     * not happened yet. */
+    ESP_LOGW(TAG, "factory reset: NVS namespace '%s' erased — reboot pending",
+             NVS_NAMESPACE);
+    return ESP_OK;
+}

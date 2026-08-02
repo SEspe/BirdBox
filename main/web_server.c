@@ -812,6 +812,20 @@ ROT_OPTIONS
 "<p class='sts'><b>Delete all photos</b> removes every image for the day but leaves "
 "the statistics/visit log intact. <b>Wipe day</b> also removes that day&#8217;s rows "
 "from the statistics/visit log. To clear all statistics, use the Stats tab.</p>"
+"<h3 class='sh'>Factory reset</h3>"
+/* Deliberately three plain paragraphs rather than one with inline <b>: the i18n
+ * walker matches whole text nodes, and bold tags would split this into nine
+ * fragments keyed on strings with significant leading/trailing spaces. */
+"<p class='sts'>Erases every stored setting, the saved WiFi network, and the stored "
+"iNaturalist login and cloud API keys, then reboots.</p>"
+"<p class='sts'>The box comes back up as a fresh unit broadcasting its BirdBox-Config "
+"setup network, so you will need a phone or laptop at the box to put it back on WiFi. "
+"It will not be reachable at this address until you do.</p>"
+"<p class='sts'>Photos, the visit log and your labels on the SD card are not touched.</p>"
+"<div class='gbar'>"
+"<button class='act' style='margin:0;background:#9e3030' onclick='factoryReset()'>"
+"&#9888; Restore factory settings</button>"
+"<span class='sts' id='frSts' style='margin:0'></span></div>"
 "</div>"
 "<div id='dbgp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>System</h3><div id='dSys'></div>"
@@ -1420,6 +1434,25 @@ ROT_OPTIONS
 "body:'date='+encodeURIComponent(d)+'&all=1&stats=1'})"
 ".then(r=>r.json()).then(o=>{$g('mtSts').textContent='Removed '+(o.deleted||0)+' photo(s) and '"
 "+(o.statsRemoved||0)+' log row(s).';mtLoad();}).catch(()=>alert('Wipe failed'));}"
+/* Two confirms on purpose. This is the only control in the UI that can make the
+ * box unreachable, and the second one asks for the word rather than another OK,
+ * so a reflexive double-Enter cannot get through it. */
+"function factoryReset(){"
+"if(!confirm('Factory reset?\\n\\nThis erases every setting, the saved WiFi network, "
+"and the stored iNaturalist login and cloud API keys.\\n\\nThe box will reboot into its "
+"BirdBox-Config setup network and will NOT be reachable at this address until you "
+"reconnect it to WiFi from a phone at the box.\\n\\nPhotos and the visit log on the SD "
+"card are kept.'))return;"
+"var a=prompt('Type RESET to confirm:');"
+"if(a===null)return;"
+"if(a.trim().toUpperCase()!=='RESET'){$g('frSts').textContent='Cancelled.';return;}"
+"$g('frSts').textContent='Erasing\\u2026';"
+"fetch('/api/factory-reset',{method:'POST'})"
+".then(function(){$g('frSts').textContent="
+"'Erased \\u2014 rebooting into BirdBox-Config. This page is now dead.';})"
+/* The box may drop the socket mid-reboot; that is a success, not a failure. */
+".catch(function(){$g('frSts').textContent="
+"'Reset sent \\u2014 the box went away, which is expected. Look for BirdBox-Config.';});}"
 "function del(p){if(!confirm('Delete '+p.split('/').pop()+'?'))return;"
 "fetch(p,{method:'DELETE'}).then(()=>loadDays());}"
 /* Open the full capture in a new tab — a per-tile button so it works in the
@@ -5644,6 +5677,26 @@ static esp_err_t h_reboot(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/factory-reset — erase the whole NVS namespace and reboot (FSD §5).
+ * This drops WiFi with everything else by design, so the reply goes out and is
+ * given time to reach the browser BEFORE the erase: once the credentials are
+ * gone the box can only be reached on its own AP, and a client left hanging on
+ * a socket that will never answer looks like a crash rather than a reset.
+ * The SD card is untouched — photos, visit log and labels all survive. */
+static esp_err_t h_factory_reset(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    ESP_LOGW(TAG, "FACTORY RESET requested via API — erasing NVS");
+    vTaskDelay(pdMS_TO_TICKS(700));      /* let the response drain */
+    esp_err_t err = settings_factory_reset();
+    ESP_LOGW(TAG, "factory reset %s — rebooting into the config portal",
+             err == ESP_OK ? "done" : "FAILED");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return ESP_OK;
+}
+
 /* ── Start Web Server ───────────────────────────────────────────────────── */
 esp_err_t web_server_start(void)
 {
@@ -5711,6 +5764,7 @@ esp_err_t web_server_start(void)
         { .uri = "/captures/*",  .method = HTTP_GET,  .handler = h_captures_file },
         { .uri = "/captures/*",  .method = HTTP_DELETE, .handler = h_captures_delete },
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
+        { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_factory_reset },
         { .uri = "/api/debug/gpio", .method = HTTP_POST, .handler = h_debug_gpio },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
         { .uri = "/ota/from-url", .method = HTTP_POST, .handler = h_ota_from_url },

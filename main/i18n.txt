@@ -194,6 +194,11 @@ Delete all photos	Slett alle bilder
 Wipe day (photos+stats)	Fjern dag (bilder+statistikk)
 removes every image for the day but leaves the statistics/visit log intact.	fjerner alle bilder for dagen, men beholder statistikk/besøkslogg.
 Wipe day	Fjern dag
+Factory reset	Fabrikkinnstillinger
+Restore factory settings	Gjenopprett fabrikkinnstillinger
+Erases every stored setting, the saved WiFi network, and the stored iNaturalist login and cloud API keys, then reboots.	Sletter alle lagrede innstillinger, det lagrede WiFi-nettverket og den lagrede iNaturalist-innloggingen og sky-API-nøklene, og starter så på nytt.
+The box comes back up as a fresh unit broadcasting its BirdBox-Config setup network, so you will need a phone or laptop at the box to put it back on WiFi. It will not be reachable at this address until you do.	Boksen starter opp som en ny enhet som kringkaster oppsettsnettverket BirdBox-Config, så du trenger en mobil eller PC ved boksen for å koble den til WiFi igjen. Den er ikke tilgjengelig på denne adressen før du gjør det.
+Photos, the visit log and your labels on the SD card are not touched.	Bilder, besøksloggen og merkingene dine på SD-kortet røres ikke.
 also removes that day’s rows from the statistics/visit log. To clear all statistics, use the Stats tab.	fjerner også dagens rader fra statistikk/besøksloggen. Bruk Statistikk-fanen for å nullstille all statistikk.
 # ── Debug ──
 # NOTE (operator decision 2026-07-23): the Debug pane's CONTENT — the

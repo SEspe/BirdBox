@@ -225,3 +225,11 @@ extern settings_t g_settings;
 
 esp_err_t settings_load(void);   /* NVS -> g_settings, defaults if absent */
 esp_err_t settings_save(void);
+
+/* Full factory reset (FSD §5): erase the ENTIRE NVS namespace — settings, the
+ * stored iNat/cloud credentials, AND the WiFi credentials + static-IP block,
+ * which share this namespace. g_settings is left alone; the caller must reboot,
+ * after which settings_load() finds nothing and the compiled-in defaults stand,
+ * and wifi_start() finds no SSID and comes up in the config portal. Does NOT
+ * touch the SD card: captures, the visit log and labels all survive. */
+esp_err_t settings_factory_reset(void);
