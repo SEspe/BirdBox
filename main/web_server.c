@@ -692,8 +692,9 @@ ROT_OPTIONS
 "<div class='sts' id='stGemSts' style='margin-top:4px'></div>"
 /* The "Periodic iNat re-scan" section that lived here is gone (v2.65): its
  * inat_periodic_* settings lost their consumer in the 0.74.0 iNat-only pivot
- * (the on-SD model batch), so the toggle had been doing nothing. The NVS
- * fields remain parsed/stored server-side for old export files. */
+ * (the on-SD model batch), so the toggle had been doing nothing. The settings
+ * themselves are gone too as of v2.91 — an old export file's inat=/inatv= is
+ * now ignored on restore rather than stored. */
 "<label class='wl'>Language<span class='inf' onclick='sInfo(\"lang\")'>i</span></label>"
 "<select class='wi' id='stLang'>"
 "<option value='0'>English</option><option value='1'>Norsk (Norwegian)</option>"
@@ -3668,7 +3669,6 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"tz\":\"%s\","
         "\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
-        "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
         "\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
         "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\"}",
@@ -3704,8 +3704,6 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
-        (unsigned) g_settings.inat_periodic_enabled,
-        (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.claude_key[0] ? "true" : "false",
         g_settings.gemini_key[0] ? "true" : "false",
@@ -3877,9 +3875,9 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * key of the currently-selected provider turns the selector off, since it
      * can no longer run. */
     g_settings.cloud_provider = field_num(body, "cprov=", 0, 2, g_settings.cloud_provider);
-    g_settings.inat_periodic_enabled = field_num(body, "inat=", 0, 1, g_settings.inat_periodic_enabled);
-    g_settings.inat_periodic_interval_min =
-        field_num(body, "inatv=", 5, 1440, g_settings.inat_periodic_interval_min);
+    /* `inat=`/`inatv=` (the periodic re-scan) are no longer parsed — v2.91. An
+     * old export file still carrying them restores fine; they are ignored like
+     * any other unknown field. */
     if (field_num(body, "ckeyclear=", 0, 1, 0) == 1) {
         g_settings.claude_key[0] = '\0';
         if (g_settings.cloud_provider == CLOUD_CLAUDE) g_settings.cloud_provider = CLOUD_OFF;
@@ -4033,7 +4031,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&mirh=%u&mirv=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
         "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
+        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&cprov=%u&gmdl=%s"
         "&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
@@ -4049,8 +4047,6 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
-        (unsigned) g_settings.inat_periodic_enabled,
-        (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.gemini_model,
         (unsigned) g_settings.inat_cv_enabled,

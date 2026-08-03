@@ -56,8 +56,6 @@ settings_t g_settings = {
     .inat_loc           = "59.91,10.75",   /* iNat geo hint "lat,lng"; default
                                             * Oslo (matches the cities_data.h
                                             * dropdown entry); "" = no geo */
-    .inat_periodic_enabled     = 0,    /* opt-in third tier (§3.2.3) */
-    .inat_periodic_interval_min = 60,
 };
 
 esp_err_t settings_load(void)
@@ -138,8 +136,8 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_inatpw", g_settings.inat_pass, &l);
     l = sizeof(g_settings.inat_loc);
     nvs_get_str(h, "s_iloc", g_settings.inat_loc, &l);
-    if (nvs_get_u8 (h, "s_inat", &u8)  == ESP_OK) g_settings.inat_periodic_enabled = u8;
-    if (nvs_get_u16(h, "s_inatv",&u16) == ESP_OK) g_settings.inat_periodic_interval_min = u16;
+    /* "s_inat"/"s_inatv" (the periodic re-scan) are no longer read — v2.91. Any
+     * value a device already has in NVS is simply left there, inert. */
     nvs_close(h);
     ESP_LOGI(TAG, "settings loaded (mode %s, sensitivity %u, quality %u)",
              g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
@@ -194,8 +192,6 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_inatusr", g_settings.inat_user);
     nvs_set_str(h, "s_inatpw",  g_settings.inat_pass);
     nvs_set_str(h, "s_iloc",   g_settings.inat_loc);
-    nvs_set_u8 (h, "s_inat",  g_settings.inat_periodic_enabled);
-    nvs_set_u16(h, "s_inatv", g_settings.inat_periodic_interval_min);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
