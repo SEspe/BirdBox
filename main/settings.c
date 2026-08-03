@@ -36,7 +36,6 @@ settings_t g_settings = {
                                       * OFF also skips the AF firmware download */
     .focus_pos          = 0,
     .timezone           = "CET-1CEST,M3.5.0,M10.5.0/3",
-    .region             = "",
     .ntp_server         = "pool.ntp.org",
     .stats_reset_ts     = "",
     .lang               = LANG_NO,
@@ -52,7 +51,6 @@ settings_t g_settings = {
     .claude_key         = "",
     .gemini_key         = "",
     .gemini_model       = "",   /* "" => gemini.c's GEMINI_MODEL_DEFAULT */
-    .ondevice_enabled   = 1,    /* on-device (nordic) model is the secondary tier */
     .inat_cv_enabled    = 0,    /* opt-in primary tier; needs a (24h) iNat JWT */
     .inat_key           = "",
     .inat_loc           = "59.91,10.75",   /* iNat geo hint "lat,lng"; default
@@ -107,8 +105,6 @@ esp_err_t settings_load(void)
     if (nvs_get_u16(h, "s_fpos", &u16) == ESP_OK) g_settings.focus_pos = u16;
     l = sizeof(g_settings.timezone);
     nvs_get_str(h, "s_tz", g_settings.timezone, &l);
-    l = sizeof(g_settings.region);
-    nvs_get_str(h, "s_region", g_settings.region, &l);
     l = sizeof(g_settings.ntp_server);
     nvs_get_str(h, "s_ntp", g_settings.ntp_server, &l);
     l = sizeof(g_settings.stats_reset_ts);
@@ -131,7 +127,6 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_gkey", g_settings.gemini_key, &l);
     l = sizeof(g_settings.gemini_model);
     nvs_get_str(h, "s_gmdl", g_settings.gemini_model, &l);
-    if (nvs_get_u8 (h, "s_ondev", &u8) == ESP_OK) g_settings.ondevice_enabled = u8;
     if (nvs_get_u8 (h, "s_inatcv", &u8) == ESP_OK) g_settings.inat_cv_enabled = u8;
     l = sizeof(g_settings.inat_key);
     nvs_get_str(h, "s_inatk", g_settings.inat_key, &l);
@@ -181,7 +176,6 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_fmode",g_settings.focus_mode);
     nvs_set_u16(h, "s_fpos", g_settings.focus_pos);
     nvs_set_str(h, "s_tz",   g_settings.timezone);
-    nvs_set_str(h, "s_region", g_settings.region);
     nvs_set_str(h, "s_ntp", g_settings.ntp_server);
     nvs_set_str(h, "s_statrst", g_settings.stats_reset_ts);
     nvs_set_u8 (h, "s_lang", g_settings.lang == LANG_NO ? 1 : 0);
@@ -194,7 +188,6 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_ckey",  g_settings.claude_key);
     nvs_set_str(h, "s_gkey",  g_settings.gemini_key);
     nvs_set_str(h, "s_gmdl",  g_settings.gemini_model);
-    nvs_set_u8 (h, "s_ondev",  g_settings.ondevice_enabled);
     nvs_set_u8 (h, "s_inatcv", g_settings.inat_cv_enabled);
     nvs_set_str(h, "s_inatk",  g_settings.inat_key);
     nvs_set_str(h, "s_inatses", g_settings.inat_session);

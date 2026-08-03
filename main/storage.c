@@ -114,7 +114,9 @@ esp_err_t storage_init(void)
 
     mkdir(STORAGE_MOUNT_POINT "/captures", 0775);
     mkdir(STORAGE_MOUNT_POINT "/log",      0775);
-    mkdir(STORAGE_MOUNT_POINT "/model",    0775);
+    /* No /model dir any more (v2.90): the on-device model went in 0.74.0. An
+     * existing one on a card in the field is left alone — it is just dead
+     * weight, and deleting operator data on mount is not this function's job. */
     storage_migrate_perday();   /* split any legacy monthly logs into per-day */
     return ESP_OK;
 #endif

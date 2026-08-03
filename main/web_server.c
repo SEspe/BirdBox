@@ -3571,11 +3571,11 @@ static void form_field(const char *body, const char *key, char *out, size_t olen
     url_decode(out);
 }
 
-/* Whether `key` (e.g. "region=") appears as a real field in the body — i.e.
+/* Whether `key` (e.g. "gmdl=") appears as a real field in the body — i.e.
  * form_field would read it — distinguishing an ABSENT field from one that is
- * present but empty. Needed for fields where "" is a legal value (region ""
- * = auto-pick), so a partial POST that omits the field keeps the current value
- * instead of blanking it. */
+ * present but empty. Needed for fields where "" is a legal value (an empty
+ * gmdl means "use the built-in default model id"), so a partial POST that
+ * omits the field keeps the current value instead of blanking it. */
 static bool has_field(const char *body, const char *key)
 {
     const char *p = body;
@@ -3666,12 +3666,12 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"camName\":\"%s\",\"camMaxRes\":%d,\"camMaxResStr\":\"%s\","
         "\"camSharp\":%s,\"camDenoise\":%s,\"camAF\":%s,\"camAFBuild\":%s,"
         "\"tz\":\"%s\","
-        "\"region\":\"%s\",\"ntp\":\"%s\",\"lang\":%u,"
+        "\"ntp\":\"%s\",\"lang\":%u,"
         "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"inat\":%u,\"inatv\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
-        "\"ondev\":%u,\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
-        "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\",\"models\":[",
+        "\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
+        "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\"}",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -3700,7 +3700,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
 #else
         "false",
 #endif
-        g_settings.timezone, g_settings.region, g_settings.ntp_server,
+        g_settings.timezone, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
@@ -3710,7 +3710,6 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.claude_key[0] ? "true" : "false",
         g_settings.gemini_key[0] ? "true" : "false",
         g_settings.gemini_model,   /* [a-z0-9.-] only (validated on save) — JSON-safe */
-        (unsigned) g_settings.ondevice_enabled,
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_key[0] ? "true" : "false",
         g_settings.inat_session[0] ? "true" : "false",
@@ -3718,25 +3717,11 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.inat_pass[0] ? "true" : "false",
         g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
     httpd_resp_send_chunk(req, buf, n);
-    /* The region choices are whatever model files sit in /sd/model (§3.2 —
-     * users swap regions by dropping a file on the card or POSTing to
-     * /model/upload, no reflash). Label/CSV files are filtered out. */
-    if (storage_sd_present()) {
-        DIR *d = opendir(STORAGE_MOUNT_POINT "/model");
-        if (d) {
-            struct dirent *e;
-            int i = 0;
-            while ((e = readdir(d)) != NULL) {
-                if (e->d_type != DT_REG) continue;
-                const char *dot = strrchr(e->d_name, '.');
-                if (!dot || strcasecmp(dot, ".tflite") != 0) continue;
-                n = snprintf(buf, sizeof(buf), "%s\"%s\"", i++ ? "," : "", e->d_name);
-                httpd_resp_send_chunk(req, buf, n);
-            }
-            closedir(d);
-        }
-    }
-    httpd_resp_send_chunk(req, "]}", 2);
+    /* The `models` array used to be emitted here: the .tflite files on the
+     * card, offered as choices for the `region` picker. Both are gone (v2.90) —
+     * the on-device model went in 0.74.0 — which also takes an opendir of
+     * /sd/model off every settings fetch. The format string above now closes
+     * the JSON itself. */
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -3813,10 +3798,9 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     }
     body[len] = '\0';
 
-    char mode[12], tz[48], region[32], ntp[64];
+    char mode[12], tz[48], ntp[64];
     form_field(body, "mode=",   mode,   sizeof(mode));
     form_field(body, "tz=",     tz,     sizeof(tz));
-    form_field(body, "region=", region, sizeof(region));
     form_field(body, "ntp=",    ntp,    sizeof(ntp));
 
     if (mode[0])
@@ -3861,16 +3845,6 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.focus_pos           = field_num(body, "fpos=", 0, 1023, g_settings.focus_pos);
     if (tz[0] && !strchr(tz, '"'))
         strlcpy(g_settings.timezone, tz, sizeof(g_settings.timezone));
-    /* region names the active model file (§3.2); "" = auto-pick. Apply ONLY
-     * when the field is actually present, so a partial POST (any tab's save
-     * that doesn't carry region=) can't blank the model selection — that
-     * silently booted the wrong model after the next reboot. Empty-but-present
-     * is still honoured (the Settings dropdown's "auto" choice). Reject path
-     * escapes / JSON-breakers. */
-    if (has_field(body, "region=") &&
-        !strstr(region, "..") && !strchr(region, '/') &&
-        !strchr(region, '\\') && !strchr(region, '"'))
-        strlcpy(g_settings.region, region, sizeof(g_settings.region));
     if (ntp[0] && !strchr(ntp, '"') && !strchr(ntp, ' '))
         strlcpy(g_settings.ntp_server, ntp, sizeof(g_settings.ntp_server));
     g_settings.lang = (species_lang_t) field_num(body, "lang=", 0, 1, g_settings.lang);
@@ -3943,7 +3917,6 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * handling as the cloud keys: an absent ikey keeps the stored JWT; an
      * explicit ikeyclear=1 forgets it (and turns the tier off). The JWT is long
      * (~300-800 chars), so extract it into a heap buffer, not the httpd stack. */
-    g_settings.ondevice_enabled = field_num(body, "ondev=", 0, 1, g_settings.ondevice_enabled);
     g_settings.inat_cv_enabled = field_num(body, "inatcv=", 0, 1, g_settings.inat_cv_enabled);
     if (field_num(body, "ikeyclear=", 0, 1, 0) == 1) {
         g_settings.inat_key[0] = '\0';
@@ -4042,8 +4015,9 @@ static esp_err_t h_settings_post(httpd_req_t *req)
  * just POSTing this file back (the UI does it), so the restore path reuses that
  * handler's full validation/clamping — no second, drift-prone parser. Purpose:
  * survive an NVS wipe (portal reset / boot-button erase) without hand-re-tuning
- * (FSD §5). tz/region/ntp are emitted raw; their only special chars (,./-) pass
- * url_decode untouched. */
+ * (FSD §5). tz/ntp are emitted raw; their only special chars (,./-) pass
+ * url_decode untouched. An older file still carrying `region=`/`ondev=` restores
+ * fine — h_settings_post simply ignores fields it no longer parses. */
 static esp_err_t h_settings_export(httpd_req_t *req)
 {
     char zone[65];
@@ -4058,9 +4032,9 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&mirh=%u&mirv=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
-        "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&region=%s&ntp=%s"
+        "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&inat=%u&inatv=%u&cprov=%u&gmdl=%s"
-        "&ondev=%u&inatcv=%u&loc=%s",
+        "&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -4071,7 +4045,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (int) g_settings.contrast, (int) g_settings.ae_level,
         (int) g_settings.sharpness, (unsigned) g_settings.denoise,
         (unsigned) g_settings.focus_mode, (unsigned) g_settings.focus_pos,
-        g_settings.timezone, g_settings.region, g_settings.ntp_server,
+        g_settings.timezone, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
@@ -4079,7 +4053,6 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.inat_periodic_interval_min,
         (unsigned) g_settings.cloud_provider,
         g_settings.gemini_model,
-        (unsigned) g_settings.ondevice_enabled,
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_loc);
     httpd_resp_set_type(req, "application/octet-stream");
@@ -5467,136 +5440,11 @@ static esp_err_t h_id_frame_debug(httpd_req_t *req)
     return ident_dispatch(req, kind, CLOUD_OFF, date, file, NULL, 0);
 }
 
-/* POST /model/upload?name=<file> — write a model/labels file into /sd/model
- * (FSD §3.2 model swap without pulling the card). Held under the §7 write
- * lock for the whole stream, so a motion capture during the ~seconds-long
- * upload waits rather than interleaving. Takes effect on next boot. */
-static esp_err_t h_model_upload(httpd_req_t *req)
-{
-    if (!storage_sd_present()) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no SD card");
-        return ESP_OK;
-    }
-    char query[80] = {0}, name[48] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    httpd_query_key_value(query, "name", name, sizeof(name));
-    url_decode(name);
-    const char *dot = strrchr(name, '.');
-    if (!name[0] || strstr(name, "..") || strchr(name, '/') || strchr(name, '\\') ||
-        !dot || (strcasecmp(dot, ".tflite") && strcasecmp(dot, ".txt") &&
-                 strcasecmp(dot, ".csv"))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "name must be a plain .tflite/.txt/.csv filename");
-        return ESP_OK;
-    }
-    if (req->content_len <= 0 || req->content_len > 6 * 1024 * 1024) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad or oversized upload");
-        return ESP_OK;
-    }
-
-    char path[96];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/model/%.48s", name);
-
-    storage_write_lock();
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        storage_write_unlock();
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed");
-        return ESP_OK;
-    }
-    char buf[2048];
-    int remaining = req->content_len, timeout_retries = 0;
-    bool ok = true;
-    while (remaining > 0) {
-        int got = httpd_req_recv(req, buf, MIN(remaining, (int) sizeof(buf)));
-        if (got <= 0) {
-            if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
-            ok = false;
-            break;
-        }
-        timeout_retries = 0;
-        if (fwrite(buf, 1, got, f) != (size_t) got) { ok = false; break; }
-        remaining -= got;
-    }
-    fclose(f);
-    if (!ok) unlink(path);   /* no half-written model left as next boot's pick */
-    storage_write_unlock();
-
-    if (!ok) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "upload failed");
-        return ESP_OK;
-    }
-    ESP_LOGI(TAG, "model file uploaded: %s (%d bytes)", path, req->content_len);
-    char resp[128];
-    snprintf(resp, sizeof(resp),
-             "{\"ok\":true,\"file\":\"%s\",\"bytes\":%d,\"note\":\"reboot to load\"}",
-             name, req->content_len);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, resp);
-    return ESP_OK;
-}
-
-/* POST /model/delete?name=<file> — remove a model/labels file from /sd/model,
- * the symmetric counterpart to /model/upload (candidate models accrete during
- * the §3.2.2 retrain iteration and need cleanup without pulling the card).
- * Refuses to delete any file belonging to the currently loaded model — its
- * .tflite or its .txt, matched by basename stem — so you can't blow away what's
- * running. */
-static esp_err_t h_model_delete(httpd_req_t *req)
-{
-    if (!storage_sd_present()) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no SD card");
-        return ESP_OK;
-    }
-    char query[80] = {0}, name[48] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    httpd_query_key_value(query, "name", name, sizeof(name));
-    url_decode(name);
-    const char *dot = strrchr(name, '.');
-    if (!name[0] || strstr(name, "..") || strchr(name, '/') || strchr(name, '\\') ||
-        !dot || (strcasecmp(dot, ".tflite") && strcasecmp(dot, ".txt") &&
-                 strcasecmp(dot, ".csv"))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "name must be a plain .tflite/.txt/.csv filename");
-        return ESP_OK;
-    }
-    /* Guard the loaded model set (its .tflite and .txt share a basename stem). */
-    const char *active = classify_model_name();          /* "" if none loaded */
-    if (active[0]) {
-        char astem[48];
-        strlcpy(astem, active, sizeof(astem));
-        char *ad = strrchr(astem, '.');
-        if (ad) *ad = '\0';
-        size_t nstem = (size_t) (dot - name);
-        if (strlen(astem) == nstem && strncmp(name, astem, nstem) == 0) {
-            httpd_resp_set_status(req, "409 Conflict");
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_sendstr(req,
-                "{\"error\":\"that model is in use — select another and reboot first\"}");
-            return ESP_OK;
-        }
-    }
-    char path[96];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/model/%.48s", name);
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such model file");
-        return ESP_OK;
-    }
-    storage_write_lock();
-    int rc = unlink(path);
-    storage_write_unlock();
-    if (rc != 0) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "delete failed");
-        return ESP_OK;
-    }
-    ESP_LOGI(TAG, "model file deleted: %s", path);
-    char resp[96];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"deleted\":\"%s\"}", name);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, resp);
-    return ESP_OK;
-}
+/* `POST /model/upload` and `POST /model/delete` lived here: they put .tflite /
+ * label files onto /sd/model so a region model could be swapped without pulling
+ * the card. Removed in v2.90 — the on-device model went in 0.74.0, nothing has
+ * read /sd/model since, and neither route ever had a UI caller. That also gives
+ * the route table back two slots under the max_uri_handlers cap. */
 
 /* Pins already spoken for by the camera/SD/flash-PSRAM bus or fixed to a
  * boot-strapping/USB/UART role — off limits for the raw GPIO debug toggle
@@ -5786,8 +5634,6 @@ esp_err_t web_server_start(void)
 #if CONFIG_HEAP_TRACING
         { .uri = "/api/heaptrace",    .method = HTTP_GET,  .handler = h_heaptrace    },
 #endif
-        { .uri = "/model/upload",  .method = HTTP_POST, .handler = h_model_upload },
-        { .uri = "/model/delete",  .method = HTTP_POST, .handler = h_model_delete },
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(s_httpd, &routes[i]);

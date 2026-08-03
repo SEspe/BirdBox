@@ -135,9 +135,11 @@ bool        classify_last_event_identified(void); /* did the most recent event g
 uint32_t    classify_result_seq(void);         /* ++ each time an async classification result
                                                   lands; the live "Current" badge keys on it */
 
-/* Model label access for the relabel picker (FSD §3.4/v1.51): raw label at
- * index i ("Latin (Common)"), "" out of range; and whether it's in the
- * Northern-European region subset (all labels when the model isn't that set). */
+/* Vocabulary access for the relabel picker (FSD §3.4/v1.51): entry at index i
+ * ("Latin (Common)"), "" out of range; and whether it is in the Norway subset.
+ * The source is target_species.h — there have been no model labels since the
+ * 0.74.0 iNat-only pivot, so every entry is in-region and the second call is
+ * kept only so the picker's filter has something to ask. */
 const char *classify_label(int i);
 bool        classify_label_region(int i);
 
