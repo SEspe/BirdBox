@@ -33,6 +33,7 @@ CLASSIFYING	KLASSIFISERER
 FASTBIRD CHECK	HURTIGFUGL-SJEKK
 DETECTION OFF	DETEKSJON AV
 SD WRITE FAILING — captures are not being saved	SD-SKRIVING FEILER — bilder lagres ikke
+iNaturalist reference	iNaturalist-referanse
 Snapshot to SD	Øyeblikksbilde til SD
 Disable detection	Slå av deteksjon
 Edit detection zone	Rediger deteksjonssone

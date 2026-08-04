@@ -354,6 +354,50 @@ static const char INDEX_HTML[] =
 "background:url('" BIRD_LOGO "') center/cover;flex:0 0 auto}"
 ".livesp.pop{animation:livesppop .55s ease}"
 "@keyframes livesppop{0%{transform:scale(.8)}55%{transform:scale(1.07)}100%{transform:scale(1)}}"
+/* iNaturalist reference photo (v2.92), right edge, vertically centred so it
+ * clears the top-right pause/cool-down badges and the bottom-right LAST ID.
+ * The heading is STATIC markup, not built in JS, so applyLang can translate it
+ * (dynamically inserted text is not re-walked - the Phase 3 limitation) and so
+ * the panel always says what the photo IS: a reference from iNaturalist, not a
+ * frame from this camera. Deliberately NOT given the --vrot transform that
+ * .live and the gallery thumbs carry: rotation corrects THIS camera's mounting,
+ * and applying it to someone else's photo would just tilt it. */
+".livref{position:absolute;right:8px;top:50%;transform:translateY(-50%);z-index:3;"
+"display:none;width:108px;background:rgba(16,22,18,.82);color:#eafaef;"
+"padding:6px;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.45);"
+"pointer-events:auto;text-align:center}"
+".livref.on{display:block}"
+".livref .rfh{font-size:.55rem;letter-spacing:.04em;text-transform:uppercase;"
+"opacity:.55;font-weight:600;margin-bottom:4px;line-height:1.15}"
+".livref a{display:block;text-decoration:none;color:inherit;cursor:pointer}"
+".livref img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:5px;"
+"display:block;background:#000}"
+".livref .rfn{font-size:.74rem;font-weight:700;line-height:1.2;margin-top:4px;"
+"overflow:hidden;text-overflow:ellipsis}"
+".livref .rfl{font-size:.62rem;font-style:italic;opacity:.75;line-height:1.15}"
+".livref .rfc{font-size:.63rem;color:#a8d8bb;font-weight:600;line-height:1.3}"
+/* CC BY-NC and friends REQUIRE the credit to be shown, so this line is not
+ * optional decoration - clamp it, never drop it. */
+".livref .rfa{font-size:.52rem;opacity:.5;line-height:1.12;margin-top:3px;"
+"overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}"
+".livref a:hover .rfn{text-decoration:underline}"
+/* Minimize (v2.92): the card sits over the right of the frame, so it has to be
+ * possible to get it out of the way without losing it. Collapsed it becomes
+ * just its own toggle button, still anchored right, so restoring is one click.
+ * The choice persists in localStorage - a per-browser view preference, not
+ * device state, so it does NOT belong in NVS and must not follow the box to
+ * another viewer. */
+".livref .rfx{position:absolute;top:2px;right:2px;z-index:4;"
+"background:rgba(0,0,0,.45);color:#eafaef;border:0;border-radius:4px;"
+"font-size:.72rem;line-height:1;padding:2px 5px;cursor:pointer;"
+"font-family:inherit;opacity:.75}"
+".livref .rfx:hover{background:rgba(0,0,0,.75);opacity:1}"
+".livref.min{width:auto;padding:3px}"
+".livref.min .rfh,.livref.min .rfbody{display:none}"
+".livref.min .rfx{position:static;font-size:1rem;padding:3px 6px;background:none}"
+"@media(max-width:560px){.livref{width:74px;padding:4px}"
+".livref .rfh{font-size:.5rem}.livref .rfn{font-size:.63rem}"
+".livref .rfl,.livref .rfc{font-size:.55rem}.livref .rfa{-webkit-line-clamp:2}}"
 ".pausebadge{position:absolute;top:8px;right:8px;z-index:3;display:none;"
 "align-items:center;gap:6px;background:rgba(180,140,40,.92);color:#1a1205;"
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
@@ -540,6 +584,11 @@ ROT_OPTIONS
 "<div class='motgrid' id='motgrid'></div>"
 "<div class='livesp' id='livesp'></div>"
 "<div class='livesp' id='livesp2'></div>"
+"<div class='livref' id='livref'>"
+"<button class='rfx' id='rfx' onclick='refToggle()'>&times;</button>"
+"<div class='rfh'>iNaturalist reference</div>"
+"<div class='rfbody' id='livrefb'></div>"
+"</div>"
 "<div class='sdbadge' id='sdbadge'>&#9888; SD WRITE FAILING &mdash; captures are not being saved</div>"
 "</div>"
 "<div class='sts' id='sts'></div>"
@@ -944,6 +993,85 @@ ROT_OPTIONS
 "if(id==='dbgp')loadDebug();"
 "if(id==='wifip'){ipLoad();wfCfg();}"
 "if(id==='otap')ghLoad();}"
+/* ── iNaturalist reference photo for the identified species (v2.92) ────────
+ * The BROWSER asks iNaturalist directly and the img loads from iNat's own CDN.
+ * api.inaturalist.org answers with Access-Control-Allow-Origin colon star, so
+ * no device-side proxy is needed - and nothing is fetched, decoded or stored on
+ * the ESP32. That is the point: internal DRAM is what mbedTLS competes for
+ * (section 7, the cert-bundle history), and a decorative photo must never
+ * contend with the classification path for it. If the viewing phone has no
+ * internet the panel simply stays hidden; the name badges are unaffected.
+ *
+ * g_ref caches per page load, keyed on the binomial. A miss is stored as {} so
+ * a species with no usable photo is not re-queried on every 2 s poll; null
+ * means "request in flight". Declared HERE, above tick(), because tick() runs
+ * once immediately - var hoisting would otherwise leave the cache undefined on
+ * that first call. */
+"var g_ref={},g_refCur='';"
+/* The binomial is the parenthesised half of the localized display name, e.g.
+ * "Kjottmeis (Parus major)". Non-species outcomes - unclassified, no bird,
+ * Uidentifisert fugl - carry no parentheses and correctly yield "", which is
+ * what keeps the panel hidden unless a real species was identified. Require
+ * two words with the genus capitalised before spending a request on it. */
+"function spLatin(n){if(!n)return '';"
+"var a=n.lastIndexOf('('),b=n.lastIndexOf(')');if(a<0||b<a+4)return '';"
+"var s=n.slice(a+1,b).trim(),p=s.split(' ');"
+"if(p.length!==2||!p[0]||!p[1])return '';"
+"if(p[0].charAt(0)!==p[0].charAt(0).toUpperCase())return '';return s;}"
+"function refHide(){var e=$g('livref');if(e)e.classList.remove('on');g_refCur='';}"
+/* The common name comes from the DEVICE, not from iNat: s.species is already
+ * run through species_i18n and therefore follows the Language setting, whereas
+ * iNat's preferred_common_name is English ("Great Tit"). Everything left of the
+ * parenthesis is that localized name. iNat's own name is kept only as a
+ * fallback for the case where the device somehow sent a bare binomial. */
+"function spCommon(n){if(!n)return '';var a=n.lastIndexOf('(');"
+"return (a>0?n.slice(0,a):n).trim();}"
+/* Minimize is a per-browser view preference, so it lives in localStorage, not
+ * in device settings - two people watching the same box can disagree. Wrapped
+ * because a browser with storage disabled must still toggle, just not remember. */
+"function refBtn(m){var b=$g('rfx');if(b){b.innerHTML=m?'\\uD83D\\uDDBC':'\\u00D7';"
+"b.title=m?'show reference photo':'minimize';}}"
+"function refToggle(){var e=$g('livref');if(!e)return;"
+"var m=!e.classList.contains('min');e.classList.toggle('min',m);"
+"try{localStorage.setItem('bbRefMin',m?'1':'0');}catch(x){}refBtn(m);}"
+"function refInit(){var m=false;try{m=localStorage.getItem('bbRefMin')==='1';}catch(x){}"
+"var e=$g('livref');if(e)e.classList.toggle('min',m);refBtn(m);}"
+/* The thumbnail is iNat's 75px square; the link opens the medium (~500px) copy
+ * in a new tab. The attribution line is NOT optional - these photos are CC
+ * licensed (BY-NC and similar), so the credit renders with every image. */
+"function refRender(la,co,d,cf){var e=$g('livref'),b=$g('livrefb');if(!e||!b)return;"
+"if(!d||!d.t){e.classList.remove('on');return;}"
+"var h='<a href=\"'+esc(d.b)+'\" target=_blank rel=noopener>'"
+"+'<img src=\"'+esc(d.t)+'\" alt=\"'+esc(la)+'\">'"
+"+'<div class=rfn>'+esc(co||d.c||la)+'<\\/div>'"
+"+'<div class=rfl>'+esc(la)+'<\\/div>'"
+"+(cf?'<div class=rfc>'+cf+'%<\\/div>':'')"
+"+'<div class=rfa>'+esc(d.a||'iNaturalist')+'<\\/div><\\/a>';"
+"if(b.dataset.v!==h){b.dataset.v=h;b.innerHTML=h;}e.classList.add('on');}"
+/* SCAN the results for an exact binomial match - never trust the first hit.
+ * q= is fuzzy and ranks by its own relevance: "Pica pica" returns *Dryobates
+ * pubescens* first (a woodpecker - "Pica" matches Picidae/Piciformes) with the
+ * real magpie only second, so a per_page=1 lookup would either caption Skjaere
+ * with a woodpecker or, with the name check, silently show nothing at all for
+ * one of this feeder's commonest birds. Ask for several and pick the one whose
+ * name IS the binomial. Captioning a bird with the wrong species is worse than
+ * showing no photo, so an unmatched reply still stores {} and shows nothing. */
+"function refShow(name,cf){var la=spLatin(name),co=spCommon(name);"
+"if(!la){refHide();return;}"
+"g_refCur=la;"
+"if(g_ref[la]!==undefined){refRender(la,co,g_ref[la],cf);return;}"
+"g_ref[la]=null;"
+"fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&q='+encodeURIComponent(la))"
+".then(function(r){return r.json();}).then(function(j){"
+"var rs=(j&&j.results)||[],lc=la.toLowerCase(),hit=null;"
+"for(var i=0;i<rs.length;i++){"
+"if(rs[i]&&rs[i].default_photo&&String(rs[i].name).toLowerCase()===lc){hit=rs[i];break;}}"
+"if(!hit)g_ref[la]={};"
+"else{var p=hit.default_photo;"
+"g_ref[la]={t:p.square_url||p.url,b:p.medium_url||p.url,"
+"a:p.attribution||'',c:hit.preferred_common_name||''};}"
+"if(g_refCur===la)refRender(la,co,g_ref[la],cf);})"
+".catch(function(){g_ref[la]={};});}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=(s.time?('\\uD83D\\uDD52 '+s.time+' ('+s.clockSrc+')'):'\\uD83D\\uDD52 clock not set')+' | '"
 "+s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
@@ -988,6 +1116,10 @@ ROT_OPTIONS
 "var hl=s.spFile?'<a class=splink href=\"'+esc(s.spFile)+'\" target=_blank rel=noopener>'+hb+'<\\/a>':hb;"
 "if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
 "else spL.classList.remove('on');}"
+/* The reference photo tracks the LAST ID badge, not the ephemeral CURRENT one:
+ * s.species is the last real species the device identified and is sticky, so
+ * the photo stays up to compare against instead of vanishing on a 1-min TTL. */
+"if(s.species)refShow(s.species,s.spConf);else refHide();"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
 /* Live-view state lamp, one at a time in priority order (v2.54, +fastbird v2.56):
  *   RED  DETECTING          — frames being captured (motion)
@@ -1010,7 +1142,7 @@ ROT_OPTIONS
 "else cd.classList.remove('on');}"
 "var lm=$g('livemsg');"
 "if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
-"}).catch(()=>{});}tick();setInterval(tick,2000);"
+"}).catch(()=>{});}refInit();tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
 "var g_motN=-1,g_clsSeq=-1,g_evStart=-1,g_spAt=0;"   /* g_clsSeq: last classification-result seq shown in the Current badge; g_evStart: last capture-time event seq (blanks the badge); g_spAt: its shown-at (1-min TTL) */
