@@ -1186,10 +1186,26 @@ ROT_OPTIONS
 "function spiClose(){var e=$g('spop');if(e)e.style.display='none';}"
 /* wikipedia_summary contains real markup - "The <b>great tit</b> (<i>Parus
  * major</i>) is..." - which esc() would render as literal angle-bracket text.
- * Escaping and THEN re-enabling only the two inline tags Wikipedia uses keeps
- * links, scripts and attributes inert, because esc() already neutralised the
- * opening bracket. Assigning the raw string to innerHTML would not. */
-"function wsum(s){return esc(String(s||'')).replace(/&lt;(\\/?)(b|i)&gt;/g,'<$1$2>');}"
+ * Escape first, THEN re-enable only the two inline tags Wikipedia uses: links,
+ * scripts and attributes stay inert because esc() already neutralised the
+ * opening bracket. Assigning the raw string to innerHTML would not.
+ *
+ * The closing bracket is matched BARE, not as &gt; (v2.96). esc() escapes only
+ * & < and " - it does NOT touch > - so after escaping, "<b>" is "&lt;b>" and a
+ * regex looking for "&lt;b&gt;" never matches. That shipped in v2.94 and put
+ * literal <b>/<i> on screen in the summary, which is exactly what the sanitiser
+ * existed to prevent. Operator caught it.
+ *
+ * The second pass strips ANY other tag that survived, so no markup can ever
+ * reach the reader as visible codes even if Wikipedia introduces one we have
+ * not seen. A survey of 14 summaries (7 species x nb/en) found only <b> and
+ * <i>, but that is a sample, not a guarantee. It runs after the first pass and
+ * cannot eat the real tags, which by then start with a bare bracket rather than
+ * &lt;. A stray comparison ("x < y") is untouched: the pattern needs a letter
+ * immediately after the escaped bracket. */
+"function wsum(s){return esc(String(s||''))"
+".replace(/&lt;(\\/?)(b|i)>/g,'<$1$2>')"
+".replace(/&lt;\\/?[a-zA-Z][^>]*>/g,'');}"
 /* Photo counts VARY per taxon (measured: 10 for Parus major, 12 for Pica pica,
  * Pyrrhula pyrrhula and Perisoreus infaustus), so everything reads .length and
  * a 1-photo taxon renders with no arrows and no dots. With no detail record yet
