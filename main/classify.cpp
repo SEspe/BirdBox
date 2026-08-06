@@ -448,8 +448,23 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
      * unid==0), this is a false trigger (a swaying branch, a shadow), so scoring
      * the fast frames would just waste iNat calls on nothing (v2.58, operator's
      * frequent-false-trigger fix). The all-background case still files as "no
-     * bird" below, unchanged. */
-    if (win_k < 0 && job->fast_count > 0 && (ncand > 0 || unid > 0)) {
+     * bird" below, unchanged.
+     *
+     * ...UNLESS fewer than two slow frames were scored (v2.93). v2.58's premise
+     * is that the slow frames are a REPRESENTATIVE SAMPLE of the event, and on a
+     * short visit they are not: the slow frames are the event's TAIL, so a bird
+     * that arrives and leaves quickly is captured only by the fast burst while
+     * the lone slow frame — the very last one — sees the empty feeder. One frame
+     * is not a sample, and letting it veto four unscored frames is how a real
+     * bird gets filed as background.
+     *   MEASURED (2026-08-06, the event that prompted this): 5 frames, 4 fast +
+     *   1 slow. The slow frame (15-55-39-891) scored Insecta 21%, no Aves
+     *   anywhere → "no bird", so v2.58 skipped the burst. Re-scoring the frames
+     *   it skipped: 15-55-35-094 = Bokfink 87%, 15-55-36-293 = Bokfink 90%.
+     *   Two independent frames of a textbook chaffinch, never uploaded.
+     * The cost is bounded: this only fires when the slow sample is thin, which
+     * is exactly when the event was too short to have cost much yet. */
+    if (win_k < 0 && job->fast_count > 0 && (ncand > 0 || unid > 0 || scored < 2)) {
         s_fast_active = true;               /* live view: FASTBIRD CHECK */
         ESP_LOGI(TAG, "iNat: slow frames saw a bird but declined — scoring %d fast-burst frame(s)",
                  job->fast_count);
@@ -467,12 +482,31 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
         ESP_LOGI(TAG, "iNat: %s %s %d/%d frame(s) (%u%%)",
                  out->species, cand[win_k].votes >= 2 ? "seconded by" : "solo high-conf",
                  cand[win_k].votes, scored, out->confidence_pct);
-    } else if (have_nobird && ncand == 0 && unid == 0) {
+    } else if (have_nobird && ncand == 0 && unid == 0 && scored >= 2) {
         /* Every frame iNat scored had a non-Aves top guess (plant/mammal/…) — file
          * the event as "no bird" (background) rather than unclassified, so
          * vegetation/shadow triggers drop out of the review pile (v2.42). Requires
          * ALL scored frames to agree, so a bird seen in any frame keeps it
-         * unclassified. A confident no-bird call, so it isn't escalated to cloud. */
+         * unclassified. A confident no-bird call, so it isn't escalated to cloud.
+         *
+         * `scored >= 2` (v2.93) makes ABSENCE need the same corroboration a
+         * SPECIES needs. A lone frame can never confirm a bird (the >=2-frame
+         * guard at the top of this function); it must not be able to confirm an
+         * empty feeder either, because the one frame it gets is the event's last
+         * — taken after a quick visitor has already gone. When the fast-burst
+         * fallback above runs, it lifts `scored` past 2 by itself, so a genuine
+         * false trigger still files as "no bird" on the pooled evidence; this
+         * only declines when there was truly nothing else to look at (a 1-frame
+         * event, or the recheck path where fast_count is 0), and declining lands
+         * it on Unidentified for a human instead of asserting background.
+         *
+         * NOT a confidence floor. The obvious-looking version of this fix — ignore
+         * a non-Aves top below the species threshold — was measured against a full
+         * day and REJECTED: 45 of 57 no-bird events had every frame under 25%, so
+         * a floor would have pushed 79% of them back into the review pile. iNat's
+         * non-Aves score is simply low on an empty frame (typical 1-9%); it is not
+         * on the same scale as the species-acceptance threshold and must not be
+         * read as "weak evidence of emptiness". Frame COUNT is the real signal. */
         *out = nobird_res;              /* species "no bird", top3 = the non-bird guesses */
         *win = roi_none();
         if (scored_out) *scored_out = nobird;
