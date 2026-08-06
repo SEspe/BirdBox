@@ -51,6 +51,7 @@ static volatile int64_t  s_last_good_us= 0;     /* esp_timer of last good frame*
 static volatile uint32_t s_recoveries  = 0;     /* successful re-inits         */
 static volatile int64_t  s_last_recov_us = 0;   /* esp_timer of last recovery  */
 static volatile bool     s_fault       = false;
+static volatile uint32_t s_fault_clears= 0;     /* times a real frame cleared it (v2.97) */
 /* Frame size actually running, as a RES index — CAMERA_RES_NONE until a size
  * initializes. Kept separate from g_settings.resolution (the user's *request*)
  * because the degrade ladder below can boot at something smaller: writing the
@@ -305,9 +306,25 @@ camera_fb_t *camera_grab(void)
 
     if (fb) {
         int64_t now = esp_timer_get_time();
+        /* A DELIVERED FRAME DISPROVES THE FAULT (v2.97). s_fault means "auto-
+         * recovery gave up, a manual power cycle is required" — but nothing
+         * cleared it if the camera came back on its own, because the only reset
+         * lived in the watchdog's recovery-SUCCESS branch and a camera that
+         * never stalls again never gets a recovery attempt. The flag then stuck
+         * for the rest of the uptime, reporting a dead camera on a box that was
+         * happily capturing (observed on .111, 2026-08-06: camFault true while
+         * POST /api/capture returned a 103 KB frame on the first try).
+         * This is the one place a real frame is confirmed, so it is the honest
+         * place to clear it. Logged after leaving the critical section —
+         * ESP_LOG takes locks and must never run inside one. */
+        bool cleared = false;
         portENTER_CRITICAL(&s_mux);
         s_last_good_us = now;      /* s_inflight stays up until camera_return  */
+        if (s_fault) { s_fault = false; s_fault_clears++; cleared = true; }
         portEXIT_CRITICAL(&s_mux);
+        if (cleared)
+            ESP_LOGW(TAG, "camera fault CLEARED — a real frame was delivered "
+                          "(self-clear #%lu)", (unsigned long) s_fault_clears);
         return fb;
     }
     portENTER_CRITICAL(&s_mux);                      /* NULL: nothing held      */
@@ -405,6 +422,15 @@ static void cam_wd_task(void *arg)
          * probe grab, so the watchdog can't wedge itself on a broken camera. */
         bool active = (att != last_att) || (inflight > 0);
         last_att = att;
+        /* Fresh frames mean the camera is healthy again, so the consecutive-
+         * failure tally starts over (v2.97). Without this, recover_fail stayed
+         * at its terminal 3 for the rest of the uptime once a fault had been
+         * declared, and the NEXT stall — however unrelated, hours later — would
+         * re-declare a fault on its very first failed recovery instead of
+         * getting the intended three tries. That pairs with the self-clear in
+         * camera_fb_get: clearing the flag while leaving the tally latched
+         * would just make the fault come back at the first hiccup. */
+        if (now - last_good < STALL_US) recover_fail = 0;
         if (!active || now - last_good < STALL_US) continue;
 
         ESP_LOGW(TAG, "watchdog: camera stalled %llds (inflight=%d) — recovering #%lu",
@@ -459,6 +485,7 @@ esp_err_t camera_watchdog_start(void)
 
 uint32_t camera_recovery_count(void) { return s_recoveries; }
 bool     camera_fault(void)          { return s_fault; }
+uint32_t camera_fault_clears(void)   { return s_fault_clears; }
 
 int camera_last_recovery_ago_s(void)
 {

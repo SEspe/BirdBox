@@ -35,6 +35,9 @@ uint32_t camera_recovery_count(void);     /* successful re-inits since boot   */
 int      camera_last_recovery_ago_s(void);/* seconds since last, -1 if none   */
 bool     camera_fault(void);              /* true = auto-recovery gave up,
                                              needs a manual power cycle        */
+uint32_t camera_fault_clears(void);       /* times a delivered frame cleared a
+                                             fault (v2.97) — a non-zero count
+                                             means the flag had gone stale     */
 
 /* Re-programs the sensor's JPEG quality (lower = better) at runtime — the
  * Settings tab applies stream quality without a reboot (FSD §5). */

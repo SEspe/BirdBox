@@ -2434,6 +2434,11 @@ ROT_OPTIONS
 "drow('Fast-burst gap',d.fastAvgMs?((d.fastLastMs||0)+' ms (avg '+(d.fastAvgMs||0)+' ms)'):'\\u2014 waiting for an event')+"
 "drow('Watchdog recoveries',(d.camRecoveries||0)+(d.camRecoveryAgo>=0?' (last '+fmtAge(d.camRecoveryAgo)+' ago)':''),(d.camRecoveries?'':'ok'))+"
 "(d.camFault?drow('Camera fault','YES \\u2014 needs a manual power cycle','bad'):'')"
+/* A non-zero self-clear count means the fault flag had gone STALE — the camera
+ * was declared dead and then delivered frames anyway (v2.97). Worth showing
+ * even though it is the good outcome: it is the only trace that the box spent
+ * time reporting a camera fault it did not have. */
+"+((d.camFaultClears||0)?drow('Camera fault self-cleared',d.camFaultClears+'\\u00d7 (a real frame disproved the fault)','ok'):'')"
 ":drow('Status','no camera','bad');"
 /* Species ID card, reworked for the iNat-only world (v2.71): the region row
  * shows the REAL Norway allowlist (species_in_region, 147 entries), the vocab
@@ -4724,6 +4729,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camDenoise\":%s,\"camAF\":%s,\"camFocusLocked\":%s,"
         "\"camAFErr\":\"%s\","
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
+        "\"camFaultClears\":%lu,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
         "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
@@ -4761,6 +4767,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_af_error(),   /* fixed set of literals + esp_err_to_name — JSON-safe */
         (unsigned long) camera_recovery_count(), camera_last_recovery_ago_s(),
         camera_fault() ? "true" : "false",
+        (unsigned long) camera_fault_clears(),
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(),
         /* clsRegion = the real "Norway only" allowlist size (species_i18n.c's
