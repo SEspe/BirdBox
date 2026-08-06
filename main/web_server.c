@@ -1058,7 +1058,7 @@ ROT_OPTIONS
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
 "var lv=document.getElementById('live');"
-"if(id==='livep'){if(!lv.src.endsWith('/stream'))lv.src='/stream';}"
+"if(id==='livep'){if(!lv.src.endsWith('/stream')){liveArm();lv.src='/stream';}}"
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
 "if(id==='galleryp'){loadDays();gRcPoll();"
 "if(!g_nbBound){var gg=$g('grid');if(gg){gg.addEventListener('dblclick',nbDbl);g_nbBound=true;}}}"
@@ -1386,6 +1386,26 @@ ROT_OPTIONS
 "else cd.classList.remove('on');}"
 "var lm=$g('livemsg');"
 "if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
+/* Live-view stall watchdog (v2.98). The UI could detect a stream that FAILED
+ * but not one that ENDED: stream_task leaves its loop on a camera recovery
+ * (camera_grab returns NULL at once while s_recovering), on the 5 s
+ * SO_SNDTIMEO, or on any send error, and then sends the terminating zero-length
+ * chunk — a CLEAN end of the multipart response, which fires no onerror. So
+ * liveErr() never ran, 'livemsg' never went 'on', and the slot-freed reconnect
+ * above (gated on exactly that) never fired: the img held its last frame until
+ * the operator reloaded the page. Both detectors below require g_liveN>0, i.e.
+ * this connection has already delivered a frame, so a request still being
+ * established cannot trip them.
+ *   1. streamUsed===0 — server-side proof no stream task is alive. Browser-
+ *      independent, and the one that catches the reported failure.
+ *   2. No part for 10 s while parts were previously arriving. Gated on
+ *      g_liveMulti so a browser that fires 'load' only once per connection
+ *      never enters a reconnect loop against a perfectly healthy stream. 10 s
+ *      is ~9 frames of margin at the .199 unit's measured 0.94 fps (UXGA). */
+"var lvp=$g('livep'),lvi=$g('live');"
+"if(lvp&&lvp.classList.contains('on')&&lvi&&lvi.src.indexOf('/stream')>=0&&g_liveN>0){"
+"if(s.streamUsed===0)liveRetry();"
+"else if(g_liveMulti&&Date.now()-g_liveAt>10000)liveRetry();}"
 "}).catch(()=>{});}refInit();tick();setInterval(tick,2000);"
 /* Fast per-trigger motion border: poll the tiny /api/motion ~2Hz while the live
  * tab is open; a rising trigger count flashes a red frame border for 1s. */
@@ -1405,14 +1425,23 @@ ROT_OPTIONS
 "for(var c=0;c<64;c++)g.children[c].className=(cells[c]==='1'?'mcell hit':'mcell');"
 "clearTimeout(window._motT);window._motT=setTimeout(function(){lw.classList.remove('mot');motClear();},1000);}"
 "setInterval(motTick,500);"
-"function liveOk(){var m=$g('livemsg');if(m)m.classList.remove('on');}"
+/* Stream-liveness bookkeeping (v2.98). g_liveAt is stamped on every delivered
+ * part, g_liveN counts them on the CURRENT connection, and g_liveMulti records
+ * that this browser fires `load` per multipart part at all — see the watchdog
+ * in tick(). liveArm() resets the pair whenever a new /stream request is
+ * issued, so a connection that has not yet produced a frame can never be
+ * mistaken for one that stalled. */
+"var g_liveAt=0,g_liveN=0,g_liveMulti=false;"
+"function liveArm(){g_liveN=0;g_liveAt=Date.now();}"
+"function liveOk(){var m=$g('livemsg');if(m)m.classList.remove('on');"
+"g_liveN++;if(g_liveN>1)g_liveMulti=true;g_liveAt=Date.now();}"
 "function liveErr(){var lv=$g('live');if(!lv||lv.src.indexOf('/stream')<0)return;"   /* src cleared on tab switch — ignore */
 "var m=$g('livemsg');if(!m)return;m.classList.add('on');m.innerHTML='\\u23F3 connecting\\u2026';"
 "fetch('/api/status').then(r=>r.json()).then(function(s){var rb='<br><button onclick=\"liveRetry()\">Retry</button>';"
 "if(s.streamUsed>=s.streamMax)m.innerHTML='\\uD83D\\uDCF5 Live view busy<div class=lms>All '+s.streamMax+' stream slots are in use by other viewers. It will reconnect automatically when one frees.</div>'+rb;"
 "else m.innerHTML='\\u26A0\\uFE0F No video<div class=lms>Camera stream unavailable.</div>'+rb;"
 "}).catch(function(){m.innerHTML='\\u26A0\\uFE0F No connection to the device<br><button onclick=\"liveRetry()\">Retry</button>';});}"
-"function liveRetry(){var lv=$g('live');if(lv)lv.src='/stream?t='+Date.now();}"
+"function liveRetry(){var lv=$g('live');if(!lv)return;liveArm();lv.src='/stream?t='+Date.now();}"
 "function detApply(en){var b=$g('detBtn');if(b){b.dataset.on=en?'1':'0';"
 "b.innerHTML=en?'\\u23F8 Disable detection':'\\u25B6 Enable detection';"
 "b.classList.toggle('off',!en);}"
