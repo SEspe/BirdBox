@@ -395,3 +395,12 @@ optional	valgfritt
 @sinfo:ir:d	Innebygd hvit/rødlig lys-LED. Auto slår den på når kameraets egne bilder er mørke og av igjen når det er lyst — enkel nattbelysning uten egen lyssensor. La stå av hvis den aldri skal lyse opp scenen.
 @sinfo:ir:def	Av
 @sinfo:ir:alt	Auto (på når det er mørkt).
+Class	Klasse
+Order	Orden
+Family	Familie
+Status	Status
+On iNaturalist	På iNaturalist
+Summary from Wikipedia (English)	Sammendrag fra Wikipedia (engelsk)
+Details unavailable	Detaljer utilgjengelig
+Read on Wikipedia	Les på Wikipedia
+iNaturalist page	iNaturalist-side

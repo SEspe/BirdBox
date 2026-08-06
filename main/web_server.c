@@ -370,6 +370,13 @@ static const char INDEX_HTML[] =
 ".livref .rfh{font-size:.55rem;letter-spacing:.04em;text-transform:uppercase;"
 "opacity:.55;font-weight:600;margin-bottom:4px;line-height:1.15}"
 ".livref a{display:block;text-decoration:none;color:inherit;cursor:pointer}"
+/* The name block is a BUTTON (opens the species panel, v2.94) while the
+ * thumbnail stays an <a> to iNat's medium copy - splitting them keeps the
+ * gesture that already existed. Strip the browser's button chrome, or a native
+ * border and centred system font land inside a 108 px card. */
+".livref .rfi{display:block;width:100%;background:none;border:0;padding:0;margin:0;"
+"color:inherit;font:inherit;text-align:center;cursor:pointer}"
+".livref .rfi:hover .rfn{text-decoration:underline}"
 ".livref img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:5px;"
 "display:block;background:#000}"
 ".livref .rfn{font-size:.74rem;font-weight:700;line-height:1.2;margin-top:4px;"
@@ -532,16 +539,55 @@ static const char INDEX_HTML[] =
 "border:1px solid #7fc98b;border-radius:50%;color:#7fc98b;font-size:.68rem;font-weight:700;"
 "cursor:pointer;margin-left:6px;user-select:none;flex-shrink:0}"
 ".inf:hover{background:#7fc98b;color:#132a1c}"
-".ipop{position:fixed;inset:0;z-index:60;display:none;background:rgba(0,0,0,.55);"
+/* The settings-info modal and the species-info panel (v2.94) share their frame,
+ * so the shared rules carry both selectors rather than being duplicated - the
+ * whole stylesheet is C string literals, and a duplicated block is both flash
+ * bytes and a second thing to keep in sync. They are separate INSTANCES though
+ * (spop is not ipop): they open from different tabs, have different lifetimes,
+ * and sInfo writes ipT/ipD/ipDef/ipAlt by id. */
+".ipop,.spop{position:fixed;inset:0;z-index:60;display:none;background:rgba(0,0,0,.55);"
 "align-items:center;justify-content:center;padding:16px}"
-".ipbox{background:#1e3826;border:1px solid #3f8a4f;border-radius:8px;max-width:460px;"
+".ipbox,.spbox{background:#1e3826;border:1px solid #3f8a4f;border-radius:8px;max-width:460px;"
 "width:100%;max-height:80vh;overflow-y:auto;padding:14px 16px;font-size:.82rem;"
 "line-height:1.45;color:#dde}"
-".ipbox h4{color:#7fc98b;margin:0 0 8px;font-size:.92rem}"
-".ipx{float:right;cursor:pointer;color:#9ab;font-size:1.05rem;line-height:1;padding:2px 4px}"
-".ipx:hover{color:#fff}"
-".iprow{margin-top:9px;border-top:1px solid #2a4d34;padding-top:7px}"
-".iprow b{color:#7fc98b}"
+".ipbox h4,.spbox h4{color:#7fc98b;margin:0 0 8px;font-size:.92rem}"
+".ipx,.spx{float:right;cursor:pointer;color:#9ab;font-size:1.05rem;line-height:1;padding:2px 4px}"
+".ipx:hover,.spx:hover{color:#fff}"
+".iprow,.sprow{margin-top:9px;border-top:1px solid #2a4d34;padding-top:7px}"
+".iprow b,.sprow b{color:#7fc98b}"
+/* Species-info panel (v2.94). The photo frame is a fixed 4:3 box so stepping
+ * through photos of different aspect ratios does not make the modal jump. */
+".spbox h4{margin-bottom:2px}"
+".spsub{font-size:.78rem;opacity:.82;margin-bottom:10px}"
+".spsub i{font-style:italic}"
+".spsub .spcf{color:#a8d8bb;font-weight:700;margin-left:5px}"
+".spph{position:relative;background:#0d1a12;border-radius:6px;overflow:hidden;"
+"aspect-ratio:4/3;display:flex;align-items:center;justify-content:center}"
+".spph a{display:block;width:100%;height:100%}"
+".spph img{width:100%;height:100%;object-fit:contain;display:block}"
+".spnav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;"
+"background:rgba(0,0,0,.5);color:#eafaef;border:0;border-radius:4px;cursor:pointer;"
+"font-size:1.3rem;line-height:1;padding:8px 10px;font-family:inherit;opacity:.7}"
+".spnav:hover{background:rgba(0,0,0,.8);opacity:1}"
+".spprev{left:4px}.spnext{right:4px}"
+".spdots{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:7px}"
+".spdot{width:8px;height:8px;border-radius:50%;background:#2a4d34;cursor:pointer;"
+"border:1px solid #3f8a4f;flex:0 0 auto}"
+".spdot.on{background:#7fc98b;border-color:#7fc98b}"
+".spn{margin-left:auto;font-size:.68rem;opacity:.6}"
+/* CC BY-NC and friends REQUIRE the credit, and it belongs to the photo CURRENTLY
+ * shown - it is re-rendered on every step, never left over from the last one. */
+".spcred{font-size:.63rem;opacity:.55;line-height:1.2;margin-top:5px}"
+".spsum{margin-top:4px;font-size:.79rem;line-height:1.5;max-height:9.5em;overflow-y:auto}"
+".spsumh{margin-top:11px;font-size:.6rem;letter-spacing:.04em;text-transform:uppercase;"
+"opacity:.5;font-weight:600}"
+".spbtns{display:flex;gap:8px;margin-top:13px;flex-wrap:wrap}"
+".spbtn{flex:1 1 auto;text-align:center;text-decoration:none;background:#2a4d34;"
+"color:#cfe9d6;border:1px solid #3f8a4f;border-radius:6px;padding:7px 10px;"
+"font-size:.75rem;font-weight:600;white-space:nowrap}"
+".spbtn:hover{background:#3f8a4f;color:#fff}"
+"@media(max-width:560px){.spnav{font-size:1.1rem;padding:6px 8px}"
+".spsum{max-height:12em}}"
 "</style></head><body>"
 "<div class='hdr'><h1><img class='logo' src='" BIRD_LOGO "' alt=''> " FIRMWARE_NAME "</h1>"
 "<span class='v'>v" FIRMWARE_VERSION "</span></div>"
@@ -977,6 +1023,35 @@ ROT_OPTIONS
 "<div class='iprow'><b>Default:</b> <span id='ipDef'></span></div>"
 "<div class='iprow'><b>Alternatives:</b> <span id='ipAlt'></span></div>"
 "</div></div>"
+/* Species-info panel (v2.94), opened from the live reference card's name block.
+ * Every LABEL here is static markup so applyLang can translate it - applyLang
+ * walks the body's text nodes once and does not re-walk anything JS inserts
+ * later (the standing Phase 3 limitation), so a label built in JS would stay
+ * English forever. Only the VALUES are filled in by spiRender. */
+"<div class='spop' id='spop' onclick='if(event.target===this)spiClose()'>"
+"<div class='spbox'><span class='spx' onclick='spiClose()'>&#10005;</span>"
+"<h4 id='spiT'></h4>"
+"<div class='spsub'><i id='spiL'></i><span class='spcf' id='spiC'></span></div>"
+"<div class='spph' id='spiPh' ontouchstart='spiTS(event)' ontouchend='spiTE(event)'>"
+"<button class='spnav spprev' id='spiPrev' onclick='spiNav(-1)'>&#8249;</button>"
+"<a id='spiLink' target=_blank rel=noopener><img id='spiImg' alt=''></a>"
+"<button class='spnav spnext' id='spiNext' onclick='spiNav(1)'>&#8250;</button>"
+"</div>"
+"<div class='spdots' id='spiDots'></div>"
+"<div class='spcred' id='spiCred'></div>"
+"<div class='sprow'><b>Class</b> <span id='spiCls'></span></div>"
+"<div class='sprow'><b>Order</b> <span id='spiOrd'></span></div>"
+"<div class='sprow'><b>Family</b> <span id='spiFam'></span></div>"
+"<div class='sprow' id='spiStRow'><b>Status</b> <span id='spiSt'></span></div>"
+"<div class='sprow' id='spiObsRow'><b>On iNaturalist</b> <span id='spiObs'></span></div>"
+"<div class='spsumh' id='spiSumH'>Summary from Wikipedia (English)</div>"
+"<div class='spsum' id='spiSum'></div>"
+"<div class='spsum' id='spiErr' style='opacity:.6'>Details unavailable</div>"
+"<div class='spbtns'>"
+"<a class='spbtn' id='spiWiki' target=_blank rel=noopener>Read on Wikipedia</a>"
+"<a class='spbtn' id='spiInat' target=_blank rel=noopener>iNaturalist page</a>"
+"</div>"
+"</div></div>"
 "<script>"
 "function show(id,btn){"
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
@@ -1007,7 +1082,7 @@ ROT_OPTIONS
  * means "request in flight". Declared HERE, above tick(), because tick() runs
  * once immediately - var hoisting would otherwise leave the cache undefined on
  * that first call. */
-"var g_ref={},g_refCur='';"
+"var g_ref={},g_refCur='',g_refCo='',g_refCf=0;"
 /* The binomial is the parenthesised half of the localized display name, e.g.
  * "Kjottmeis (Parus major)". Non-species outcomes - unclassified, no bird,
  * Uidentifisert fugl - carry no parentheses and correctly yield "", which is
@@ -1041,12 +1116,19 @@ ROT_OPTIONS
  * licensed (BY-NC and similar), so the credit renders with every image. */
 "function refRender(la,co,d,cf){var e=$g('livref'),b=$g('livrefb');if(!e||!b)return;"
 "if(!d||!d.t){e.classList.remove('on');return;}"
+/* Two affordances, deliberately split (v2.94): the THUMBNAIL keeps its original
+ * link to iNat's medium copy, and the NAME BLOCK is a button that opens the
+ * species panel. Folding both into the old single <a> would have stolen the
+ * gesture that already shipped in v2.92. */
 "var h='<a href=\"'+esc(d.b)+'\" target=_blank rel=noopener>'"
 "+'<img src=\"'+esc(d.t)+'\" alt=\"'+esc(la)+'\">'"
+"+'<\\/a>'"
+"+'<button type=button class=rfi onclick=\"spiOpen()\">'"
 "+'<div class=rfn>'+esc(co||d.c||la)+'<\\/div>'"
 "+'<div class=rfl>'+esc(la)+'<\\/div>'"
 "+(cf?'<div class=rfc>'+cf+'%<\\/div>':'')"
-"+'<div class=rfa>'+esc(d.a||'iNaturalist')+'<\\/div><\\/a>';"
+"+'<\\/button>'"
+"+'<div class=rfa>'+esc(d.a||'iNaturalist')+'<\\/div>';"
 "if(b.dataset.v!==h){b.dataset.v=h;b.innerHTML=h;}e.classList.add('on');}"
 /* SCAN the results for an exact binomial match - never trust the first hit.
  * q= is fuzzy and ranks by its own relevance: "Pica pica" returns *Dryobates
@@ -1058,7 +1140,10 @@ ROT_OPTIONS
  * showing no photo, so an unmatched reply still stores {} and shows nothing. */
 "function refShow(name,cf){var la=spLatin(name),co=spCommon(name);"
 "if(!la){refHide();return;}"
-"g_refCur=la;"
+/* The localized name and confidence are kept alongside the current binomial so
+ * the species panel can head itself with the DEVICE's name (species_i18n, which
+ * follows the Language setting) instead of iNat's English one (v2.94). */
+"g_refCur=la;g_refCo=co;g_refCf=cf||0;"
 "if(g_ref[la]!==undefined){refRender(la,co,g_ref[la],cf);return;}"
 "g_ref[la]=null;"
 "fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&q='+encodeURIComponent(la))"
@@ -1067,11 +1152,142 @@ ROT_OPTIONS
 "for(var i=0;i<rs.length;i++){"
 "if(rs[i]&&rs[i].default_photo&&String(rs[i].name).toLowerCase()===lc){hit=rs[i];break;}}"
 "if(!hit)g_ref[la]={};"
+/* `id` is kept (v2.94): the species panel needs the taxon id for its detail
+ * call, and without it that lookup would have to re-run this fuzzy q= search
+ * and re-solve the Pica-pica problem from scratch. */
 "else{var p=hit.default_photo;"
-"g_ref[la]={t:p.square_url||p.url,b:p.medium_url||p.url,"
+"g_ref[la]={id:hit.id,t:p.square_url||p.url,b:p.medium_url||p.url,"
 "a:p.attribution||'',c:hit.preferred_common_name||''};}"
 "if(g_refCur===la)refRender(la,co,g_ref[la],cf);})"
 ".catch(function(){g_ref[la]={};});}"
+/* ── Species info panel (v2.94) ────────────────────────────────────────────
+ * Opened from the reference card's name block. Same rule as the card: the
+ * BROWSER fetches this and nothing touches the ESP32 - no firmware fetch, no
+ * decode, no SD cache, no extra TLS. Internal DRAM is the pool mbedTLS competes
+ * for, and reference material must never contend with the classification path.
+ *
+ * The detail record is a fixed ~75 KB and CANNOT be trimmed - the v1 API ignores
+ * a fields= parameter (measured: byte-identical response). So it is fetched
+ * LAZILY, on first open of a species, and never from the 2 s status poll: a bird
+ * identified and never clicked costs nothing at all. taxon_photos rides along in
+ * that same payload, so the photo scroller adds no JSON, only the images the
+ * viewer actually steps to. */
+"var g_spi={la:'',i:0};"
+"function spiClose(){var e=$g('spop');if(e)e.style.display='none';}"
+/* wikipedia_summary contains real markup - "The <b>great tit</b> (<i>Parus
+ * major</i>) is..." - which esc() would render as literal angle-bracket text.
+ * Escaping and THEN re-enabling only the two inline tags Wikipedia uses keeps
+ * links, scripts and attributes inert, because esc() already neutralised the
+ * opening bracket. Assigning the raw string to innerHTML would not. */
+"function wsum(s){return esc(String(s||'')).replace(/&lt;(\\/?)(b|i)&gt;/g,'<$1$2>');}"
+/* Photo counts VARY per taxon (measured: 10 for Parus major, 12 for Pica pica,
+ * Pyrrhula pyrrhula and Perisoreus infaustus), so everything reads .length and
+ * a 1-photo taxon renders with no arrows and no dots. With no detail record yet
+ * this falls back to the card's single default photo so the panel is never
+ * empty while the fetch is in flight. */
+"function spiPhotos(){var d=g_ref[g_spi.la];if(!d)return [];"
+"var t=d.det;if(t&&t.ph&&t.ph.length)return t.ph;"
+"return d.t?[{s:d.t,m:d.b,a:d.a||'',n:''}]:[];}"
+"function spiNav(dl){var n=spiPhotos().length;if(n<2)return;"
+"g_spi.i=(g_spi.i+dl+n)%n;spiRender();}"
+"function spiGo(k){g_spi.i=k;spiRender();}"
+"var g_spiX=0;"
+"function spiTS(ev){g_spiX=ev.changedTouches[0].clientX;}"
+"function spiTE(ev){var dx=ev.changedTouches[0].clientX-g_spiX;"
+"if(Math.abs(dx)>40)spiNav(dx<0?1:-1);}"
+"function spiRender(){var la=g_spi.la,d=g_ref[la];if(!d)return;"
+"var t=d.det,loading=(t===null);"
+/* Header name is the DEVICE's localized one, not iNat's English one. */
+"$g('spiT').textContent=g_refCo||d.c||la;"
+"$g('spiL').textContent=la;"
+"$g('spiC').textContent=g_refCf?(g_refCf+'%'):'';"
+"var ph=spiPhotos(),n=ph.length,i;"
+"if(g_spi.i>=n)g_spi.i=0;d.pi=g_spi.i;"
+"var im=$g('spiImg'),lk=$g('spiLink');"
+"if(n){var p=ph[g_spi.i];"
+"if(im.getAttribute('src')!==p.s)im.src=p.s;"
+"lk.href=p.n||p.m||p.s;"
+/* The credit belongs to the photo currently shown and is re-rendered on every
+ * step - a stale line would mis-credit a named photographer. Licences differ
+ * per photo WITHIN one species (Pica pica: 4 of 12 are all-rights-reserved),
+ * so this is never optional and never dropped. */
+"$g('spiCred').textContent=p.a||'iNaturalist';"
+/* Only the neighbours are preloaded, so a 12-photo species costs one image on
+ * open and one per step instead of all twelve up front. */
+"if(n>1){var a1=new Image(),a2=new Image();"
+"a1.src=ph[(g_spi.i+1)%n].s;a2.src=ph[(g_spi.i+n-1)%n].s;}}"
+"else{im.removeAttribute('src');$g('spiCred').textContent='';}"
+"var dz='';"
+"for(i=0;i<n;i++)dz+='<span class=\"spdot'+(i===g_spi.i?' on':'')+'\" onclick=\"spiGo('+i+')\"><\\/span>';"
+"if(n>1)dz+='<span class=spn>'+(g_spi.i+1)+' / '+n+'<\\/span>';"
+"$g('spiDots').innerHTML=n>1?dz:'';"
+"$g('spiPrev').style.display=n>1?'':'none';"
+"$g('spiNext').style.display=n>1?'':'none';"
+"var sv=function(id,v){var e=$g(id);if(e)e.textContent=v||'';};"
+/* class/order/family are picked BY RANK, never by array position - rank sets
+ * are not uniform across taxa (the Parus chain carries a subphylum), so index
+ * arithmetic would silently mislabel. */
+"sv('spiCls',t&&t.cls);sv('spiOrd',t&&t.ord);sv('spiFam',t&&t.fam);"
+/* conservation_statuses is a list of PER-AUTHORITY assessments, not a global
+ * IUCN verdict (Parus major comes back as "LC, Finnish Red List 2019" with the
+ * flat conservation_status null), so the authority is named in the row. Empty
+ * list means the row is hidden, not printed as "unknown". */
+"var sr=$g('spiStRow');"
+"if(t&&t.st){sv('spiSt',t.st+(t.sta?(' ('+t.sta+')'):''));sr.style.display='';}"
+"else sr.style.display='none';"
+"var orow=$g('spiObsRow');"
+"if(t&&t.obs){sv('spiObs',String(t.obs));orow.style.display='';}"
+"else orow.style.display='none';"
+"var su=$g('spiSum'),sh=$g('spiSumH'),er=$g('spiErr');"
+"su.style.display='none';sh.style.display='none';er.style.display='none';"
+"if(loading)su.style.display='';"
+"else if(t&&t.sum){su.innerHTML=wsum(t.sum);su.style.display='';sh.style.display='';}"
+"else if(t&&(t.cls||t.ph&&t.ph.length))su.style.display='none';"
+"else er.style.display='';"
+"if(loading)su.textContent='\\u2026';"
+"var W=$g('spiWiki');"
+/* wikipedia_url arrives with a RAW SPACE ("…/wiki/Parus major"), so encode it. */
+"if(t&&t.w){W.href=encodeURI(t.w);W.style.display='';}else W.style.display='none';"
+"var I=$g('spiInat');"
+"if(d.id){I.href='https://www.inaturalist.org/taxa/'+d.id;I.style.display='';}"
+"else I.style.display='none';}"
+"function spiFetch(la,id){var d=g_ref[la];if(!d)return;"
+"d.det=null;spiRender();"
+"fetch('https://api.inaturalist.org/v1/taxa/'+id)"
+".then(function(r){return r.json();}).then(function(j){"
+"var x=(j&&j.results&&j.results[0])||null;"
+"if(!x){d.det={};spiRender();return;}"
+"var an={},A=x.ancestors||[],i;"
+"for(i=0;i<A.length;i++)if(A[i]&&A[i].rank)an[A[i].rank]=A[i].name||'';"
+/* Trimmed down to the four fields per photo that get rendered - there is no
+ * reason to hold ten full photo objects plus ancestors and children in memory
+ * once the panel has read what it needs. */
+"var ph=[],TP=x.taxon_photos||[];"
+"for(i=0;i<TP.length;i++){var p=TP[i]&&TP[i].photo;if(!p)continue;"
+"ph.push({s:p.small_url||p.square_url||p.url,m:p.medium_url||p.large_url||p.url,"
+"a:p.attribution||'',n:p.native_page_url||''});}"
+"var CS=x.conservation_statuses||[],cs=CS[0]||null;"
+"for(i=0;i<CS.length;i++){var pn=(CS[i]&&CS[i].place&&CS[i].place.name)||'';"
+"if(/norw|norge|nordic/i.test(pn)){cs=CS[i];break;}}"
+"d.det={cls:an['class']||'',ord:an['order']||'',fam:an['family']||'',"
+"sum:x.wikipedia_summary||'',w:x.wikipedia_url||'',obs:x.observations_count||0,"
+"st:(cs&&cs.status)||'',sta:(cs&&cs.authority)||'',ph:ph};"
+"spiRender();})"
+".catch(function(){d.det={};spiRender();});}"
+/* The scroll index is remembered per species for the page load, so reopening
+ * the same bird lands where you left it while a different bird starts at 0. It
+ * is NOT persisted: an open modal is a transient state, unlike the card's
+ * minimize, which is a real per-browser preference and does live in localStorage. */
+"function spiOpen(){var la=g_refCur,d=g_ref[la];"
+"if(!la||!d||!d.id)return;"
+"g_spi.la=la;g_spi.i=d.pi||0;"
+"var e=$g('spop');if(!e)return;e.style.display='flex';"
+"if(d.det===undefined)spiFetch(la,d.id);else spiRender();}"
+"document.addEventListener('keydown',function(ev){"
+"var e=$g('spop');if(!e||e.style.display!=='flex')return;"
+"if(ev.key==='Escape')spiClose();"
+"else if(ev.key==='ArrowLeft')spiNav(-1);"
+"else if(ev.key==='ArrowRight')spiNav(1);});"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(s=>{"
 "var t=(s.time?('\\uD83D\\uDD52 '+s.time+' ('+s.clockSrc+')'):'\\uD83D\\uDD52 clock not set')+' | '"
 "+s.ip+' | RSSI '+s.rssi+' dBm | heap '+Math.round(s.heap/1024)+' KB | up '+s.uptime+' s'"
