@@ -400,7 +400,7 @@ Order	Orden
 Family	Familie
 Status	Status
 On iNaturalist	På iNaturalist
-Summary from Wikipedia (English)	Sammendrag fra Wikipedia (engelsk)
+Summary from Wikipedia	Sammendrag fra Wikipedia
 Details unavailable	Detaljer utilgjengelig
 Read on Wikipedia	Les på Wikipedia
 iNaturalist page	iNaturalist-side

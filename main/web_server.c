@@ -1044,7 +1044,7 @@ ROT_OPTIONS
 "<div class='sprow'><b>Family</b> <span id='spiFam'></span></div>"
 "<div class='sprow' id='spiStRow'><b>Status</b> <span id='spiSt'></span></div>"
 "<div class='sprow' id='spiObsRow'><b>On iNaturalist</b> <span id='spiObs'></span></div>"
-"<div class='spsumh' id='spiSumH'>Summary from Wikipedia (English)</div>"
+"<div class='spsumh' id='spiSumH'>Summary from Wikipedia</div>"
 "<div class='spsum' id='spiSum'></div>"
 "<div class='spsum' id='spiErr' style='opacity:.6'>Details unavailable</div>"
 "<div class='spbtns'>"
@@ -1146,7 +1146,7 @@ ROT_OPTIONS
 "g_refCur=la;g_refCo=co;g_refCf=cf||0;"
 "if(g_ref[la]!==undefined){refRender(la,co,g_ref[la],cf);return;}"
 "g_ref[la]=null;"
-"fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&q='+encodeURIComponent(la))"
+"fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&locale='+spiLoc()+'&q='+encodeURIComponent(la))"
 ".then(function(r){return r.json();}).then(function(j){"
 "var rs=(j&&j.results)||[],lc=la.toLowerCase(),hit=null;"
 "for(var i=0;i<rs.length;i++){"
@@ -1173,6 +1173,16 @@ ROT_OPTIONS
  * that same payload, so the photo scroller adds no JSON, only the images the
  * viewer actually steps to. */
 "var g_spi={la:'',i:0};"
+/* iNat locale for the reference lookups (v2.95). This is NOT the same code as
+ * LANGC, the i18n.txt column: the UI's Norwegian column is "no", and iNat
+ * answers `locale=no` with a record whose preferred_common_name, wikipedia_url
+ * AND wikipedia_summary are all null - as does `locale=nn`. The working code is
+ * `nb`, which returns "Kjottmeis", an nb.wikipedia.org URL and a Norwegian
+ * summary. Guessing "no" here would silently blank the whole panel body, so the
+ * two maps are deliberately separate. g_lang is read defensively because it is
+ * assigned further down the script than the first tick() that can reach here. */
+"var INATLOC=['en','nb'];"
+"function spiLoc(){var L=(typeof g_lang==='number')?g_lang:0;return INATLOC[L]||'en';}"
 "function spiClose(){var e=$g('spop');if(e)e.style.display='none';}"
 /* wikipedia_summary contains real markup - "The <b>great tit</b> (<i>Parus
  * major</i>) is..." - which esc() would render as literal angle-bracket text.
@@ -1252,8 +1262,8 @@ ROT_OPTIONS
 "if(d.id){I.href='https://www.inaturalist.org/taxa/'+d.id;I.style.display='';}"
 "else I.style.display='none';}"
 "function spiFetch(la,id){var d=g_ref[la];if(!d)return;"
-"d.det=null;spiRender();"
-"fetch('https://api.inaturalist.org/v1/taxa/'+id)"
+"d.det=null;d.detLoc=spiLoc();spiRender();"
+"fetch('https://api.inaturalist.org/v1/taxa/'+id+'?locale='+spiLoc())"
 ".then(function(r){return r.json();}).then(function(j){"
 "var x=(j&&j.results&&j.results[0])||null;"
 "if(!x){d.det={};spiRender();return;}"
@@ -1282,7 +1292,9 @@ ROT_OPTIONS
 "if(!la||!d||!d.id)return;"
 "g_spi.la=la;g_spi.i=d.pi||0;"
 "var e=$g('spop');if(!e)return;e.style.display='flex';"
-"if(d.det===undefined)spiFetch(la,d.id);else spiRender();}"
+/* Re-fetch when the Language setting changed since this species was cached -
+ * the cached record holds a summary and a Wikipedia URL in the OLD language. */
+"if(d.det===undefined||d.detLoc!==spiLoc())spiFetch(la,d.id);else spiRender();}"
 "document.addEventListener('keydown',function(ev){"
 "var e=$g('spop');if(!e||e.style.display!=='flex')return;"
 "if(ev.key==='Escape')spiClose();"
