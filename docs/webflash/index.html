@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BirdBox — Flash from Browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  esp-web-install-button { display: block; margin: 1.5rem 0; }
+  esp-web-install-button button {
+    font-size: 1rem; padding: .6rem 1.2rem; border-radius: 8px; border: none;
+    background: #2563eb; color: #fff; cursor: pointer;
+  }
+  esp-web-install-button button:hover { background: #1d4ed8; }
+  .note { background: #f5f5f5; border-radius: 8px; padding: 1rem 1.25rem; font-size: .9rem; }
+  code { background: #eee; padding: .1rem .35rem; border-radius: 4px; font-size: .85em; }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>BirdBox — flash a new unit</h1>
+<p>Flashes the latest built BirdBox firmware onto a blank (or previously
+different) ESP32-S3 straight from your browser — no ESP-IDF, no esptool
+install. Works in <strong>Chrome or Edge on desktop</strong> (Web Serial),
+over a USB cable.</p>
+
+<esp-web-install-button manifest="./manifest.json">
+  <button slot="activate">Connect device &amp; flash</button>
+  <span slot="unsupported">Your browser doesn't support Web Serial — use
+    Chrome or Edge on desktop.</span>
+  <span slot="not-allowed">This page needs to be served over HTTPS (GitHub
+    Pages is).</span>
+</esp-web-install-button>
+
+<div class="note">
+  <strong>Before you start</strong>
+  <ol>
+    <li>Plug the ESP32-S3 board into <em>this</em> computer via USB.</li>
+    <li>Click <strong>Connect device &amp; flash</strong> above and pick its
+      serial port from the browser prompt.</li>
+    <li>If this is a brand-new or previously-different unit, choose
+      <strong>Erase device</strong> when offered — a clean install avoids
+      leftover NVS/partition state from other firmware.</li>
+    <li>After flashing, the device reboots into its own
+      <code>BirdBox-Config</code> WiFi access point — see the
+      <a href="https://github.com/SEspe/BirdBox#first-startup">README's
+      "First startup" section</a> to join it to your network.</li>
+  </ol>
+  <p style="margin-bottom:0">Every update after this first flash can go over
+  the air, from the device's own <strong>OTA Update</strong> tab — this page
+  is only needed once, for the initial flash.</p>
+</div>
+
+<p style="font-size:.85rem;color:#666">Firmware built automatically from
+<a href="https://github.com/SEspe/BirdBox">SEspe/BirdBox</a> master via
+GitHub Actions. See <a href="./manifest.json">manifest.json</a> for the
+exact version currently served.</p>
+</body>
+</html>

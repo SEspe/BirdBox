@@ -115,6 +115,14 @@ Or skip the toolchain entirely: download a prebuilt `.bin` from
 [Releases](../../releases) and flash it (first time via esptool, afterwards
 via the web UI's **OTA Update** tab).
 
+**No USB access on your dev machine, or want to flash from any browser?**
+Use the [browser-based web flasher](https://sespe.github.io/BirdBox/) — plug
+the ESP32-S3 into whatever computer has the USB cable, open that page in
+Chrome or Edge, and click *Connect device & flash*. No ESP-IDF or esptool
+install needed there at all. It's for the initial flash only; every update
+after that goes over OTA. The page is rebuilt automatically from `master` by
+[`.github/workflows/webflash-pages.yml`](.github/workflows/webflash-pages.yml).
+
 ## Species identification setup
 
 Classification is **online, via iNaturalist** (no model to install). In

@@ -1,0 +1,67 @@
+name: Web Flasher (GitHub Pages)
+
+# Publishes docs/webflash/ as a browser-based first-flash tool
+# (esp-web-tools) at https://SEspe.github.io/BirdBox/, rebuilding the
+# firmware it serves on every push to master. This is for the *initial*
+# USB flash of a new/blank ESP32-S3 only — subsequent updates go over OTA
+# from the device's own web UI, no browser flasher needed.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'main/**'
+      - 'managed_components/**'
+      - 'partitions-esp32s3.csv'
+      - 'sdkconfig.defaults*'
+      - 'docs/webflash/**'
+      - '.github/workflows/webflash-pages.yml'
+  workflow_dispatch: {}
+
+env:
+  IDF_VERSION: v6.0.1
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build firmware & deploy Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32s3
+          path: .
+          command: idf.py build
+
+      - name: Assemble Pages site
+        run: |
+          VER=$(grep 'FIRMWARE_VERSION' main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          mkdir -p _site/firmware
+          cp docs/webflash/index.html _site/index.html
+          cp build/bootloader/bootloader.bin _site/firmware/bootloader.bin
+          cp build/partition_table/partition-table.bin _site/firmware/partition-table.bin
+          cp build/ota_data_initial.bin _site/firmware/ota_data_initial.bin
+          cp build/BirdBox.bin _site/firmware/BirdBox.bin
+          sed "s/__VERSION__/${VER}/" docs/webflash/manifest.template.json > _site/manifest.json
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
