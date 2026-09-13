@@ -6,15 +6,17 @@ microSD, identifies the species via iNaturalist's online AI, and serves a live
 stream, gallery and visit statistics from its own built-in web page — entirely
 on your LAN.
 
-**Full specification:** [FSD_BirdBox.md](FSD_BirdBox.md) — the FSD is the
-project's requirements document *and* change record; every functional change
-gets a changelog entry there.
+**Full specification:** [FSD_BirdBox.md](FSD_BirdBox.md) — the project's
+requirements document, kept as a clean statement of current behaviour. The
+change record lives alongside it in
+[FSD_BirdBox_CHANGELOG.md](FSD_BirdBox_CHANGELOG.md); every functional change
+gets an entry there.
 
 > **Status: v1 functionally complete.** WiFi provisioning, live streaming,
 > microSD storage + retention pruning, motion-triggered capture, online
 > species ID, and the full seven-tab web UI (Live, Gallery, Stats, Settings,
 > Debug, WiFi, OTA Update) are all implemented and verified live on the
-> reference hardware. See the [FSD changelog](FSD_BirdBox.md) for the
+> reference hardware. See the [FSD changelog](FSD_BirdBox_CHANGELOG.md) for the
 > complete history.
 
 ## Features

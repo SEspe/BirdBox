@@ -1,9 +1,9 @@
 # CLAUDE.md
 
 Guidance for AI agents working in this repo. For *what the product does*, read
-`README.md`; for the authoritative requirements + change history, read
-`FSD_BirdBox.md`. This file is about *how to build, verify, and safely change
-the code*.
+`README.md`; for the authoritative requirements, read `FSD_BirdBox.md`; for why
+they are what they are, read `FSD_BirdBox_CHANGELOG.md`. This file is about
+*how to build, verify, and safely change the code*.
 
 ## What this is
 
@@ -15,14 +15,22 @@ file for the classifier, PowerShell + Python for the off-device retrain tools.
 
 ## The release contract (do this for every functional change)
 
-A functional change is not done until all three are updated together:
+A functional change is not done until all four are updated together:
 
 1. **Code.**
 2. **`main/version.h`** — bump `FIRMWARE_VERSION` (semver).
-3. **`FSD_BirdBox.md`** — add a changelog entry at the top: bump the header
-   `**Version:**`, and prepend `- vX.Y — **Title (firmware A.B.C), §section.**
-   <what + why + how>`. The FSD changelog is the project's change record; the
-   commit history mirrors it.
+3. **`FSD_BirdBox.md`** — update the spec itself to describe the new behaviour,
+   and bump the header `**Version:**`.
+4. **`FSD_BirdBox_CHANGELOG.md`** — prepend `- vX.Y — **Title (firmware
+   A.B.C), §section.** <what + why + how>`. This is the project's change
+   record; the commit history mirrors it.
+
+**The two FSD files have different jobs and the split is the point.**
+`FSD_BirdBox.md` is the clean current specification, present tense, no history
+— it must read as if the design were always this way. All the "we used to do X,
+then Y happened" belongs in the changelog. When a change makes a sentence in
+the spec wrong, **rewrite that sentence**; do not append a qualifier explaining
+what it used to say.
 
 Commit-message convention (see `git log`): `Short imperative summary (A.B.C,
 FSD vX.Y)`. Version commits land directly on `master` (linear history).
@@ -155,7 +163,9 @@ ship tests). Verification is empirical, on real hardware:
   (`export-labels.ps1`), capture puller (`pull-new-captures.ps1`), `train.py`,
   versioned model artifacts. See its `README.md`. `dataset/` is gitignored.
 - `docs/MODEL.md` — model install + Northern-Europe region filter.
-- `FSD_BirdBox.md` — requirements + full changelog (read this for any "why").
+- `FSD_BirdBox.md` — the clean current specification. What to build.
+- `FSD_BirdBox_CHANGELOG.md` — the development record. Read this for any "why",
+  and before reopening a settled question.
 
 ## The human-in-the-loop / retrain loop (context for gallery + classify work)
 
