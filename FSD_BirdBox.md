@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.01
+**Version:** 3.02
 **Author:** SEspe
 **Date:** 2026-09-21
 
@@ -40,7 +40,9 @@ The device is fully self-contained: no cloud service, no companion app, and no e
 | Board | MCU | Camera | PSRAM | Role |
 |---|---|---|---|---|
 | **Generic "ESP32-S3-CAM"** (N16R8: 16 MB flash, 8 MB octal PSRAM; ESP32-S3-EYE/Freenove-compatible camera pin map) | ESP32-S3 (dual-core LX7, vector instructions) | OV2640 | 8 MB (required) | **Primary target & the project's reference unit** (identified 2026-07-06 by SCCB probe: sensor PID 0x26, camera pin map verified live). Other S3 camera boards (XIAO ESP32S3 Sense, Freenove, S3-EYE) supported via `board_config.h`. |
-| AI-Thinker ESP32-CAM | ESP32 classic | OV2640 | 4 MB | Secondary/constrained target: capture, streaming and gallery work; on-device species ID reduced or disabled (§3.2) |
+| AI-Thinker ESP32-CAM (and clones on the same footprint) | ESP32 classic | OV2640 | 4 MB | Secondary/constrained target. The full firmware builds and runs: capture, streaming, gallery, SD and OTA all work, and species ID is not excluded by design — classification is an HTTPS call (§3.2), not an on-device model. What is unproven here is TLS headroom: internal DRAM is smaller than the S3's and the §5 heap guard's floor is correspondingly closer. Camera support is qualified — see the OV5640 note below. |
+
+On the ESP32 classic the camera runs over I2S and cannot DMA into PSRAM, so the CPU copies every frame; that path is specified for the **OV2640**. An OV5640 on this MCU is not supported: it enumerates and streams, but only about one frame in ten assembles into a valid JPEG, and the loss is indifferent to pixel clock and CPU speed. The S3 has no such restriction and drives either sensor.
 
 Exact pin maps are board-specific and defined per-board in a `board_config.h`; the FSD does not fix GPIO numbers. Required peripherals:
 
@@ -331,6 +333,7 @@ No authentication in v1 (LAN-only device, same posture as RemoteStart); an optio
 - **microSD (FAT32)**: captures (`/captures/YYYY-MM-DD/`), visit logs (`/log/visits-YYYY-MM.csv`), optional model file (`/model/`). The device boots and runs without an SD card — live view still works; capture/history features show a clear "no SD card" state instead of failing silently.
 - **NVS**: WiFi credentials, IP config, all §5 settings, favorite-species list.
 - SD writes are sequenced through a single writer task (camera capture, log append and HTTP static serving must not interleave mid-file).
+- On a 1-bit SDMMC bus the board map may name a **DAT3 pull-up pin**, which the mount pulls high before probing. The card latches DAT3 at reset to choose SD or SPI mode, and the IDF driver only pulls up CMD and D0 below a 4-bit width, so a floating DAT3 can leave a perfectly good card refusing `send_op_cond` — which presents as an empty slot, not as an error. The pin is named per board because it is only safe to drive where the wiring says so.
 
 ---
 

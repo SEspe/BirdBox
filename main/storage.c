@@ -18,6 +18,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "storage";
 
@@ -45,6 +46,13 @@ static esp_err_t sd_mount(void)
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot.width = 1;                       /* 1-bit bus: only D0 is routed on these boards */
+#ifdef SD_PIN_D3_PULLUP
+    /* The card latches DAT3 at reset to choose SD vs SPI mode, and the driver
+     * skips it below width 4, so a floating DAT3 can leave the card mute:
+     * send_op_cond times out (0x107) and the slot looks empty. Board-specific
+     * because the pin is only safe to touch where board_config.h says so. */
+    gpio_set_pull_mode(SD_PIN_D3_PULLUP, GPIO_PULLUP_ONLY);
+#endif
     slot.clk   = SD_PIN_CLK;
     slot.cmd   = SD_PIN_CMD;
     slot.d0    = SD_PIN_D0;

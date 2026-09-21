@@ -93,6 +93,18 @@
 #define PIN_PIR         -1
 #define PIN_IR_LED      -1
 #define SD_USE_SDMMC    1      /* onboard slot is SDMMC 1-bit */
+/* ESP32 routes SDMMC through the IOMUX, not the GPIO matrix, so slot 1 is
+ * fixed at these three pins — which is also how the board is wired. */
+#define SD_PIN_CLK      14
+#define SD_PIN_CMD      15
+#define SD_PIN_D0       2
+/* DAT3 is NOT used in 1-bit mode, but the card samples it at reset to pick
+ * SD vs SPI mode, and the IDF driver only pulls up CMD/D0 below width 4
+ * (sd_host_sdmmc.c:1137). Left floating it can refuse ACMD41 forever.
+ * Define it so storage.c can pull it up by hand. NEVER do this for D2
+ * (GPIO12 = MTDI): high at boot selects 1.8 V flash and the chip will
+ * not start. */
+#define SD_PIN_D3_PULLUP 13
 #define SD_PIN_CS       -1
 
 #else
