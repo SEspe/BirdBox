@@ -1,8 +1,8 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 2.99
+**Version:** 3.01
 **Author:** SEspe
-**Date:** 2026-08-06
+**Date:** 2026-09-21
 
 This is **the clean, current specification**: what the device is required to do,
 stated in the present tense.
@@ -68,6 +68,7 @@ The mode primarily tunes motion-detection sensitivity, capture cadence and stati
 ### 3.1 Motion-triggered capture
 
 - Continuous camera-based motion detection: low-resolution grayscale frame differencing against a rolling background, with configurable sensitivity threshold and a minimum-changed-area filter to reject leaves/light changes.
+- **Dominant-cluster trigger with a mount-dependent size cap.** Motion fires on the largest 4-connected cluster of changed grid cells, not the zone-wide total: wind-blown foliage changes many scattered cells a little each, while a bird changes one compact blob a lot. A cluster spanning more than a cap of the 64 cells is discarded outright as wind or foliage rather than merely capped, so a smaller genuine cluster elsewhere in the same frame can still win. How much of the grid a bird covers is a property of the **mount**, not of the bird — at arm's length one fills a third of the frame, at feeder distance a handful of cells — so the cap follows a **camera mount distance** setting (§5): **close 40 cells, medium 28 (default), distant 20**. A cap set for a distant mount silently discards every bird at a close one, and **raising sensitivity makes that worse, not better**: a lower per-cell threshold marks more cells as moved, which grows the cluster toward the cap. When the only cluster in a frame is rejected for size, the device logs it (throttled to once per 5 s), and `GET /api/motion` reports `cap` (the mount's cell cap), `cells` (the last winning cluster's size), `rej` (the largest rejected cluster) and `rejN` (how many frames were rejected this way) — so the discard is visible over the network instead of silent. A climbing `rejN` with a flat `n` is the signature of a cap set too low for the mount.
 - **Run HD, not SXGA — detection resolution matters (verified on-device 2026-07-13).** Detection reuses the *same* camera stream as capture (the OV2640 exposes one resolution; there is no separate low-res detect feed), differencing each JPEG decoded at 1/8. **SXGA (1280×1024) degrades detection vs HD (1280×720)** two ways: *sensitivity* — larger frames are slower to grab+decode, so the fixed-period detect loop samples less often and misses quick hops (SXGA also sits at the exact 1/8 decode-buffer ceiling, 160×128, with zero headroom and ~300 KB more PSRAM pressure — measured ~547 KB free vs ~854 KB at HD — which correlated with an OOM reboot); *framing* — SXGA's 5:4 field of view is taller/narrower and mis-aligned to a horizontal feeder, where HD's 16:9 keeps birds in-view. There is no clean fix on this sensor (a dual detect/capture stream isn't available; per-frame res-switching is too slow and its FOV change would break the ROI-crop box). **HD is therefore the locked default (§5, firmware 0.61.0).** SXGA's only advantage — more pixels for the classifier — is dissolved by ROI-crop (§3.2.3), which maximizes pixels-on-bird from HD anyway; recover perceived still sharpness with JPEG quality (lower `stream_quality`) instead. Above SXGA is unusable outright: UXGA's 1/8 (200×150) overruns the detect buffer and silently disables motion.
 - Optional PIR pre-trigger: when a PIR sensor is fitted, it acts as the first stage (and, in a future battery variant, a deep-sleep wake source); camera-diff confirms before capture.
 - On trigger, the device captures a **visit event**:
@@ -288,7 +289,7 @@ Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab b
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
 - **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected).
-- **Settings** — placement mode (nest box/feeder), motion sensitivity, capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto).
+- **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto).
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
 - **WiFi** — §4 step 5, plus a Reboot Now button.
 - **OTA Update** — §8.

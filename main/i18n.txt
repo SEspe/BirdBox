@@ -76,6 +76,9 @@ Nest box	Fuglekasse
 Feeder	Fôringsplass
 Motion & Capture	Bevegelse og opptak
 Motion sensitivity:	Bevegelsesfølsomhet:
+Camera mount distance	Kameraets monteringsavstand
+Close – bird fills much of the frame	Nær – fuglen fyller mye av bildet
+Distant – bird is small in the frame	Fjernt – fuglen er liten i bildet
 Frames per event (1–10)	Bilder per hendelse (1–10)
 Frame interval (ms)	Bildeintervall (ms)
 Cool-down between events (s)	Pause mellom hendelser (s)

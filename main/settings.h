@@ -15,6 +15,12 @@ typedef enum { ROTATE_0 = 0, ROTATE_90 = 1, ROTATE_180 = 2, ROTATE_270 = 3 } rot
  * the default and also what every fixed-focus module gets: it skips the AF
  * firmware download entirely, so an OV2640 box pays nothing for this existing. */
 typedef enum { FOCUS_OFF = 0, FOCUS_AUTO = 1, FOCUS_MANUAL = 2 } focus_mode_t;
+/* Camera-to-subject distance (FSD §3.1). How much of the 8x8 detection grid a
+ * bird covers is a property of the MOUNT, not of the bird: at arm's length one
+ * fills a third of the frame, at feeder distance a handful of cells. The motion
+ * detector rejects any cluster wider than a cap as wind or foliage, so the cap
+ * has to follow the mount. See motion.c cluster_cap(). */
+typedef enum { MOUNT_CLOSE = 0, MOUNT_MEDIUM = 1, MOUNT_DISTANT = 2 } mount_dist_t;
 
 typedef struct {
     placement_mode_t mode;
@@ -111,6 +117,13 @@ typedef struct {
                                        cells' bounding box so the bird fills the
                                        model input (FSD §3.2), 0 = center-crop the
                                        whole frame as before. default 1 */
+    uint8_t  mount;                 /* camera-to-subject distance (mount_dist_t):
+                                       0 close, 1 medium, 2 distant. Picks the
+                                       motion detector's cluster-size cap
+                                       (FSD §3.1) — a close-mounted camera sees a
+                                       bird span a large part of the frame, and a
+                                       cap tuned for a distant mount discards it
+                                       as a wind swath. default MOUNT_MEDIUM */
     uint8_t  fast_shutter;          /* 1 = fixed short exposure + auto gain, to
                                        cut motion blur on a close/fast-moving
                                        bird at the cost of a noisier/darker

@@ -105,14 +105,34 @@ static volatile uint32_t s_fast_avg_ms  = 0;        /* 4-event EMA of it (Debug,
 static volatile uint64_t s_trigger_cells = 0;   /* 8x8 mask of the last trigger's
                                                    winning cluster, for the live-view
                                                    overlay (bit c = cell, §3.1) */
+/* Oversized-cluster rejection telemetry (§3.1) — see motion.h. */
+static volatile uint32_t s_reject_count  = 0;
+static volatile int      s_reject_cells  = 0;
+static volatile int      s_cluster_cells = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 
 #define GRID_N 8                         /* 8x8 detection grid (FSD §3.1) */
-/* Max cells (of 64) the winning cluster may span. A bird occupies a handful
- * of cells even close-up; a wide wind-blown grass/foliage swath forms one
- * big *contiguous* cluster too (connectivity alone doesn't reject it), but
- * spans far more of the frame. Starting point, not field-calibrated. */
-#define MAX_CLUSTER_CELLS 20
+/* Max cells (of 64) the winning cluster may span before it is rejected as wind
+ * or foliage. How much of the grid a bird covers is a property of the MOUNT,
+ * not of the bird: at arm's length one fills a third of the frame, at feeder
+ * distance a handful of cells. A single fixed cap cannot serve both — too low
+ * and a close bird is silently discarded as a wind swath, too high and a
+ * distant box logs every gust. g_settings.mount picks it; DISTANT keeps the
+ * historical 20 (FSD §3.1). Field note: at the reference feeder, whose camera
+ * sits at seed level, one ordinary trigger measured 19 of 64 cells — one under
+ * the old cap. */
+#define CLUSTER_CAP_CLOSE   40
+#define CLUSTER_CAP_MEDIUM  28
+#define CLUSTER_CAP_DISTANT 20
+
+static int cluster_cap(void)
+{
+    switch ((mount_dist_t) g_settings.mount) {
+    case MOUNT_CLOSE:   return CLUSTER_CAP_CLOSE;
+    case MOUNT_DISTANT: return CLUSTER_CAP_DISTANT;
+    default:            return CLUSTER_CAP_MEDIUM;
+    }
+}
 
 /* Grab one frame, decode small, update s_cur; returns true when the changed
  * area exceeds the sensitivity-derived threshold. Rolls the background only
@@ -239,6 +259,8 @@ static bool detect_once(void)
      * diluted bbox — the zoom tracks the dominant object. */
     bool seen[GRID_N * GRID_N] = {false};
     long best_wt = -1;
+    const int cap = cluster_cap();   /* mount-dependent (§3.1) */
+    int  best_cnt = 0, rej_max = 0;  /* winning / largest-rejected cluster size */
     uint64_t best_cells = 0;    /* moved-cell mask of the winning cluster */
     int  minc = 0, minr = 0, maxc = -1, maxr = -1;
     for (int c0 = 0; c0 < GRID_N * GRID_N; c0++) {
@@ -272,10 +294,16 @@ static bool detect_once(void)
         }
         /* Oversized clusters are skipped entirely, not just capped — a
          * smaller genuine cluster elsewhere in the same frame can still win
-         * rather than the whole frame being rejected outright. */
-        if (cnt <= MAX_CLUSTER_CELLS && wt > best_wt) {
+         * rather than the whole frame being rejected outright. The largest
+         * rejected size is kept so the quiet path can SAY it happened: an
+         * oversized cluster used to fail silently, which is exactly how a
+         * close-mounted camera loses every bird without a trace. */
+        if (cnt > cap) {
+            if (cnt > rej_max) rej_max = cnt;
+        } else if (wt > best_wt) {
             best_wt = wt;
             best_cells = this_cells;
+            best_cnt = cnt;
             minc = lminc; minr = lminr; maxc = lmaxc; maxr = lmaxr;
         }
     }
@@ -341,6 +369,21 @@ static bool detect_once(void)
         ESP_LOGI(TAG, "motion suppressed: global light step (frame-mean shift %d)", shift_fast);
 
     if (!motion) {
+        /* Say so when the ONLY thing in frame was thrown out for being too
+         * wide — throttled to once per 5 s so a long wind swath cannot flood
+         * the log. This is the line that tells you to move the mount setting
+         * up rather than chasing sensitivity, which only makes clusters bigger. */
+        if (rej_max > 0) { s_reject_count++; s_reject_cells = rej_max; }
+        if (rej_max > 0 && best_wt < 0) {
+            static int64_t last_rej_us = 0;
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - last_rej_us > 5000000) {
+                last_rej_us = now_us;
+                ESP_LOGI(TAG, "cluster rejected: %d cells > cap %d (mount=%u) — "
+                              "raise the mount distance setting if birds are being missed",
+                         rej_max, cap, (unsigned) g_settings.mount);
+            }
+        }
         /* roll both backgrounds on quiet frames — whole frame, so masked-out
          * cells (a swaying branch) are still absorbed and never linger. Fast
          * EMA (7/8) tracks normal lighting drift; slow EMA (63/64, ~11 s
@@ -354,8 +397,9 @@ static bool detect_once(void)
     }
 
     s_trigger_cells = best_cells;   /* publish which cells fired, for the live overlay */
-    ESP_LOGI(TAG, "motion: cluster %d%% / zone %d%% changed (threshold %d%%), roi [%.2f,%.2f]-[%.2f,%.2f]",
-             cluster_pct, pct, area_thr, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
+    s_cluster_cells = best_cnt;
+    ESP_LOGI(TAG, "motion: cluster %d%% / zone %d%% changed (threshold %d%%), %d/%d cells, roi [%.2f,%.2f]-[%.2f,%.2f]",
+             cluster_pct, pct, area_thr, best_cnt, cap, s_roi.x0, s_roi.y0, s_roi.x1, s_roi.y1);
     return true;
 }
 
@@ -506,6 +550,10 @@ uint16_t motion_cooldown_remaining_s(void)
     int64_t rem = s_cooldown_until_us - esp_timer_get_time();
     return rem > 0 ? (uint16_t) ((rem + 999999) / 1000000) : 0;
 }
+uint32_t motion_reject_count(void)              { return s_reject_count; }
+int      motion_reject_cells(void)              { return s_reject_cells; }
+int      motion_cluster_cells(void)             { return s_cluster_cells; }
+int      motion_cluster_cap(void)               { return cluster_cap(); }
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }

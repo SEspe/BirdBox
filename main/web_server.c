@@ -720,6 +720,11 @@ ROT_OPTIONS
 "<label class='wl'>Motion sensitivity: <b id='stSensV'></b><span class='inf' onclick='sInfo(\"sens\")'>i</span></label>"
 "<input type='range' min='0' max='100' id='stSens' style='width:100%;max-width:280px'"
 " oninput='stSensShow()'>"
+"<label class='wl'>Camera mount distance<span class='inf' onclick='sInfo(\"mount\")'>i</span></label>"
+"<select class='wi' id='stMount'>"
+"<option value='0'>Close &ndash; bird fills much of the frame</option>"
+"<option value='1'>Medium</option>"
+"<option value='2'>Distant &ndash; bird is small in the frame</option></select>"
 "<label class='wl'>Frames per event (1&ndash;10)<span class='inf' onclick='sInfo(\"ccnt\")'>i</span></label>"
 "<input class='wi' type='number' min='1' max='10' id='stCcnt'>"
 "<label class='wl'>Frame interval (ms)<span class='inf' onclick='sInfo(\"civl\")'>i</span></label>"
@@ -2035,6 +2040,14 @@ ROT_OPTIONS
 " camera&rsquo;s warm-up frames and the not-yet-synced clock (which files captures under"
 " <i>no-date</i>) do not create false events.',"
 "'60 s','0 disables it; up to 3600 s.'],"
+"mount:['Camera mount distance','How far the camera sits from where the birds land. Motion"
+" detection throws away any change that spans too much of the 8&times;8 grid, on the assumption"
+" that only wind or foliage moves that widely &mdash; but a bird close to the lens covers just"
+" as much. This tells it which is which.',"
+"'Medium','Close if the bird fills much of the frame (a camera at seed level on a feeding"
+" table); Distant if birds appear small. Set this <i>before</i> reaching for sensitivity:"
+" raising sensitivity makes clusters <i>bigger</i>, so it makes a close-mount miss worse,"
+" not better.'],"
 "dzoom:['Zoom species ID to the motion area','Also sends iNaturalist a native-resolution crop"
 " centred on the changed-pixel box and keeps whichever scores higher &mdash; whole frame or crop"
 " &mdash; so a small or off-centre bird can still be identified. Costs a second iNaturalist call"
@@ -2185,6 +2198,7 @@ ROT_OPTIONS
 "(c.mode===1?$g('stFeed'):$g('stNest')).checked=true;"
 "$g('stSens').value=c.sens;stSensShow();"
 "$g('stCcnt').value=c.ccnt;$g('stCivl').value=c.civl;$g('stCool').value=c.cool;"
+"if(c.mount!=null)$g('stMount').value=c.mount;"
 "$g('stQtn').value=c.qtn;"
 "$g('stConf').value=c.conf;$g('stCap').value=c.cap;$g('stIr').value=c.ir;"
 "$g('stLang').value=c.lang;$g('stZoom').checked=c.dzoom==1;"
@@ -2287,6 +2301,7 @@ ROT_OPTIONS
 "var b='mode='+($g('stFeed').checked?'feeder':'nestbox')"
 "+'&sens='+$g('stSens').value+'&ccnt='+$g('stCcnt').value"
 "+'&civl='+$g('stCivl').value+'&cool='+$g('stCool').value"
+"+'&mount='+$g('stMount').value"
 "+'&qtn='+$g('stQtn').value"
 "+'&conf='+$g('stConf').value+'&cap='+$g('stCap').value"
 "+'&rfilt='+$g('stRfilt').value"
@@ -4078,7 +4093,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"camSharp\":%s,\"camDenoise\":%s,\"camAF\":%s,\"camAFBuild\":%s,"
         "\"tz\":\"%s\","
         "\"ntp\":\"%s\",\"lang\":%u,"
-        "\"zone\":\"%s\",\"dzoom\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
+        "\"zone\":\"%s\",\"dzoom\":%u,\"mount\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
         "\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
         "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\"}",
@@ -4112,6 +4127,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
 #endif
         g_settings.timezone, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
+        (unsigned) g_settings.mount,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
         (unsigned) g_settings.cloud_provider,
@@ -4272,6 +4288,7 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         if (ok) g_settings.detect_zone = m;
     }
     g_settings.detect_zoom = field_num(body, "dzoom=", 0, 1, g_settings.detect_zoom);
+    g_settings.mount = field_num(body, "mount=", MOUNT_CLOSE, MOUNT_DISTANT, g_settings.mount);
     g_settings.fast_shutter = field_num(body, "fshut=", 0, 1, g_settings.fast_shutter);
     g_settings.tta = field_num(body, "tta=", 0, 1, g_settings.tta);
     g_settings.detect_quarantine_s = field_num(body, "qtn=", 0, 3600, g_settings.detect_quarantine_s);
@@ -4441,7 +4458,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&mirh=%u&mirv=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
         "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&ntp=%s"
-        "&lang=%u&zone=%s&dzoom=%u&fshut=%u&tta=%u&qtn=%u&cprov=%u&gmdl=%s"
+        "&lang=%u&zone=%s&dzoom=%u&mount=%u&fshut=%u&tta=%u&qtn=%u&cprov=%u&gmdl=%s"
         "&inatcv=%u&loc=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
@@ -4455,6 +4472,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.focus_mode, (unsigned) g_settings.focus_pos,
         g_settings.timezone, g_settings.ntp_server,
         (unsigned) g_settings.lang, zone, (unsigned) g_settings.detect_zoom,
+        (unsigned) g_settings.mount,
         (unsigned) g_settings.fast_shutter, (unsigned) g_settings.tta,
         (unsigned) g_settings.detect_quarantine_s,
         (unsigned) g_settings.cloud_provider,
@@ -4565,11 +4583,15 @@ static esp_err_t h_motion(httpd_req_t *req)
     char cbuf[65];
     for (int c = 0; c < 64; c++) cbuf[c] = (cells >> c) & 1ULL ? '1' : '0';
     cbuf[64] = '\0';
-    char buf[128];
-    snprintf(buf, sizeof(buf), "{\"n\":%lu,\"a\":%s,\"q\":%u,\"c\":\"%s\"}",
+    char buf[224];   /* 64-char mask + the cluster/reject counters (v3.01) */
+    snprintf(buf, sizeof(buf),
+             "{\"n\":%lu,\"a\":%s,\"q\":%u,\"c\":\"%s\","
+             "\"cap\":%d,\"cells\":%d,\"rej\":%d,\"rejN\":%lu}",
              (unsigned long) motion_trigger_count(),
              motion_active() ? "true" : "false",
-             (unsigned) motion_quarantine_remaining_s(), cbuf);
+             (unsigned) motion_quarantine_remaining_s(), cbuf,
+             motion_cluster_cap(), motion_cluster_cells(),
+             motion_reject_cells(), (unsigned long) motion_reject_count());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

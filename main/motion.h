@@ -13,6 +13,13 @@ esp_err_t motion_start(void);
 bool     motion_active(void);          /* an event is being captured right now */
 uint32_t motion_trigger_count(void);   /* events since boot */
 uint64_t motion_trigger_cells(void);   /* 8x8 mask of the last trigger's cells (§3.1) */
+/* Oversized-cluster rejections (§3.1): a cluster wider than the mount-derived
+ * cap is discarded as wind/foliage. Without these the discard is INVISIBLE over
+ * the network — the box looks exactly like one with nothing in front of it. */
+uint32_t motion_reject_count(void);    /* frames whose only cluster was too wide */
+int      motion_reject_cells(void);    /* cells in the largest such cluster */
+int      motion_cluster_cells(void);   /* cells in the last WINNING cluster */
+int      motion_cluster_cap(void);     /* current cap, from the mount setting */
 
 /* Seconds of post-boot detection quarantine still remaining (FSD §3.1/v1.61),
  * 0 once detection is live. Lets the UI explain why nothing triggers at boot. */

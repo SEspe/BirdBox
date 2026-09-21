@@ -43,6 +43,9 @@ settings_t g_settings = {
     .detect_zoom        = 0,   /* off: cropping HURTS the v1 iNat model — tight
                                 * crops read as "no bird" (whole-frame wins). Keep
                                 * 0 until a Nordic-retrained model ships (§3.2.1). */
+    .mount              = MOUNT_MEDIUM, /* 20 cells was tuned for a distant
+                                * mount and silently discards a close bird as a
+                                * wind swath (§3.1); medium is the safer middle */
     .fast_shutter       = 0,
     .detect_quarantine_s = 60,
     .tta                = 0,
@@ -111,6 +114,7 @@ esp_err_t settings_load(void)
     uint64_t u64;
     if (nvs_get_u64(h, "s_zone", &u64) == ESP_OK) g_settings.detect_zone = u64;
     if (nvs_get_u8 (h, "s_zoom", &u8)  == ESP_OK) g_settings.detect_zoom = u8;
+    if (nvs_get_u8 (h, "s_mount", &u8)  == ESP_OK && u8 <= MOUNT_DISTANT) g_settings.mount = u8;
     if (nvs_get_u8 (h, "s_fshut",&u8)  == ESP_OK) g_settings.fast_shutter = u8;
     if (nvs_get_u8 (h, "s_tta",  &u8)  == ESP_OK) g_settings.tta = u8;
     if (nvs_get_u16(h, "s_qtn",  &u16) == ESP_OK) g_settings.detect_quarantine_s = u16;
@@ -179,6 +183,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_lang", g_settings.lang == LANG_NO ? 1 : 0);
     nvs_set_u64(h, "s_zone", g_settings.detect_zone);
     nvs_set_u8 (h, "s_zoom", g_settings.detect_zoom);
+    nvs_set_u8 (h, "s_mount", g_settings.mount);
     nvs_set_u8 (h, "s_fshut", g_settings.fast_shutter);
     nvs_set_u8 (h, "s_tta",   g_settings.tta);
     nvs_set_u16(h, "s_qtn",   g_settings.detect_quarantine_s);
