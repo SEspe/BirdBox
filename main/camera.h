@@ -164,3 +164,11 @@ bool camera_focus_locked(void);
  * is the answer someone needs when working out whether their OV5640 module
  * actually has a focus motor. */
 const char *camera_af_error(void);
+
+/* TEMPORARY DIAGNOSTIC: transition counts sampled on the DVP sync pads for
+ * 200 ms right after a successful init. All zero means the sensor is emitting
+ * nothing at all (ribbon, module, or a sensor that never entered streaming),
+ * which no driver tuning can fix. Non-zero means signal arrives and the fault
+ * is in how it is assembled. PCLK is aliased by the sample rate, so only its
+ * zero / non-zero state carries information. */
+void camera_sync_counts(uint32_t *vsync, uint32_t *href, uint32_t *pclk, bool *done);

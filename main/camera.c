@@ -22,6 +22,46 @@ static const char *TAG = "camera";
 
 static bool s_available = false;
 
+/* ── DVP sync-line probe (TEMPORARY DIAGNOSTIC) ─────────────────────────────
+ * Separates "the sensor emits nothing" from "the driver cannot assemble what
+ * it receives" on a board whose camera answers SCCB but never yields a frame.
+ * Samples the three sync pads as plain inputs and counts level changes; the
+ * pads stay readable while the matrix routes them to the camera peripheral.
+ * PCLK runs at ~11 MHz, far above the software sample rate, so its count is
+ * aliased and only the zero / non-zero distinction is meaningful. */
+static uint32_t s_sync_vsync = 0, s_sync_href = 0, s_sync_pclk = 0;
+static bool     s_sync_done  = false;
+
+static void sync_probe(void)
+{
+    const int pins[3] = { CAM_PIN_VSYNC, CAM_PIN_HREF, CAM_PIN_PCLK };
+    uint32_t  cnt[3]  = { 0, 0, 0 };
+    int       last[3];
+
+    for (int i = 0; i < 3; i++) last[i] = gpio_get_level(pins[i]);
+
+    int64_t end = esp_timer_get_time() + 200000;      /* 200 ms */
+    while (esp_timer_get_time() < end) {
+        for (int i = 0; i < 3; i++) {
+            int lv = gpio_get_level(pins[i]);
+            if (lv != last[i]) { cnt[i]++; last[i] = lv; }
+        }
+    }
+
+    s_sync_vsync = cnt[0]; s_sync_href = cnt[1]; s_sync_pclk = cnt[2];
+    s_sync_done  = true;
+    ESP_LOGW(TAG, "DVP sync probe 200ms: vsync=%lu href=%lu pclk=%lu",
+             (unsigned long) cnt[0], (unsigned long) cnt[1], (unsigned long) cnt[2]);
+}
+
+void camera_sync_counts(uint32_t *vsync, uint32_t *href, uint32_t *pclk, bool *done)
+{
+    if (vsync) *vsync = s_sync_vsync;
+    if (href)  *href  = s_sync_href;
+    if (pclk)  *pclk  = s_sync_pclk;
+    if (done)  *done  = s_sync_done;
+}
+
 /* ── Watchdog state (FSD §3.5) ──────────────────────────────────────────────
  * The v0.19.0 first cut held a mutex across esp_camera_fb_get(); a live test
  * exposed why that's fatal: when the camera streams corrupt frames, fb_get()
@@ -262,6 +302,7 @@ static esp_err_t camera_hw_init(void)
         return err;
     }
     s_active_idx = idx;
+    sync_probe();                /* TEMPORARY: see the DVP sync-line probe above */
     if (idx != res_idx())
         ESP_LOGW(TAG, "running at %s, not the requested %s — reboot to retry "
                  "(the saved setting is unchanged)",

@@ -4,9 +4,9 @@
  * block for your hardware. Camera DVP pins follow the esp32-camera component's
  * naming (PWDN/RESET/XCLK/SIOD/SIOC/Y2..Y9/VSYNC/HREF/PCLK). */
 
-#define BOARD_ESP32S3_CAM_GENERIC  1   /* project's reference unit */
+/* #define BOARD_ESP32S3_CAM_GENERIC  1 */
 /* #define BOARD_XIAO_ESP32S3_SENSE   1 */
-/* #define BOARD_AITHINKER_ESP32CAM   1 */
+#define BOARD_AITHINKER_ESP32CAM   1
 
 #if defined(BOARD_ESP32S3_CAM_GENERIC)
 /* Generic "ESP32-S3-CAM" board (N16R8: 16 MB flash, 8 MB octal PSRAM,

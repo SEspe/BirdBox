@@ -3,3 +3,12 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-esp32.csv"
 CONFIG_SPIRAM=y
+
+# TEST (dvp3): the camera runs over I2S here with PSRAM DMA unavailable, so the
+# CPU copies every frame in the ISR — that copy is the suspected cause of ~80%
+# frame loss. Give it the two things it is missing. The cache workaround is for
+# ESP32 rev < 3 only; the board under test is rev 3.1, and REV_MIN_3 is what
+# lets it be switched off. NOTE: this makes the image refuse to boot on rev < 3.
+CONFIG_ESP32_REV_MIN_3=y
+CONFIG_SPIRAM_CACHE_WORKAROUND=n
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

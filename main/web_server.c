@@ -4700,12 +4700,17 @@ static void hw_info_json(char *out, size_t out_sz)
 
     const esp_app_desc_t *ad = esp_app_get_description();
 
+    uint32_t dvp_v = 0, dvp_h = 0, dvp_p = 0;
+    bool     dvp_done = false;
+    camera_sync_counts(&dvp_v, &dvp_h, &dvp_p, &dvp_done);
+
     snprintf(out, out_sz,
         ",\"chipModel\":\"%s\",\"chipRev\":\"v%u.%u\",\"chipCores\":%u,"
         "\"chipFeat\":\"%s\",\"chipEmbPsram\":%s,\"cpuMhz\":%d,"
         "\"flashMB\":%u,\"flashId\":\"0x%06lx\",\"flashMode\":\"%s\",\"flashFreq\":\"%s\","
         "\"psramMode\":\"%s\",\"psramSpeedMhz\":%d,\"psramMB\":%u,"
-        "\"idfVer\":\"%s\",\"buildDate\":\"%s %s\"",
+        "\"idfVer\":\"%s\",\"buildDate\":\"%s %s\""
+        ",\"dvpVsync\":%lu,\"dvpHref\":%lu,\"dvpPclk\":%lu,\"dvpProbed\":%s",
         model,
         (unsigned) (ci.revision / 100), (unsigned) (ci.revision % 100),
         (unsigned) ci.cores, feat,
@@ -4715,7 +4720,9 @@ static void hw_info_json(char *out, size_t out_sz)
         fmode, CONFIG_ESPTOOLPY_FLASHFREQ,
         pmode, pspeed, pmb,
         ad ? ad->idf_ver : "?",
-        ad ? ad->date : "?", ad ? ad->time : "?");
+        ad ? ad->date : "?", ad ? ad->time : "?",
+        (unsigned long) dvp_v, (unsigned long) dvp_h, (unsigned long) dvp_p,
+        dvp_done ? "true" : "false");
 }
 
 /* GET /api/sysinfo — Debug tab: heap/low-water/uptime/reconnects, WiFi link,
