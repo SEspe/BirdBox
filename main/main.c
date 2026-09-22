@@ -38,6 +38,7 @@
 #include "web_server.h"
 #include "motion.h"
 #include "ha.h"
+#include "night.h"
 #include "classify.h"
 #include "illum.h"
 
@@ -210,4 +211,9 @@ void app_main(void)
      * be able to hold up that call and cost a good image its OTA validation.
      * Returns immediately when the feature is off. */
     ha_start();
+
+    /* Night sleep (FSD §14). Also last, and for the same reason: it powers the
+     * camera down and can enter deep sleep, neither of which should ever be in
+     * the path of the rollback vote above. Returns immediately when off. */
+    night_start();
 }

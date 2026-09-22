@@ -13,6 +13,7 @@
 #include "stats.h"
 #include "settings.h"
 #include "ha.h"
+#include "night.h"
 #include "classify.h"
 #include "cloud.h"
 #include "inat.h"
@@ -913,6 +914,28 @@ ROT_OPTIONS
 "<input class='wi' type='password' id='stHaPass'>"
 "<button class='act' style='margin-left:0' onclick='haStat()'>&#128225; Check connection</button>"
 "<span class='sts' id='stHaSts'></span>"
+/* ── Night Sleep (FSD §14) ──────────────────────────────────────────────────
+ * Own section under System. The trigger is the box's own ambient-light
+ * reading, so there is nothing here to configure about location or times. */
+"<h3 class='sh'>Night Sleep</h3>"
+"<p class='sts'>There are no birds at night. When the camera&rsquo;s own view goes dark "
+"the box can stop detecting and power the sensor down, then check every few minutes "
+"and come back by itself at dawn. Uses what the camera sees &mdash; no location, no "
+"clock and no sunrise table, so a shaded spot works correctly.</p>"
+"<label class='wl'>After dark<span class='inf' onclick='sInfo(\"night\")'>i</span></label>"
+"<select class='wi' id='stNight'>"
+"<option value='0'>Stay online (default)</option>"
+"<option value='1'>Pause detection, camera off</option>"
+"<option value='2'>Deep sleep (battery/solar)</option>"
+"</select>"
+"<label class='wl'>Check for daylight every<span class='inf' onclick='sInfo(\"nprobe\")'>i</span></label>"
+"<select class='wi' id='stNightProbe'>"
+"<option value='5'>5 minutes</option><option value='10'>10 minutes (default)</option>"
+"<option value='15'>15 minutes</option><option value='30'>30 minutes</option>"
+"</select>"
+"<button class='act' style='margin-left:0' onclick='nightStat()'>&#127769; Night status</button>"
+"<button class='act' onclick='nightWake()'>&#9728;&#65039; Wake now</button>"
+"<span class='sts' id='stNightSts'></span>"
 "<p class='sts'>Settings apply immediately &mdash; no reboot needed (resolution excepted).</p>"
 "<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
 "<span class='sts' id='stSts'></span>"
@@ -2215,7 +2238,24 @@ ROT_OPTIONS
 " Assistant login. Leave both blank for a broker that allows anonymous access. The password is"
 " stored in plain text in NVS, like the other stored secrets here: a flash dump reveals it."
 " Clearing the broker address and saving forgets the stored username and password.',"
-"'(blank)','Any account the broker accepts. Use Check connection after saving to confirm it.']"
+"'(blank)','Any account the broker accepts. Use Check connection after saving to confirm it.'],"
+"night:['Night sleep','There are no birds at night, so detection, capture, identification and"
+" the illuminator are all wasted effort after dark &mdash; along with the heat they make."
+" The box decides from what the CAMERA sees, not from a clock or a sunrise table, so a shaded"
+" or north-facing spot works correctly and nothing needs configuring when the seasons change."
+" <b>Pause detection</b> also powers the sensor down; the web UI, OTA and Home Assistant stay"
+" up, so the box is always reachable. <b>Deep sleep</b> saves far more but leaves the network"
+" between checks &mdash; only worth it on battery or solar. Because a paused camera cannot see"
+" dawn, the box wakes on a timer to take a reading (see the next setting). If the view is"
+" blocked &mdash; snow, a leaf, a bird roosting on the lens &mdash; it wakes by itself after"
+" 14 hours rather than sleeping through the day.',"
+"'Stay online','Pause detection + camera off, or deep sleep for battery installations.'],"
+"nprobe:['Daylight check interval','How often a sleeping box powers the camera up to see"
+" whether it is light yet. Each check costs about a second of camera time, so even the"
+" shortest setting runs the sensor well under 1% of the night. Dawn takes roughly half an"
+" hour, so 10 minutes catches it comfortably; shorten it only if you want the box live"
+" earlier, lengthen it to save a little more on battery.',"
+"'10 minutes','5, 15 or 30 minutes.']"
 "};"
 /* i18n Phase 2 (v2.73): popup bodies come from i18n.txt rows keyed
  * '@sinfo:<key>:<field>' (t/d/def/alt) when the active language has them;
@@ -2266,6 +2306,8 @@ ROT_OPTIONS
 "$g('stHaUser').value=c.hauser||'';"
 "$g('stHaPass').value='';"
 "$g('stHaPass').placeholder=c.hapass_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
+"if(c.night!=null)$g('stNight').value=c.night;"
+"if(c.nprobe!=null)$g('stNightProbe').value=c.nprobe;"
 "$g('stRot').value=q90(c.rot);$g('lvRot').value=q90(c.rot);"
 "$g('stMirH').checked=!!c.mirh;$g('stMirV').checked=!!c.mirv;"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
@@ -2316,6 +2358,24 @@ ROT_OPTIONS
 "s.style.color='#3c3';}"
 "else{s.textContent='\\u2717 '+(o.error||'connecting\\u2026');s.style.color='#e66';}})"
 ".catch(function(){s.textContent='\\u2717 check failed';s.style.color='#e66';});}"
+/* Night Sleep (§14). Reports the live state rather than only the setting: a
+ * sleeping box looks identical to a broken one from the outside, which is the
+ * whole reason the luma reading is surfaced here. */
+"function nightFmt(o){"
+"if(o.mode==0)return'Disabled \\u2013 always online';"
+"var t=(o.state=='sleeping')?('\\ud83c\\udf19 Asleep'+(o.asleepS>60?' for '+Math.round(o.asleepS/60)+' min':'')):"
+"((o.state=='probing')?'\\u2026 checking the light':'\\u2600\\ufe0f Online');"
+"if(o.luma>=0)t+=' \\u2013 last reading '+o.luma+'/255';"
+"if(o.dark&&o.hold)t+=' \\u2013 dark, but held by: '+o.hold;"
+"if(o.mode==2&&o.state=='sleeping')t+=' (deep sleep between checks)';"
+"return t;}"
+"function nightStat(){var s=$g('stNightSts');s.textContent='\\u2026';s.style.color='';"
+"fetch('/api/night').then(r=>r.json()).then(function(o){s.textContent=nightFmt(o);})"
+".catch(function(){s.textContent='\\u2717 status failed';s.style.color='#e66';});}"
+"function nightWake(){var s=$g('stNightSts');s.textContent='\\u2026 waking';s.style.color='';"
+"fetch('/api/night',{method:'POST'}).then(r=>r.json()).then(function(o){"
+"s.textContent=nightFmt(o);})"
+".catch(function(){s.textContent='\\u2717 wake failed';s.style.color='#e66';});}"
 /* One firmware runs every supported sensor, so the Settings tab has to match
  * itself to whatever camera this particular box has. The server reports the
  * detected capabilities in /api/settings (cam*); everything the fitted sensor
@@ -2385,6 +2445,8 @@ ROT_OPTIONS
 "+'&haport='+$g('stHaPort').value"
 "+'&hauser='+encodeURIComponent($g('stHaUser').value)"
 "+($g('stHaPass').value?'&hapass='+encodeURIComponent($g('stHaPass').value):'')"
+"+'&night='+$g('stNight').value"
+"+'&nprobe='+$g('stNightProbe').value"
 /* An empty key field means "keep the stored key" — the handler treats an
  * absent ckey/gkey as unchanged, so never send an empty one. gmdl is always
  * sent (present-only on the server): blank resets it to the default. */
@@ -4164,7 +4226,9 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         /* System Monitoring (§13). hapass_set, never the password — same posture
          * as every other secret in this reply. */
         "\"haen\":%u,\"hahost\":\"%s\",\"haport\":%u,\"hauser\":\"%s\","
-        "\"hapass_set\":%s}",
+        "\"hapass_set\":%s,"
+        /* Night sleep (§14). */
+        "\"night\":%u,\"nprobe\":%u}",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -4212,7 +4276,8 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.ha_host,     /* quote/backslash/space rejected on save — JSON-safe */
         (unsigned) g_settings.ha_port,
         g_settings.ha_user,     /* same validation as ha_host */
-        g_settings.ha_pass[0] ? "true" : "false");
+        g_settings.ha_pass[0] ? "true" : "false",
+        (unsigned) g_settings.sleep_mode, (unsigned) g_settings.sleep_probe_min);
     httpd_resp_send_chunk(req, buf, n);
     /* The `models` array used to be emitted here: the .tflite files on the
      * card, offered as choices for the `region` picker. Both are gone (v2.90) —
@@ -4514,6 +4579,12 @@ static esp_err_t h_settings_post(httpd_req_t *req)
             strlcpy(g_settings.ha_pass, p, sizeof(g_settings.ha_pass));
     }
 
+    /* Night sleep (§14). Changing the mode takes effect on the night task's
+     * next pass (<=30 s); switching it to off wakes the box there rather than
+     * here, so there is one place that owns camera power. */
+    g_settings.sleep_mode      = field_num(body, "night=",  0, 2,  g_settings.sleep_mode);
+    g_settings.sleep_probe_min = field_num(body, "nprobe=", 1, 120, g_settings.sleep_probe_min);
+
     settings_save();
 
     /* Apply live — no reboot (FSD §5) */
@@ -4553,6 +4624,29 @@ static esp_err_t h_settings_post(httpd_req_t *req)
  * MQTT fails silently by nature: a wrong password or an unreachable broker
  * simply means no entities ever appear in HA, with nothing on the box to say
  * why. This is what the Settings tab's "Check connection" button reads. */
+/* GET /api/night — night-sleep state (§14). POST — wake now and hold off
+ * re-sleeping, so inspecting the box after dark doesn't fight the scheduler. */
+static esp_err_t h_night(httpd_req_t *req)
+{
+    if (req->method == HTTP_POST) night_wake_now();
+    char buf[200];
+    snprintf(buf, sizeof(buf),
+             "{\"mode\":%u,\"state\":\"%s\",\"asleep\":%s,\"asleepS\":%d,"
+             "\"luma\":%d,\"dark\":%s,\"probeMin\":%u,\"camAsleep\":%s,"
+             /* Why an enabled box is still awake — without it, "online" while
+              * dark is indistinguishable from a broken scheduler (§14). */
+             "\"hold\":\"%s\"}",
+             (unsigned) g_settings.sleep_mode, night_state_str(),
+             night_asleep() ? "true" : "false", night_asleep_s(),
+             night_last_luma(), motion_ambient_dark() ? "true" : "false",
+             (unsigned) g_settings.sleep_probe_min,
+             camera_asleep() ? "true" : "false",
+             night_hold_reason());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 static esp_err_t h_ha_status(httpd_req_t *req)
 {
     char buf[192], err[80];
@@ -4599,7 +4693,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
          * as the API keys above, and omitting it reads as "keep current" on
          * restore. A restored box therefore reconnects by itself unless the
          * broker needs a password, which is re-entered once. */
-        "&haen=%u&hahost=%s&haport=%u&hauser=%s",
+        "&haen=%u&hahost=%s&haport=%u&hauser=%s"
+        "&night=%u&nprobe=%u",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -4620,7 +4715,8 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.inat_cv_enabled,
         g_settings.inat_loc,
         (unsigned) g_settings.ha_enabled, g_settings.ha_host,
-        (unsigned) g_settings.ha_port, g_settings.ha_user);
+        (unsigned) g_settings.ha_port, g_settings.ha_user,
+        (unsigned) g_settings.sleep_mode, (unsigned) g_settings.sleep_probe_min);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
@@ -5054,6 +5150,16 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
 #define OTAU_URL_PREFIX "https://github.com/SEspe/BirdBox/releases/download/"
 typedef enum { OTAU_IDLE = 0, OTAU_RUNNING, OTAU_DONE, OTAU_FAILED } otau_state_t;
 static volatile otau_state_t s_otau_state = OTAU_IDLE;
+
+/* Declared in web_server.h; defined here because the state they read is
+ * file-static. Deliberately TWO predicates rather than one "busy", because
+ * night.c must treat them differently (FSD §14): interrupting an OTA can brick
+ * a box, while ending a stream is something the live view already handles — it
+ * reconnects when a stream ends, not only when it fails (v2.98). Collapsing
+ * both into one veto meant a single forgotten browser tab silently disabled
+ * night sleep for good, which is how this was found. */
+bool web_server_streaming(void)  { return s_stream_clients > 0; }
+bool web_server_ota_active(void) { return s_otau_state == OTAU_RUNNING; }
 static volatile int s_otau_read = 0, s_otau_total = 0;
 static char s_otau_msg[96] = "";
 static char s_otau_url[300] = "";
@@ -6182,6 +6288,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
         { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
         { .uri = "/api/ha-status",     .method = HTTP_GET,  .handler = h_ha_status     },
+        { .uri = "/api/night",         .method = HTTP_GET,  .handler = h_night         },
+        { .uri = "/api/night",         .method = HTTP_POST, .handler = h_night         },
         { .uri = "/api/settings/export", .method = HTTP_GET, .handler = h_settings_export },
         { .uri = "/api/sysinfo",       .method = HTTP_GET,  .handler = h_sysinfo    },
         { .uri = "/api/captures/delete", .method = HTTP_POST, .handler = h_captures_delete_batch },

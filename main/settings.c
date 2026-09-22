@@ -65,6 +65,9 @@ settings_t g_settings = {
     .ha_port            = 1883,
     .ha_user            = "",
     .ha_pass            = "",
+    .sleep_mode         = 0,    /* opt-in: a box that sleeps when nobody asked
+                                 * it to would look broken after dark */
+    .sleep_probe_min    = 10,
 };
 
 esp_err_t settings_load(void)
@@ -154,6 +157,8 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_hauser", g_settings.ha_user, &l);
     l = sizeof(g_settings.ha_pass);
     nvs_get_str(h, "s_hapass", g_settings.ha_pass, &l);
+    if (nvs_get_u8 (h, "s_slpmode", &u8) == ESP_OK && u8 <= 2) g_settings.sleep_mode = u8;
+    if (nvs_get_u16(h, "s_slpprobe", &u16) == ESP_OK && u16 > 0) g_settings.sleep_probe_min = u16;
     /* "s_inat"/"s_inatv" (the periodic re-scan) are no longer read — v2.91. Any
      * value a device already has in NVS is simply left there, inert. */
     nvs_close(h);
@@ -216,6 +221,8 @@ esp_err_t settings_save(void)
     nvs_set_u16(h, "s_haport", g_settings.ha_port);
     nvs_set_str(h, "s_hauser", g_settings.ha_user);
     nvs_set_str(h, "s_hapass", g_settings.ha_pass);
+    nvs_set_u8 (h, "s_slpmode", g_settings.sleep_mode);
+    nvs_set_u16(h, "s_slpprobe", g_settings.sleep_probe_min);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");

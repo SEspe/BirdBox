@@ -397,6 +397,71 @@ static esp_err_t camera_recover(void)
     return err;
 }
 
+/* ── Night sleep (FSD §14) ──────────────────────────────────────────────────
+ * Deliberately powering the sensor down between dusk and dawn, as opposed to
+ * camera_recover()'s "the sensor is wedged, re-init it". Same drain-then-
+ * deinit dance, because the grab-racing-a-deinit hazard is identical, but the
+ * end state differs: recovery re-inits immediately, this one stays down.
+ *
+ * The watchdog needs no change to tolerate this. It already bails on
+ * `!s_available || s_recovering`, and it only acts when consumers are actually
+ * grabbing — so a sleeping camera is simply invisible to it rather than
+ * something it keeps trying to "fix". */
+static volatile bool s_asleep = false;
+
+esp_err_t camera_sleep(void)
+{
+    if (s_asleep) return ESP_OK;
+
+    portENTER_CRITICAL(&s_mux);
+    s_recovering = true;                            /* new grabs bail out      */
+    portEXIT_CRITICAL(&s_mux);
+
+    int64_t t0 = esp_timer_get_time();              /* drain in-flight grabs   */
+    int n;
+    do {
+        portENTER_CRITICAL(&s_mux); n = s_inflight; portEXIT_CRITICAL(&s_mux);
+        if (n == 0) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    } while (esp_timer_get_time() - t0 < 2000000);
+
+    if (n != 0) {                                   /* wedged: leave it alone  */
+        portENTER_CRITICAL(&s_mux); s_recovering = false; portEXIT_CRITICAL(&s_mux);
+        ESP_LOGW(TAG, "night: grab wedged (inflight=%d) — staying awake", n);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_available = false;
+    esp_camera_deinit();
+    gpio_reset_pin(CAM_PIN_XCLK);                   /* hold the clock low      */
+    gpio_set_direction(CAM_PIN_XCLK, GPIO_MODE_OUTPUT);
+    gpio_set_level(CAM_PIN_XCLK, 0);
+    s_asleep = true;
+
+    portENTER_CRITICAL(&s_mux);
+    s_recovering = false;   /* grabs still bail: s_available is false          */
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG, "night: camera powered down");
+    return ESP_OK;
+}
+
+esp_err_t camera_wake(void)
+{
+    if (!s_asleep) return ESP_OK;
+    esp_err_t err = camera_hw_init();               /* re-inits LEDC/XCLK too  */
+    s_asleep = false;
+    /* Re-seed the heartbeat. Without this the watchdog inherits a timestamp
+     * from before the whole night and could read a fresh camera as stalled the
+     * moment anything starts grabbing again. */
+    portENTER_CRITICAL(&s_mux);
+    s_last_good_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG, "night: camera wake %s", err == ESP_OK ? "ok" : esp_err_to_name(err));
+    return err;
+}
+
+bool camera_asleep(void) { return s_asleep; }
+
 static void cam_wd_task(void *arg)
 {
     const int64_t STALL_US = 5000000;    /* no good frame this long ⇒ suspect  */

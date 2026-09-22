@@ -423,3 +423,23 @@ Check connection	Sjekk tilkobling
 @sinfo:hacred:d	Brukernavnet og passordet til selve MQTT-BROKEREN — ikke Home Assistant-påloggingen din. La begge stå tomme for en broker som tillater anonym tilgang. Passordet lagres i klartekst i NVS, som de andre hemmelighetene her: en flash-dump avslører det. Å tømme broker-adressen og lagre glemmer lagret brukernavn og passord.
 @sinfo:hacred:def	(tomt)
 @sinfo:hacred:alt	Enhver konto brokeren godtar. Bruk Sjekk tilkobling etter lagring for å bekrefte.
+# ── Settings: Night Sleep (FSD v3.04) ──
+Night Sleep	Nattemodus
+There are no birds at night. When the camera’s own view goes dark the box can stop detecting and power the sensor down, then check every few minutes and come back by itself at dawn. Uses what the camera sees — no location, no clock and no sunrise table, so a shaded spot works correctly.	Det er ingen fugler om natten. Når kameraets eget bilde blir mørkt kan boksen slutte å detektere og slå av sensoren, for så å sjekke med noen minutters mellomrom og komme tilbake av seg selv ved daggry. Bruker det kameraet ser — ingen posisjon, ingen klokke og ingen soloppgangstabell, så en skyggefull plassering fungerer riktig.
+After dark	Etter mørkets frembrudd
+Stay online (default)	Alltid på (standard)
+Pause detection, camera off	Pause deteksjon, kamera av
+Deep sleep (battery/solar)	Dvale (batteri/solcelle)
+Check for daylight every	Se etter dagslys hvert
+5 minutes	5. minutt
+10 minutes (default)	10. minutt (standard)
+15 minutes	15. minutt
+30 minutes	30. minutt
+Night status	Nattstatus
+Wake now	Vekk nå
+@sinfo:night:t	Nattemodus
+@sinfo:night:def	Alltid på
+@sinfo:night:alt	Pause deteksjon + kamera av, eller dvale for batteriinstallasjoner.
+@sinfo:nprobe:t	Intervall for dagslyssjekk
+@sinfo:nprobe:def	10. minutt
+@sinfo:nprobe:alt	5, 15 eller 30 minutter.

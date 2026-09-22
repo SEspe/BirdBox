@@ -14,6 +14,7 @@ idf_component_register(
         "inat.c"
         "cloud.c"
         "ha.c"
+        "night.c"
         "settings.c"
         "storage.c"
         "stats.c"

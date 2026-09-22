@@ -214,6 +214,15 @@ typedef struct {
                                        inference time; 0 = single pass. default 0
                                        — the ~2x cost/heat bought no gain on the
                                        model's hard cases (v1.56), opt-in only */
+    /* ── Night sleep (FSD §14, Settings → System Monitoring). Stop working
+     * after dark, triggered by the box's own ambient-light reading. */
+    uint8_t  sleep_mode;            /* night_mode_t: 0 off (default), 1 pause
+                                       detection + power the sensor down,
+                                       2 ESP32 deep sleep between probes */
+    uint16_t sleep_probe_min;       /* minutes between wake probes while asleep,
+                                       default 10. Dawn takes ~30 min, so this
+                                       catches it well inside the useful window
+                                       at a ~0.3 %% camera duty cycle */
     /* ── Home Assistant reporting over MQTT (FSD §13, Settings → System
      * Monitoring). Opt-in and inert when off: with ha_enabled clear, ha.c
      * creates no client, spawns no task and opens no socket. */

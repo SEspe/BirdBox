@@ -87,6 +87,11 @@ static const char *TAG = "motion";
  * genuinely too dim for the fixed short exposure to overexpose. */
 #define AMBIENT_DARK_ON_THR   35   /* avg luma below this -> too dark, turn on */
 #define AMBIENT_DARK_OFF_THR  90   /* avg luma above this -> bright enough, turn off */
+/* Night probe (FSD §14): frames discarded after a camera wake before the
+ * reading is trusted, and the gap between them. ~1 s total, which is enough
+ * for the OV2640/OV5640 AEC to converge on the real scene. */
+#define AMBIENT_PROBE_FRAMES     4
+#define AMBIENT_PROBE_SETTLE_MS  250
 
 static uint8_t *s_bg, *s_bg_slow, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
@@ -137,10 +142,18 @@ static int cluster_cap(void)
 /* Grab one frame, decode small, update s_cur; returns true when the changed
  * area exceeds the sensitivity-derived threshold. Rolls the background only
  * on no-motion frames. */
-static bool detect_once(void)
+/* Grab one frame and decode it into s_cur as grayscale, returning the frame's
+ * average luma (0-255), or -1 if no frame was available or the decode failed.
+ *
+ * Factored out of detect_once() so the night probe (FSD §14) can measure
+ * ambient light through the IDENTICAL path while the detect loop is paused.
+ * That identity is the whole point: AMBIENT_DARK_ON_THR/OFF_THR are tuned
+ * against this exact 1/8-scale, green-channel transform, and a second
+ * measurement taken any other way would not be comparable to them. */
+static int decode_gray(void)
 {
     camera_fb_t *fb = camera_grab();
-    if (!fb) return false;
+    if (!fb) return -1;
 
     esp_jpeg_image_cfg_t jcfg = {
         .indata      = fb->buf,
@@ -155,11 +168,11 @@ static bool detect_once(void)
     camera_return(fb);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "detect decode failed: %s", esp_err_to_name(err));
-        return false;
+        return -1;
     }
 
     int px = out.width * out.height;
-    if (px <= 0 || px > DETECT_MAX_PX) return false;
+    if (px <= 0 || px > DETECT_MAX_PX) return -1;
     if (px != s_px) { s_px = px; s_have_bg = false; }
     s_w = out.width;
     s_h = out.height;
@@ -172,13 +185,28 @@ static bool detect_once(void)
         s_cur[i] = (uint8_t) (((rgb[i] >> 5) & 0x3F) << 2);
         luma_sum += s_cur[i];
     }
+    return (int) (luma_sum / px);
+}
+
+/* Feed one luma reading through the dark/bright hysteresis. Shared by the
+ * detect loop and the night probe so the ambient state stays coherent no
+ * matter which one is currently running (FSD §14). */
+static void ambient_update(int avg)
+{
+    if (!s_dark && avg < AMBIENT_DARK_ON_THR)       s_dark = true;
+    else if (s_dark && avg > AMBIENT_DARK_OFF_THR)  s_dark = false;
+}
+
+static bool detect_once(void)
+{
+    int avg = decode_gray();
+    if (avg < 0) return false;
+    int px = s_px;
 
     /* Runs on every decoded frame regardless of motion/background state, so
      * both auto behaviours track ambient light continuously rather than only
      * during a visit — "on during dark hours", not a per-shot flash/trigger. */
-    int avg = (int) (luma_sum / px);
-    if (!s_dark && avg < AMBIENT_DARK_ON_THR)       s_dark = true;
-    else if (s_dark && avg > AMBIENT_DARK_OFF_THR)  s_dark = false;
+    ambient_update(avg);
 
     bool want_illum = (g_settings.ir_led_mode == 1) && s_dark;
     if (want_illum != s_illum_on) { illum_set(want_illum); s_illum_on = want_illum; }
@@ -557,6 +585,32 @@ int      motion_cluster_cap(void)               { return cluster_cap(); }
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }
+
+bool motion_ambient_dark(void) { return s_dark; }
+
+/* One-shot ambient measurement for the night probe (FSD §14), used while the
+ * detect loop is paused and therefore not producing readings of its own.
+ *
+ * Discards warm-up frames. The sensor's AEC/AGC swing wildly over the first
+ * frames after a wake, and a sample taken immediately reads far darker than
+ * the scene really is — which would keep a box asleep through sunrise. This is
+ * the same settling the boot detection quarantine exists for; here it costs
+ * four frames instead of sixty seconds because nothing is being captured.
+ *
+ * Returns the average luma 0-255, or -1 if no frame could be decoded. */
+int motion_ambient_probe(void)
+{
+    int avg = -1;
+    for (int i = 0; i < AMBIENT_PROBE_FRAMES; i++) {
+        vTaskDelay(pdMS_TO_TICKS(AMBIENT_PROBE_SETTLE_MS));
+        avg = decode_gray();
+    }
+    if (avg >= 0) ambient_update(avg);
+    /* The scene almost certainly changed while the camera was off, so never
+     * let a night-old background survive into the resumed detector. */
+    s_have_bg = false;
+    return avg;
+}
 
 uint32_t motion_fast_last_ms(void) { return s_fast_last_ms; }   /* Debug (v2.60) */
 uint32_t motion_fast_avg_ms(void)  { return s_fast_avg_ms; }

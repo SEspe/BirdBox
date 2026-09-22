@@ -34,3 +34,13 @@ uint32_t motion_fast_avg_ms(void);            /* 4-event moving average of it, m
  * Not persisted: detection always comes up enabled after a reboot. */
 bool motion_detection_enabled(void);
 void motion_set_detection_enabled(bool enabled);
+
+/* ── Ambient light (FSD §14) ────────────────────────────────────────────────
+ * The debounced dark/bright state the illuminator and fast-shutter already
+ * follow, plus a one-shot measurement for the night sleep probe. The probe is
+ * needed because a paused detector grabs no frames at all: disabling detection
+ * (or sleeping the camera) blinds the very sensor that would otherwise notice
+ * dawn, so waking has to be driven by a deliberate, timed sample rather than
+ * by the continuous reading. Returns average luma 0-255, or -1. */
+bool motion_ambient_dark(void);
+int  motion_ambient_probe(void);

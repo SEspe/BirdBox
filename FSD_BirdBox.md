@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.03
+**Version:** 3.04
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -291,7 +291,7 @@ Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab b
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
 - **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected).
-- **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto), and a System Monitoring section carrying the Home Assistant / MQTT settings (§13).
+- **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto), and a System Monitoring section carrying the Home Assistant / MQTT settings (§13), and a Night Sleep section (§14).
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
 - **WiFi** — §4 step 5, plus a Reboot Now button.
 - **OTA Update** — §8.
@@ -316,6 +316,7 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 | `/api/capture` | POST | Manual snapshot now |
 | `/api/settings` | GET / POST | Read/write settings |
 | `/api/ha-status` | GET | Live state of the Home Assistant MQTT client: enabled, connected, updates sent, last error (§13) |
+| `/api/night` | GET / POST | Night-sleep state (mode, asleep, seconds asleep, last luma); POST wakes now and holds off re-sleeping (§14) |
 | `/api/ipconfig`, `/api/ipconfig/save` | GET / POST | DHCP/static IP (RemoteStart design) |
 | `/api/reboot` | POST | Reboot |
 | `/stream` | GET | MJPEG live stream |
@@ -452,3 +453,60 @@ classification. Because MQTT otherwise fails silently — a wrong password simpl
 means entities never appear — the Settings tab exposes the live client state
 (connected, updates sent, or the specific error) behind a **Check connection**
 button.
+
+---
+
+## 14. Night Sleep
+
+There are no birds at night, so detection, capture, identification, the iNat
+calls and the illuminator are all waste after dark — along with the heat they
+make. The box therefore stops working when its own view goes dark, and resumes
+by itself at dawn. Off by default.
+
+**The trigger is what the camera sees, not a clock.** It reuses the ambient
+luma reading `motion.c` already computes from every detect frame, with the same
+hysteresis the illuminator follows. No location, no clock and no sunrise table
+are required, so a shaded or north-facing site behaves correctly and nothing
+needs re-tuning as the seasons move.
+
+**Sleeping and waking are deliberately asymmetric, and that is the whole
+design.** Going to sleep is driven by a continuous, free measurement. Waking
+cannot be: pausing detection stops the frame grabs that produce that
+measurement, and powering the sensor down makes it absolute — the box has
+switched off the eye that would see dawn. Waking is therefore a timed **probe**:
+power the camera, discard the AEC warm-up frames, take one reading, then either
+resume or go back to sleep. The probe costs about a second of camera time per
+interval (default 10 minutes, so well under 1 % duty cycle), and dawn takes
+roughly half an hour, so it is caught comfortably inside the useful window.
+
+**Three levels**, because mains and battery want opposite answers:
+
+| Level | Behaviour |
+|---|---|
+| **Stay online** (default) | Never sleeps. |
+| **Pause detection, camera off** | Detection stops and the sensor is powered down. The web UI, live view state, OTA and Home Assistant all stay up, so the box is always reachable. |
+| **Deep sleep** | ESP32 deep sleep between probes. Saves far more, but the box leaves the LAN between wake windows — only worth it on battery or solar. |
+
+On this SoC a deep-sleep wake is a **reset**, not a resume, so every probe wake
+is an ordinary boot that brings WiFi, the web server and Home Assistant up by
+itself. The box is therefore reachable for a window on each wake and only
+returns to sleep if it is still dark. The cost is that a wake pays a full
+bringup — NTP resync, SD remount, camera init.
+
+**Safeguards.** The box never sleeps out from under a live stream viewer or an
+OTA in flight. A grab wedged in the driver cancels the sleep rather than
+deinitialising underneath it. A failed decode counts as *inconclusive*, not as
+darkness, so a transient error cannot extend the night. A manual **Wake now**
+holds off re-sleeping, so inspecting the box after dark does not fight the
+scheduler. And because a blocked view — snow, a leaf, a bird roosting on the
+lens — reads dark forever, the box force-wakes after **14 hours** asleep and
+stays awake for a snooze period, so a stuck reading self-heals daily instead of
+costing a season. That backstop is a maximum sleep duration rather than an
+almanac sanity-check on purpose: at the latitudes this project runs at, real
+polar nights make "the sun must be up by now" simply false for weeks.
+
+**Interaction with the camera watchdog.** A sleeping sensor is invisible to the
+watchdog rather than something it keeps trying to recover: the watchdog already
+ignores a camera that reports unavailable and only acts when consumers are
+actively grabbing. On wake the frame-heartbeat is re-seeded, so a night-old
+timestamp cannot read as a stall.

@@ -164,3 +164,16 @@ bool camera_focus_locked(void);
  * is the answer someone needs when working out whether their OV5640 module
  * actually has a focus motor. */
 const char *camera_af_error(void);
+
+/* ── Night sleep (FSD §14) ──────────────────────────────────────────────────
+ * Powers the sensor down for the night and brings it back. Distinct from the
+ * watchdog's recovery: this one deliberately STAYS down until camera_wake().
+ * While asleep camera_grab() returns NULL (so the stream and snapshots show
+ * the normal "no camera" state) and the watchdog ignores the sensor entirely
+ * rather than trying to recover it.
+ * camera_sleep() returns ESP_ERR_INVALID_STATE if a grab is wedged in the
+ * driver and cannot be drained — the caller should stay awake rather than
+ * deinit under it. */
+esp_err_t camera_sleep(void);
+esp_err_t camera_wake(void);
+bool      camera_asleep(void);

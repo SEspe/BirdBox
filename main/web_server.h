@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include "esp_err.h"
 
 /* Embedded web UI + REST API + MJPEG stream (FSD §5, §6).
@@ -16,3 +17,11 @@ void web_server_note_ntp_sync(void);
  * install of the sensor handle; ha.c publishes the same value to Home
  * Assistant that the Debug tab shows (FSD §13). */
 float web_soc_temp_c(void);
+
+/* Two separate predicates, because night sleep (FSD §14) must weigh them
+ * differently. An OTA is an absolute veto: interrupting a firmware write can
+ * brick the box. A live viewer is only a DELAY — the live view already handles
+ * a stream ending, and letting one attached browser tab veto sleep outright
+ * means a forgotten tab silently disables the feature. */
+bool web_server_streaming(void);
+bool web_server_ota_active(void);
