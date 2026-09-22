@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.04
+**Version:** 3.05
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -504,6 +504,8 @@ stays awake for a snooze period, so a stuck reading self-heals daily instead of
 costing a season. That backstop is a maximum sleep duration rather than an
 almanac sanity-check on purpose: at the latitudes this project runs at, real
 polar nights make "the sun must be up by now" simply false for weeks.
+
+**Pausing must never blind the sensor that ends the pause.** Night sleep owns its own pause flag, separate from the maintenance toggle, so two independent reasons to stop detecting cannot overwrite each other. A paused detect loop also keeps taking one ambient sample per pass — it drives nothing but the illuminator, fast-shutter and night state, and costs nothing while the sensor is powered down, since the decode simply fails. Without that, a pause freezes the ambient reading and the box can never notice the daylight that would end it. The awake state is re-asserted on every scheduler pass, so a disagreement between the pause flag, camera power and this module's own state corrects itself within one tick rather than latching.
 
 **Interaction with the camera watchdog.** A sleeping sensor is invisible to the
 watchdog rather than something it keeps trying to recover: the watchdog already

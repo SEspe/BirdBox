@@ -61,11 +61,11 @@ static void enter_sleep(void)
     /* Detection first, camera second: stopping the loop means nothing is
      * mid-grab when the sensor goes down, which is what camera_sleep()'s drain
      * is there to guarantee anyway — this just makes the common case clean. */
-    motion_set_detection_enabled(false);
+    motion_set_night_paused(true);
     vTaskDelay(pdMS_TO_TICKS(500));
     if (camera_sleep() != ESP_OK) {
         /* A wedged grab: stay fully awake rather than deinit under it. */
-        motion_set_detection_enabled(true);
+        motion_set_night_paused(false);
         ESP_LOGW(TAG, "could not sleep the camera — staying online");
         return;
     }
@@ -74,14 +74,21 @@ static void enter_sleep(void)
     ESP_LOGI(TAG, "dark — detection paused, camera down");
 }
 
+/* Idempotent, and deliberately NOT guarded on s_asleep. Every path back to
+ * "awake" goes through here, and it is also re-asserted on every scheduler
+ * pass, so if the three pieces of state this feature touches (our own flag,
+ * the night pause, camera power) ever disagree, the disagreement is corrected
+ * within one tick instead of latching. A box was found stuck with detection
+ * off while this module believed it was awake; an early-return here was how
+ * that state survived. */
 static void resume_online(void)
 {
-    if (!s_asleep) return;
-    camera_wake();
-    motion_set_detection_enabled(true);
+    bool was_asleep = s_asleep;
+    if (camera_asleep()) camera_wake();
+    if (motion_night_paused()) motion_set_night_paused(false);
     s_asleep = false;
     s_sleep_since_us = 0;
-    ESP_LOGI(TAG, "light — back online");
+    if (was_asleep) ESP_LOGI(TAG, "light — back online");
 }
 
 /* One probe cycle: wake the sensor, measure, decide. Leaves the camera down
@@ -123,6 +130,14 @@ static void night_task(void *arg)
         }
 
         if (!s_asleep) {
+            /* Reconcile before deciding: if anything left the night pause set
+             * or the sensor down while we believe we are awake, fix it now.
+             * Cheap, idempotent, and it makes the split-brain state that cost
+             * an evening of detection self-healing rather than permanent. */
+            if (motion_night_paused() || camera_asleep()) {
+                ESP_LOGW(TAG, "awake but paused/camera-down — reconciling");
+                resume_online();
+            }
             bool dark = motion_ambient_dark();
             if (!dark) { s_dark_since_us = 0; s_hold = "bright"; }
             else if (!s_dark_since_us) s_dark_since_us = now;

@@ -115,6 +115,14 @@ static volatile uint32_t s_reject_count  = 0;
 static volatile int      s_reject_cells  = 0;
 static volatile int      s_cluster_cells = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
+/* Night sleep (FSD §14) pauses detection through its OWN flag rather than
+ * s_detect_enabled. Two independent reasons to be paused must not clobber one
+ * another: sharing a single flag let night.c and the maintenance toggle each
+ * undo the other, and a box was observed stuck with detection off while night
+ * sleep believed it was awake — which killed detection and, because the paused
+ * loop then grabbed no frames at all, also killed the ambient reading that
+ * would have recovered it. */
+static volatile bool     s_night_paused   = false;
 
 #define GRID_N 8                         /* 8x8 detection grid (FSD §3.1) */
 /* Max cells (of 64) the winning cluster may span before it is rejected as wind
@@ -498,10 +506,20 @@ static void motion_task(void *arg)
 {
     bool quarantine_logged = false;
     for (;;) {
-        if (!s_detect_enabled) {
-            /* Maintenance pause: drop the baseline so detection re-seeds
-             * against the current scene when it resumes (light/subject may
-             * have changed while paused), and don't touch the camera. */
+        if (!s_detect_enabled || s_night_paused) {
+            /* Paused: drop the baseline so detection re-seeds against the
+             * current scene when it resumes (light/subject may have changed).
+             *
+             * BUT KEEP SAMPLING AMBIENT LIGHT. A pause used to skip the frame
+             * grab entirely, which silently blinded the dark/bright reading —
+             * and night sleep (FSD §14) depends on exactly that reading to know
+             * when to wake. A box left paused therefore froze its ambient state
+             * and could never notice dawn, or dusk. The sample is one small
+             * decode, it drives nothing but the illuminator/fast-shutter/night
+             * state, and when the sensor is deliberately powered down
+             * decode_gray() simply returns -1 and this costs nothing. */
+            int amb = decode_gray();
+            if (amb >= 0) ambient_update(amb);
             s_have_bg = false;
             vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
             continue;
@@ -585,6 +603,9 @@ int      motion_cluster_cap(void)               { return cluster_cap(); }
 
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }
+
+bool motion_night_paused(void)            { return s_night_paused; }
+void motion_set_night_paused(bool paused) { s_night_paused = paused; }
 
 bool motion_ambient_dark(void) { return s_dark; }
 

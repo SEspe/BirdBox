@@ -44,3 +44,12 @@ void motion_set_detection_enabled(bool enabled);
  * by the continuous reading. Returns average luma 0-255, or -1. */
 bool motion_ambient_dark(void);
 int  motion_ambient_probe(void);
+
+/* Night-sleep pause (FSD §14), deliberately SEPARATE from the maintenance
+ * toggle above. Detection runs only when enabled and not night-paused, so the
+ * two reasons cannot overwrite each other — sharing one flag produced a box
+ * stuck with detection off while night sleep thought it was awake. Unlike the
+ * maintenance pause, a night pause keeps sampling ambient light whenever the
+ * sensor is powered, so pausing can never blind the reading that ends it. */
+bool motion_night_paused(void);
+void motion_set_night_paused(bool paused);
