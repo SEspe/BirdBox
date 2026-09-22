@@ -76,6 +76,77 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       fewer frames, lower solo-accept bar, or the cloud tier (~4 s/call). All tuning calls,
       left to the operator.
 
+
+## New functionality — candidates (added 2026-09-22, fw 0.76.0)
+
+- [ ] **Temperature alert + throttling.** Today the SoC temperature is *reported only*:
+      the Debug row turns red above 75 °C (`web_server.c`), `/api/sysinfo` carries
+      `socTempC`, and 0.76.0 publishes it to Home Assistant as a `temperature` sensor.
+      **Nothing acts on it.** Two separate pieces, worth doing in this order:
+  - **Alert** is nearly free now. Home Assistant can alarm off the published sensor with
+    *zero* firmware work — that alone may close the request. On-device, an "overheating"
+    binary sensor is one row in `ha.c`'s `ENTITIES[]` table plus a Debug banner.
+  - **Throttling** needs care about *which* lever. Cheapest first: raise `cooldown_s`,
+    cut the fast-burst frame count, stop serving the MJPEG stream (continuous streaming is
+    the heaviest sustained load), drop the illuminator. **Resolution is NOT a runtime
+    lever** — it is applied at `camera_init` and needs a reboot (`settings.h`), so a
+    thermal path cannot step it down without restarting the box. Needs hysteresis
+    (act at ~80 °C, release at ~70 °C) or it will oscillate at the threshold.
+  - Reference numbers measured 2026-09-22: `.240` at HD idles **41 °C**, `.205` at UXGA
+    **53 °C**, peaking **67 °C** under simultaneous WiFi TX + flash write. So UXGA costs
+    ~12 °C over HD, and 75 °C is a sane warn line with real headroom.
+  - Remember the sensor reads the **die**, not enclosure air (typically 20–30 °C above
+    ambient). The genuine risk is not the chip — it is a sealed box in direct summer sun,
+    where the same workload lands far higher. Shade beats any firmware lever here.
+
+- [ ] **Daylight sleep — stop running the detection pipeline after dark.** No birds at
+      night, so capture, classification, iNat calls, SD writes and the illuminator are all
+      wasted, along with the heat they make. **Everything needed to compute sunrise/sunset
+      on-device already exists**: NTP time, `g_settings.timezone`, and a latitude/longitude
+      — `inat_loc` already stores `"lat,lng"` for the iNat geo hint. A dedicated lat/lng
+      setting would be cleaner than borrowing that field, but nothing new is *required*.
+  - **Decide what "sleep" means first — the two options are not close.** Operator's call
+    (2026-09-22): make the depth **optional, chosen to suit the installation** — mains and
+    battery want opposite answers. So a three-way setting rather than a boolean:
+    **off** (default) / **suspend detection** / **deep sleep**.
+    *(a) Suspend detection only.* `motion_set_detection_enabled(false)` already exists and
+    is already exposed at `/api/detect`, so this is mostly scheduling. The web UI, stream,
+    OTA and HA reporting all stay alive. Low risk, and it still stops the SD writes, iNat
+    calls and illuminator — most of the actual waste. The right answer on mains, where the
+    only thing saved is heat and SD wear and reachability is worth more.
+    *(b) Real deep sleep.* Much bigger saving, but the box **disappears from the LAN**: no
+    web UI, no OTA, no HA telemetry until it wakes. On a mains-powered box that is a bad
+    trade; **on battery or solar it is the entire point**, and it is the mode that makes a
+    battery deployment viable at all. Explicit opt-in, never silent.
+  - **The box cannot tell whether it is on battery — and that matters here.** There is no
+    power-source sensing in the firmware and no battery monitor wired on either board
+    (`board_config.h` has no ADC/voltage-divider pin, and `/api/sysinfo` reports no supply
+    rail). So "deep sleep when on battery" has to be an **operator declaration** — the
+    three-way setting above — not an automatic decision. Making it automatic means new
+    hardware: a divider into an ADC pin, which would also be worth having in its own right
+    (battery percentage is an obvious HA sensor, and the `.205` unit's power dropouts would
+    have been diagnosed in minutes rather than hours had the box been able to see its own
+    supply). Treat "battery voltage sensing" as the prerequisite feature, not part of this.
+  - **A battery deployment changes assumptions beyond sleeping.** While asleep the box
+    cannot be OTA'd, so an update has to wait for a wake window; HA will show it
+    unavailable every night (the last-will availability topic makes that correct rather
+    than alarming, which is one reason it was built that way); and NTP resync, WiFi
+    reconnect and camera warm-up all get paid again at every wake. Worth costing before
+    assuming deep sleep is a pure win.
+  - **Guard the pre-SNTP clock.** Right after boot `clockSrc` is not yet `ntp` and the
+    clock reads ~1970 — computing an almanac against that yields a bogus "it is night" and
+    a box that silently refuses to detect. Same bug class the boot detection quarantine
+    already exists for. Gate on `clockSrc == ntp` and fail *open* (keep detecting) when the
+    time is not trusted.
+  - **Consider the simpler trigger.** The illuminator already decides day/night from how
+    dark the camera's own frames read (`motion.c` ambient check). Reusing that needs no
+    location, no almanac and no clock at all, and it self-corrects for a shaded or
+    north-facing site that an almanac would get wrong. Probably the more robust option —
+    an almanac is the obvious design, not necessarily the right one.
+  - Needs a manual override, so someone checking the box at night is not locked out; and
+    it should be a setting defaulting **off**, since a nest box (unlike a feeder) may be
+    worth watching after dark.
+
 ## Settled — DO NOT re-attempt (documented dead ends)
 - Keep-alive TLS reuse — doubled classification time (~9.6→16.8 s), reverted (v2.62).
 - VGA / lower-res fast frames — no speedup; OV2640 ~1 fps @ 20 MHz XCLK is a hardware
