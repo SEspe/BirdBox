@@ -12,6 +12,7 @@
 #include "capture.h"
 #include "stats.h"
 #include "settings.h"
+#include "ha.h"
 #include "classify.h"
 #include "cloud.h"
 #include "inat.h"
@@ -127,6 +128,10 @@ static float soc_temp_c(void)
     return c;
 }
 #endif /* SOC_TEMP_SENSOR_SUPPORTED */
+
+/* Public wrapper: ha.c publishes the same reading the Debug tab shows, and
+ * the sensor handle is installed lazily above. */
+float web_soc_temp_c(void) { return soc_temp_c(); }
 
 /* Heap low-water mark, tracked by main.c's housekeeping task (FSD §5) */
 extern uint32_t g_heap_min;
@@ -887,6 +892,27 @@ ROT_OPTIONS
 "<label class='wl'>Illuminator LED<span class='inf' onclick='sInfo(\"ir\")'>i</span></label>"
 "<select class='wi' id='stIr'>"
 "<option value='0'>Off (default)</option><option value='1'>Auto (on during dark hours)</option></select>"
+/* ── System Monitoring (FSD §13) ─────────────────────────────────────────────
+ * Own section under System, per operator request. Publishes the box's own
+ * diagnostics to Home Assistant over MQTT; every control here is inert until
+ * the checkbox is ticked and a broker is named. */
+"<h3 class='sh'>System Monitoring</h3>"
+"<p class='sts'>Publish this box&rsquo;s diagnostics (temperature, WiFi signal, "
+"memory, storage, uptime, events) to Home Assistant over MQTT. Home Assistant "
+"creates the sensors by itself &mdash; no YAML to write. Needs an MQTT broker "
+"(the Mosquitto add-on) on your Home Assistant.</p>"
+"<label class='wl'><input type='checkbox' id='stHaEn'> Send statistics to Home Assistant"
+"<span class='inf' onclick='sInfo(\"ha\")'>i</span></label>"
+"<label class='wl'>Broker IP or hostname</label>"
+"<input class='wi' id='stHaHost' placeholder='192.168.10.50'>"
+"<label class='wl'>Port</label>"
+"<input class='wi' type='number' min='1' max='65535' id='stHaPort'>"
+"<label class='wl'>Username<span class='inf' onclick='sInfo(\"hacred\")'>i</span></label>"
+"<input class='wi' id='stHaUser' placeholder='(blank for an anonymous broker)'>"
+"<label class='wl'>Password</label>"
+"<input class='wi' type='password' id='stHaPass'>"
+"<button class='act' style='margin-left:0' onclick='haStat()'>&#128225; Check connection</button>"
+"<span class='sts' id='stHaSts'></span>"
 "<p class='sts'>Settings apply immediately &mdash; no reboot needed (resolution excepted).</p>"
 "<button class='act' style='margin-left:0' onclick='stSave()'>&#128190; Save Settings</button>"
 "<span class='sts' id='stSts'></span>"
@@ -2177,7 +2203,19 @@ ROT_OPTIONS
 "ir:['Illuminator LED','Onboard white/reddish illuminator. Auto turns it on when the camera&rsquo;s"
 " own frames read dark and off again once bright &mdash; basic night lighting with no separate"
 " light sensor. Leave off if it should never light the scene.',"
-"'Off','Auto (on during dark hours).']"
+"'Off','Auto (on during dark hours).'],"
+"ha:['Home Assistant reporting','Publishes this box&rsquo;s own diagnostics &mdash; SoC temperature,"
+" WiFi signal, free heap and internal RAM, PSRAM, SD space, uptime, capture and motion counts and"
+" the last species &mdash; to an MQTT broker every 60 seconds. Home Assistant creates the sensors"
+" itself from those messages, so there is no YAML to write. Needs an MQTT broker (the Mosquitto"
+" add-on) reachable on the LAN. Nothing is sent anywhere else and nothing leaves your network.',"
+"'Off','On. Publishing stops the moment this is turned off, and Home Assistant marks the box"
+" unavailable once it stops answering the broker.'],"
+"hacred:['Broker credentials','The username and password of the MQTT BROKER &mdash; not your Home"
+" Assistant login. Leave both blank for a broker that allows anonymous access. The password is"
+" stored in plain text in NVS, like the other stored secrets here: a flash dump reveals it."
+" Clearing the broker address and saving forgets the stored username and password.',"
+"'(blank)','Any account the broker accepts. Use Check connection after saving to confirm it.']"
 "};"
 /* i18n Phase 2 (v2.73): popup bodies come from i18n.txt rows keyed
  * '@sinfo:<key>:<field>' (t/d/def/alt) when the active language has them;
@@ -2220,6 +2258,14 @@ ROT_OPTIONS
 "$g('stGkey').placeholder=c.gkey_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stGkeyClr').style.display=c.gkey_set?'':'none';"
 "$g('stGmodel').value=c.gmodel||'';"
+/* System Monitoring (§13). The password follows the same present-only posture
+ * as the cloud/iNat secrets: never sent back, blank means "keep stored". */
+"$g('stHaEn').checked=c.haen==1;"
+"$g('stHaHost').value=c.hahost||'';"
+"$g('stHaPort').value=c.haport||1883;"
+"$g('stHaUser').value=c.hauser||'';"
+"$g('stHaPass').value='';"
+"$g('stHaPass').placeholder=c.hapass_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
 "$g('stRot').value=q90(c.rot);$g('lvRot').value=q90(c.rot);"
 "$g('stMirH').checked=!!c.mirh;$g('stMirV').checked=!!c.mirv;"
 "$g('lvMirH').checked=!!c.mirh;$g('lvMirV').checked=!!c.mirv;"
@@ -2259,6 +2305,17 @@ ROT_OPTIONS
 "});}"
 "function ntpSelChange(){var c=$g('stNtpSel').value==='__custom';"
 "$g('stNtpCustom').style.display=c?'block':'none';}"
+/* System Monitoring (§13). MQTT fails quietly by nature — a wrong password or
+ * an unreachable broker just means no entities ever appear in Home Assistant,
+ * with nothing on the box to say so. This reports the live client state
+ * instead, so a mistake is visible here rather than only in HA. */
+"function haStat(){var s=$g('stHaSts');s.textContent='\\u2026 checking';s.style.color='';"
+"fetch('/api/ha-status').then(r=>r.json()).then(function(o){"
+"if(!o.enabled){s.textContent='Disabled';s.style.color='';return;}"
+"if(o.connected){s.textContent='\\u2713 connected \\u2013 '+o.published+' update(s) sent';"
+"s.style.color='#3c3';}"
+"else{s.textContent='\\u2717 '+(o.error||'connecting\\u2026');s.style.color='#e66';}})"
+".catch(function(){s.textContent='\\u2717 check failed';s.style.color='#e66';});}"
 /* One firmware runs every supported sensor, so the Settings tab has to match
  * itself to whatever camera this particular box has. The server reports the
  * detected capabilities in /api/settings (cam*); everything the fitted sensor
@@ -2323,6 +2380,11 @@ ROT_OPTIONS
 "+($g('stIpass').value?'&ipass='+encodeURIComponent($g('stIpass').value):'')"
 "+'&cprov='+$g('stCloud').value"
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
+"+'&haen='+($g('stHaEn').checked?1:0)"
+"+'&hahost='+encodeURIComponent($g('stHaHost').value.trim())"
+"+'&haport='+$g('stHaPort').value"
+"+'&hauser='+encodeURIComponent($g('stHaUser').value)"
+"+($g('stHaPass').value?'&hapass='+encodeURIComponent($g('stHaPass').value):'')"
 /* An empty key field means "keep the stored key" — the handler treats an
  * absent ckey/gkey as unchanged, so never send an empty one. gmdl is always
  * sent (present-only on the server): blank resets it to the default. */
@@ -4067,11 +4129,13 @@ static esp_err_t h_settings_get(httpd_req_t *req)
     for (int c = 0; c < 64; c++)
         zone[c] = (g_settings.detect_zone >> c) & 1ULL ? '1' : '0';
     zone[64] = '\0';
-    char buf[1120];  /* truncation here would emit malformed JSON and take the
+    char buf[1400];  /* truncation here would emit malformed JSON and take the
                         whole Settings tab down — keep headroom (v1.96 added
                         resActive/resActiveStr, ~45 B; inat fields ~28 B; v2.81
-                        added the sharpness/denoise/focus values plus the cam*
-                        capability block, ~190 B) */
+                        added the sharpness/denoise/focus values plus the cam
+                        capability block, ~190 B; v3.03 added the five System
+                        Monitoring fields, up to ~150 B with a 64-char broker
+                        host and a 48-char username) */
     const camera_caps_t *cc = camera_caps();
     /* ckey_set, never the key itself: this reply is world-readable on the LAN,
      * and the same posture as /api/wificfg (which reports configured SSIDs but
@@ -4096,7 +4160,11 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"zone\":\"%s\",\"dzoom\":%u,\"mount\":%u,\"fshut\":%u,\"tta\":%u,\"qtn\":%u,"
         "\"cprov\":%u,\"ckey_set\":%s,\"gkey_set\":%s,\"gmodel\":\"%s\","
         "\"inatcv\":%u,\"ikey_set\":%s,\"isess_set\":%s,"
-        "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\"}",
+        "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\","
+        /* System Monitoring (§13). hapass_set, never the password — same posture
+         * as every other secret in this reply. */
+        "\"haen\":%u,\"hahost\":\"%s\",\"haport\":%u,\"hauser\":\"%s\","
+        "\"hapass_set\":%s}",
         g_settings.mode, g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
         g_settings.confidence_pct, g_settings.sd_cap_pct,
@@ -4139,7 +4207,12 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.inat_session[0] ? "true" : "false",
         g_settings.inat_user,   /* quote/backslash/control chars rejected on save — JSON-safe */
         g_settings.inat_pass[0] ? "true" : "false",
-        g_settings.inat_loc);   /* [0-9.,-] only (validated on save) — JSON-safe */
+        g_settings.inat_loc,    /* [0-9.,-] only (validated on save) — JSON-safe */
+        (unsigned) g_settings.ha_enabled,
+        g_settings.ha_host,     /* quote/backslash/space rejected on save — JSON-safe */
+        (unsigned) g_settings.ha_port,
+        g_settings.ha_user,     /* same validation as ha_host */
+        g_settings.ha_pass[0] ? "true" : "false");
     httpd_resp_send_chunk(req, buf, n);
     /* The `models` array used to be emitted here: the .tflite files on the
      * card, offered as choices for the `region` picker. Both are gone (v2.90) —
@@ -4404,6 +4477,43 @@ static esp_err_t h_settings_post(httpd_req_t *req)
         if (ok) strlcpy(g_settings.inat_loc, loc, sizeof(g_settings.inat_loc));
     }
 
+    /* System Monitoring → Home Assistant over MQTT (§13). Host and username are
+     * echoed back in the settings GET, so reject anything that would break that
+     * JSON; the password is write-only and present-only, exactly like ipass —
+     * an absent hapass keeps the stored one, so saving any other setting (or
+     * restoring an export, which carries no password) cannot wipe it. */
+    g_settings.ha_enabled = field_num(body, "haen=", 0, 1, g_settings.ha_enabled);
+    g_settings.ha_port    = field_num(body, "haport=", 1, 65535, g_settings.ha_port);
+    if (has_field(body, "hahost=")) {
+        char h[64];
+        form_field(body, "hahost=", h, sizeof(h));
+        if (!strchr(h, '"') && !strchr(h, '\\') && !strchr(h, ' ') &&
+            !strchr(h, '\r') && !strchr(h, '\n'))
+            strlcpy(g_settings.ha_host, h, sizeof(g_settings.ha_host));
+        /* Clearing the broker address is how a stored broker password is
+         * FORGOTTEN. Without this the password would be unremovable short of a
+         * factory reset: it is present-only on save (blank means "keep"), so no
+         * ordinary save could ever empty it. Same principle as ckeyclear and
+         * iuserclear — a secret the device stores has to have a way out. */
+        if (!g_settings.ha_host[0]) {
+            g_settings.ha_user[0] = '\0';
+            g_settings.ha_pass[0] = '\0';
+            g_settings.ha_enabled = 0;
+        }
+    }
+    if (has_field(body, "hauser=")) {
+        char u[48];
+        form_field(body, "hauser=", u, sizeof(u));
+        if (!strchr(u, '"') && !strchr(u, '\\') && !strchr(u, '\r') && !strchr(u, '\n'))
+            strlcpy(g_settings.ha_user, u, sizeof(g_settings.ha_user));
+    }
+    if (has_field(body, "hapass=")) {
+        char p[64];
+        form_field(body, "hapass=", p, sizeof(p));
+        if (p[0] && !strchr(p, '\r') && !strchr(p, '\n'))
+            strlcpy(g_settings.ha_pass, p, sizeof(g_settings.ha_pass));
+    }
+
     settings_save();
 
     /* Apply live — no reboot (FSD §5) */
@@ -4429,9 +4539,31 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * daytime overexposure bug */
     /* resolution is applied at camera_init — needs a reboot (FSD §5) */
     wifi_restart_sntp();                             /* no-op before first connect */
+    /* System Monitoring (§13): rebuild the MQTT client so a changed broker,
+     * credential or the enable toggle itself takes effect now rather than at
+     * the next reboot. A no-op when the feature is and stays off. */
+    ha_apply();
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* GET /api/ha-status — live state of the Home Assistant MQTT client (§13).
+ * MQTT fails silently by nature: a wrong password or an unreachable broker
+ * simply means no entities ever appear in HA, with nothing on the box to say
+ * why. This is what the Settings tab's "Check connection" button reads. */
+static esp_err_t h_ha_status(httpd_req_t *req)
+{
+    char buf[192], err[80];
+    json_escape(err, sizeof(err), ha_last_error());
+    snprintf(buf, sizeof(buf),
+             "{\"enabled\":%s,\"connected\":%s,\"published\":%u,\"error\":\"%s\"}",
+             ha_enabled() ? "true" : "false",
+             ha_connected() ? "true" : "false",
+             ha_publish_count(), err);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
     return ESP_OK;
 }
 
@@ -4453,13 +4585,21 @@ static esp_err_t h_settings_export(httpd_req_t *req)
      * this file gets mailed around and dropped into cloud folders. Omitting
      * ckey/gkey reads as "keep current" on restore (see h_settings_post), so the
      * only cost is re-pasting a key after an NVS wipe. */
-    char buf[768];   /* v2.81 added sharp/dn/fmode/fpos, ~32 B */
+    char buf[960];   /* v2.81 added sharp/dn/fmode/fpos, ~32 B; v3.03 added the
+                        four exported System Monitoring fields, up to ~140 B
+                        with a 64-char broker host and a 48-char username */
     int n = snprintf(buf, sizeof(buf),
         "mode=%s&sens=%u&ccnt=%u&civl=%u&cool=%u&conf=%u&cap=%u&qual=%u&ir=%u"
         "&rot=%u&mirh=%u&mirv=%u&rfilt=%u&res=%u&contrast=%d&ael=%d"
         "&sharp=%d&dn=%u&fmode=%u&fpos=%u&tz=%s&ntp=%s"
         "&lang=%u&zone=%s&dzoom=%u&mount=%u&fshut=%u&tta=%u&qtn=%u&cprov=%u&gmdl=%s"
-        "&inatcv=%u&loc=%s",
+        "&inatcv=%u&loc=%s"
+        /* System Monitoring (§13): the broker address, port, username and the
+         * enable flag travel with the backup, but hapass does NOT — same rule
+         * as the API keys above, and omitting it reads as "keep current" on
+         * restore. A restored box therefore reconnects by itself unless the
+         * broker needs a password, which is re-entered once. */
+        "&haen=%u&hahost=%s&haport=%u&hauser=%s",
         g_settings.mode == MODE_FEEDER ? "feeder" : "nestbox",
         g_settings.motion_sensitivity, g_settings.capture_count,
         g_settings.capture_interval_ms, g_settings.cooldown_s,
@@ -4478,7 +4618,9 @@ static esp_err_t h_settings_export(httpd_req_t *req)
         (unsigned) g_settings.cloud_provider,
         g_settings.gemini_model,
         (unsigned) g_settings.inat_cv_enabled,
-        g_settings.inat_loc);
+        g_settings.inat_loc,
+        (unsigned) g_settings.ha_enabled, g_settings.ha_host,
+        (unsigned) g_settings.ha_port, g_settings.ha_user);
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
@@ -6039,6 +6181,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/ipconfig/save", .method = HTTP_POST, .handler = h_ipcfg_save },
         { .uri = "/api/settings",      .method = HTTP_GET,  .handler = h_settings_get  },
         { .uri = "/api/settings",      .method = HTTP_POST, .handler = h_settings_post },
+        { .uri = "/api/ha-status",     .method = HTTP_GET,  .handler = h_ha_status     },
         { .uri = "/api/settings/export", .method = HTTP_GET, .handler = h_settings_export },
         { .uri = "/api/sysinfo",       .method = HTTP_GET,  .handler = h_sysinfo    },
         { .uri = "/api/captures/delete", .method = HTTP_POST, .handler = h_captures_delete_batch },

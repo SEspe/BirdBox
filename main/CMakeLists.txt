@@ -13,6 +13,7 @@ idf_component_register(
         "gemini.c"
         "inat.c"
         "cloud.c"
+        "ha.c"
         "settings.c"
         "storage.c"
         "stats.c"
@@ -34,6 +35,7 @@ idf_component_register(
         app_update
         esp_https_ota
         esp_http_client
+        mqtt             # esp-mqtt, a managed component since IDF v6 (Home Assistant, v3.03)
         mbedtls
         log
         fatfs

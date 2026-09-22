@@ -407,3 +407,19 @@ Summary from Wikipedia	Sammendrag fra Wikipedia
 Details unavailable	Detaljer utilgjengelig
 Read on Wikipedia	Les på Wikipedia
 iNaturalist page	iNaturalist-side
+# ── Settings: System Monitoring / Home Assistant (FSD v3.03) ──
+System Monitoring	Systemovervåking
+Publish this box’s diagnostics (temperature, WiFi signal, memory, storage, uptime, events) to Home Assistant over MQTT. Home Assistant creates the sensors by itself — no YAML to write. Needs an MQTT broker (the Mosquitto add-on) on your Home Assistant.	Publiser boksens egen diagnostikk (temperatur, WiFi-signal, minne, lagring, oppetid, hendelser) til Home Assistant over MQTT. Home Assistant oppretter sensorene selv — ingen YAML å skrive. Krever en MQTT-broker (Mosquitto-tillegget) på din Home Assistant.
+Send statistics to Home Assistant	Send statistikk til Home Assistant
+Broker IP or hostname	Broker-IP eller vertsnavn
+Port	Port
+Username	Brukernavn
+Check connection	Sjekk tilkobling
+@sinfo:ha:t	Home Assistant-rapportering
+@sinfo:ha:d	Publiserer boksens egen diagnostikk — SoC-temperatur, WiFi-signal, ledig heap og internt RAM, PSRAM, SD-plass, oppetid, antall opptak og bevegelser samt siste art — til en MQTT-broker hvert 60. sekund. Home Assistant oppretter sensorene selv ut fra disse meldingene, så ingen YAML trengs. Krever en MQTT-broker (Mosquitto-tillegget) tilgjengelig på nettverket. Ingenting sendes andre steder, og ingenting forlater nettverket ditt.
+@sinfo:ha:def	Av
+@sinfo:ha:alt	På. Publisering stopper straks dette slås av, og Home Assistant markerer boksen som utilgjengelig når den slutter å svare brokeren.
+@sinfo:hacred:t	Broker-pålogging
+@sinfo:hacred:d	Brukernavnet og passordet til selve MQTT-BROKEREN — ikke Home Assistant-påloggingen din. La begge stå tomme for en broker som tillater anonym tilgang. Passordet lagres i klartekst i NVS, som de andre hemmelighetene her: en flash-dump avslører det. Å tømme broker-adressen og lagre glemmer lagret brukernavn og passord.
+@sinfo:hacred:def	(tomt)
+@sinfo:hacred:alt	Enhver konto brokeren godtar. Bruk Sjekk tilkobling etter lagring for å bekrefte.

@@ -37,6 +37,7 @@
 #include "wifi.h"
 #include "web_server.h"
 #include "motion.h"
+#include "ha.h"
 #include "classify.h"
 #include "illum.h"
 
@@ -200,6 +201,13 @@ void app_main(void)
 
     ESP_LOGI(TAG, "boot complete");
 
-    ESP_ERROR_CHECK(motion_start());     /* last: its frame-grab loop is what
-                                            spins on a broken camera (FSD §3.5)*/
+    /* Last of the boot sequence: its frame-grab loop is what spins on a
+     * broken camera (FSD §3.5). */
+    ESP_ERROR_CHECK(motion_start());
+
+    /* Home Assistant reporting (FSD §13). Dead last, and deliberately AFTER the
+     * rollback vote above: an unreachable broker or a bad credential must never
+     * be able to hold up that call and cost a good image its OTA validation.
+     * Returns immediately when the feature is off. */
+    ha_start();
 }

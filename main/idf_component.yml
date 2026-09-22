@@ -7,3 +7,6 @@ dependencies:
   # mDNS responder — the box answers to http://birdbox.local/ so the UI/OTA
   # survive DHCP address changes (the unit has moved subnets before)
   espressif/mdns: "^1.0.0"
+  # esp-mqtt — moved OUT of core IDF at v6.0 and now lives in the registry.
+  # Carries the Home Assistant integration (FSD §9); nothing else uses MQTT.
+  espressif/mqtt: "^1.1.0"

@@ -1,8 +1,8 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.02
+**Version:** 3.03
 **Author:** SEspe
-**Date:** 2026-09-21
+**Date:** 2026-09-22
 
 This is **the clean, current specification**: what the device is required to do,
 stated in the present tense.
@@ -291,7 +291,7 @@ Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab b
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
 - **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected).
-- **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto).
+- **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto), and a System Monitoring section carrying the Home Assistant / MQTT settings (§13).
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
 - **WiFi** — §4 step 5, plus a Reboot Now button.
 - **OTA Update** — §8.
@@ -315,6 +315,7 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 | `/api/captures/delete` | POST | Bulk-delete photos: `date=` + `files=a.jpg,b.jpg` (multi-select) or `all=1` (whole day); add `stats=1` to also wipe that day's visit-log rows |
 | `/api/capture` | POST | Manual snapshot now |
 | `/api/settings` | GET / POST | Read/write settings |
+| `/api/ha-status` | GET | Live state of the Home Assistant MQTT client: enabled, connected, updates sent, last error (§13) |
 | `/api/ipconfig`, `/api/ipconfig/save` | GET / POST | DHCP/static IP (RemoteStart design) |
 | `/api/reboot` | POST | Reboot |
 | `/stream` | GET | MJPEG live stream |
@@ -401,3 +402,53 @@ No authentication in v1 (LAN-only device, same posture as RemoteStart); an optio
 5. Stats tab correctly aggregates a week of real events by day, species and hour.
 6. OTA from GitHub Release binary succeeds and survives a mid-upload abort without wedging the web server.
 7. Device runs ≥ 7 days unattended with no reboot, no heap-low-water regression, and survives router reboots (indefinite reconnect).
+
+---
+
+## 13. Home Assistant Integration
+
+The box reports its own health to Home Assistant over **MQTT**, so a deployed
+unit can be watched from the same dashboard as the rest of the house instead of
+by opening its web UI. Off by default; nothing is published, no client is
+created and no socket is opened until it is enabled.
+
+**Transport.** Plain MQTT to a broker on the LAN (the Mosquitto add-on), with
+broker address, port (default 1883), username and password configured in the
+UI. A blank username means an anonymous broker. This is a LAN-local
+integration and carries no TLS, the same posture as the rest of the web UI.
+
+**Discovery.** The box publishes Home Assistant **MQTT Discovery** configs, so
+HA creates every entity by itself and no YAML is written by hand. Discovery
+messages are **retained** (HA rebuilds the entities after a restart without the
+box being present); the state message is **not** retained, so a restarting HA is
+never handed a stale reading as if it were current. All entities carry one
+device block and collapse into a single **BirdBox** device whose configuration
+URL links back to the box's own web UI.
+
+**Update model.** One state topic for the whole box, not one per entity: every
+entity's discovery config points at the same topic and selects its own field
+with a `value_template`. Nineteen entities therefore cost **one** publish every
+**60 seconds** rather than nineteen.
+
+**Availability** is a **last will**, not a goodbye message. A bird box loses
+power or WiFi far more often than it shuts down cleanly, so "offline" comes
+from the broker noticing the box stopped answering.
+
+**Published set** — diagnostics: SoC temperature, WiFi signal, free heap, free
+internal RAM, largest internal block, free PSRAM, uptime, SD free, SD used,
+WiFi reconnects, firmware version, IP address, SD-card and camera health.
+Operational: capture events, motion triggers, last species, last confidence,
+and a motion binary sensor. An unavailable on-die temperature sensor is
+**omitted** from the message rather than published as its `-1000` sentinel, so
+HA shows "unknown" instead of drawing a cliff through the history graph.
+
+**Forgetting credentials.** The broker password is write-only in the settings API and present-only on save (blank means "keep the stored one"), so clearing the **broker address** and saving is what forgets the stored username and password — otherwise a stored secret would be unremovable short of a factory reset.
+
+**Failure posture.** The client starts **last** in the boot sequence, after the
+image has already cast its OTA rollback vote (§8), so an unreachable broker or a
+bad credential can never cost an otherwise-good image its validation. Losing the
+broker degrades to "no telemetry" and never affects detection, capture or
+classification. Because MQTT otherwise fails silently — a wrong password simply
+means entities never appear — the Settings tab exposes the live client state
+(connected, updates sent, or the specific error) behind a **Check connection**
+button.

@@ -214,6 +214,24 @@ typedef struct {
                                        inference time; 0 = single pass. default 0
                                        — the ~2x cost/heat bought no gain on the
                                        model's hard cases (v1.56), opt-in only */
+    /* ── Home Assistant reporting over MQTT (FSD §13, Settings → System
+     * Monitoring). Opt-in and inert when off: with ha_enabled clear, ha.c
+     * creates no client, spawns no task and opens no socket. */
+    uint8_t  ha_enabled;            /* 1 = publish diagnostics to the broker
+                                       every HA_PUBLISH_INTERVAL_S. default 0 */
+    char     ha_host[64];           /* broker IP or hostname; "" = off however
+                                       ha_enabled is set */
+    uint16_t ha_port;               /* broker port, default 1883 (plain MQTT —
+                                       this is a LAN-local integration, same
+                                       posture as the rest of the web UI) */
+    char     ha_user[48];           /* broker username; "" = anonymous broker */
+    char     ha_pass[64];           /* broker password. Stored PLAINTEXT in NVS
+                                       like inat_pass — write-only in the
+                                       settings API and omitted from the export,
+                                       but a flash dump reveals it. It is a
+                                       broker credential, not an account one,
+                                       so the blast radius is the local MQTT
+                                       broker rather than a cloud identity. */
     /* inat_periodic_enabled / inat_periodic_interval_min were here: the periodic
      * re-scan of unclassified frames through the ON-SD iNat model. That model
      * went in 0.74.0, the UI toggle in v2.65, and the fields themselves in v2.91.

@@ -59,6 +59,12 @@ settings_t g_settings = {
     .inat_loc           = "59.91,10.75",   /* iNat geo hint "lat,lng"; default
                                             * Oslo (matches the cities_data.h
                                             * dropdown entry); "" = no geo */
+    .ha_enabled         = 0,    /* opt-in: nothing is published until the
+                                * operator enables it and names a broker */
+    .ha_host            = "",
+    .ha_port            = 1883,
+    .ha_user            = "",
+    .ha_pass            = "",
 };
 
 esp_err_t settings_load(void)
@@ -140,6 +146,14 @@ esp_err_t settings_load(void)
     nvs_get_str(h, "s_inatpw", g_settings.inat_pass, &l);
     l = sizeof(g_settings.inat_loc);
     nvs_get_str(h, "s_iloc", g_settings.inat_loc, &l);
+    if (nvs_get_u8 (h, "s_haen",  &u8)  == ESP_OK) g_settings.ha_enabled = u8 ? 1 : 0;
+    l = sizeof(g_settings.ha_host);
+    nvs_get_str(h, "s_hahost", g_settings.ha_host, &l);
+    if (nvs_get_u16(h, "s_haport", &u16) == ESP_OK && u16 > 0) g_settings.ha_port = u16;
+    l = sizeof(g_settings.ha_user);
+    nvs_get_str(h, "s_hauser", g_settings.ha_user, &l);
+    l = sizeof(g_settings.ha_pass);
+    nvs_get_str(h, "s_hapass", g_settings.ha_pass, &l);
     /* "s_inat"/"s_inatv" (the periodic re-scan) are no longer read — v2.91. Any
      * value a device already has in NVS is simply left there, inert. */
     nvs_close(h);
@@ -197,6 +211,11 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_inatusr", g_settings.inat_user);
     nvs_set_str(h, "s_inatpw",  g_settings.inat_pass);
     nvs_set_str(h, "s_iloc",   g_settings.inat_loc);
+    nvs_set_u8 (h, "s_haen",   g_settings.ha_enabled);
+    nvs_set_str(h, "s_hahost", g_settings.ha_host);
+    nvs_set_u16(h, "s_haport", g_settings.ha_port);
+    nvs_set_str(h, "s_hauser", g_settings.ha_user);
+    nvs_set_str(h, "s_hapass", g_settings.ha_pass);
     err = nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "settings saved");
