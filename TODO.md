@@ -77,6 +77,16 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       left to the operator.
 
 
+## Found 2026-09-22, not yet fixed
+- [ ] **The boot quarantine skips ambient sampling.** `motion_task()` takes the
+      pause branch first, then `continue`s on the quarantine branch BEFORE reaching
+      `decode_gray()`, so the box is blind to dark/bright for `detect_quarantine_s`
+      after every boot. Benign at the 60 s default (it self-clears), but the setting
+      accepts up to **3600** and an hour-long quarantine would blind night-sleep
+      detection for that hour. Same root cause as FSD v3.05, same two-line fix:
+      sample ambient in the quarantine branch too. Left unflashed because it was
+      found after the overnight sleep test had already started.
+
 ## New functionality — candidates (added 2026-09-22, fw 0.76.0)
 
 - [ ] **Temperature alert + throttling.** Today the SoC temperature is *reported only*:
@@ -99,7 +109,11 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
     ambient). The genuine risk is not the chip — it is a sealed box in direct summer sun,
     where the same workload lands far higher. Shade beats any firmware lever here.
 
-- [ ] **Daylight sleep — stop running the detection pipeline after dark.** No birds at
+- [x] ~~**Daylight sleep**~~ — **SHIPPED 2026-09-22 as 0.77.0 / FSD v3.04** (fix in 0.77.1 /
+      v3.05). Built on the camera's own ambient reading, three levels, timed wake probe.
+      Deep sleep (level 2) is implemented but NOT yet exercised on hardware. The notes
+      below are kept as the design rationale that produced it.
+- [ ] ~~Daylight sleep, original entry:~~ No birds at
       night, so capture, classification, iNat calls, SD writes and the illuminator are all
       wasted, along with the heat they make. **Everything needed to compute sunrise/sunset
       on-device already exists**: NTP time, `g_settings.timezone`, and a latitude/longitude
