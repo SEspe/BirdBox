@@ -4,8 +4,8 @@
  *
  * ONE state topic, not one per entity. Every sensor's discovery config points
  * at the same "birdbox/<id>/state" topic and picks its own field out of the
- * JSON with a value_template. Nineteen entities therefore cost ONE publish a
- * minute instead of sixteen, which matters on a box whose link has already
+ * JSON with a value_template. Twenty-five entities therefore cost ONE publish a
+ * minute instead of twenty-five, which matters on a box whose link has already
  * proven able to drop to a couple of KB/s.
  *
  * Discovery messages are RETAINED, the state message is not. Retained
@@ -27,6 +27,7 @@
 #include "storage.h"
 #include "species_i18n.h"
 #include "web_server.h"
+#include "night.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -94,6 +95,21 @@ static const ha_entity_t ENTITIES[] = {
     { "motion",       "Motion",                "motion",         NULL,  NULL,           false, true  },
     { "sd_ok",        "SD card",               "connectivity",   NULL,  NULL,           true,  true  },
     { "cam_ok",       "Camera",                "connectivity",   NULL,  NULL,           true,  true  },
+    /* Night sleep (FSD §14). Published so the box's own dusk/dawn transitions
+     * are visible and alertable in Home Assistant, with history — which is a
+     * far better way to watch this feature than polling /api/night. */
+    { "night",        "Night state",           NULL,             NULL,  NULL,           true,  false },
+    { "night_hold",   "Night hold reason",     NULL,             NULL,  NULL,           true,  false },
+    { "cam_on",       "Camera powered",        NULL,             NULL,  NULL,           true,  true  },
+    { "asleep_min",   "Asleep for",            "duration",       "min", "measurement",  true,  false },
+    /* Camera health. `problem` is the device class HA alerts on, so cam_fault
+     * is the one worth a notification: auto-recovery gave up and the sensor
+     * needs a real power cycle. cam_recoveries is the EARLY WARNING — a
+     * climbing count means the sensor keeps stalling and being re-inited, which
+     * shows up long before it gives up altogether, and nightly sleep/wake
+     * cycling (§14) is new stress on exactly that path. */
+    { "cam_fault",    "Camera fault",          "problem",        NULL,  NULL,           true,  true  },
+    { "cam_recoveries","Camera recoveries",    NULL,             NULL,  "total_increasing", true, false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -148,8 +164,8 @@ static void publish_discovery(void)
                                        ",\"stat_cla\":\"%s\"", e->stat_cla);
         if (e->diag)     n += snprintf(payload + n, sizeof(payload) - n,
                                        ",\"ent_cat\":\"diagnostic\"");
-        /* The device block is what makes all nineteen entities collapse into a
-         * single "BirdBox" device in HA instead of nineteen loose ones. */
+        /* The device block is what makes all twenty-five entities collapse into a
+         * single "BirdBox" device in HA instead of twenty-five loose ones. */
         snprintf(payload + n, sizeof(payload) - n,
             ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
             "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
@@ -181,13 +197,17 @@ static void publish_state(void)
 
     float t = web_soc_temp_c();
 
-    char buf[640];
+    /* Grew with the four night-sleep fields (v3.07) — a truncated state message
+     * is silently invalid JSON and every entity reading it goes unknown. */
+    char buf[896];
     int n = snprintf(buf, sizeof(buf),
         "{\"rssi\":%d,\"heap\":%lu,\"heap_int\":%lu,\"heap_int_big\":%lu,"
         "\"psram\":%lu,\"uptime\":%lld,\"sd_free\":%llu,\"sd_used\":%u,"
         "\"wifi_rec\":%lu,\"events\":%lu,\"triggers\":%lu,"
         "\"species\":\"%s\",\"sp_conf\":%u,\"version\":\"%s\",\"ip\":\"%s\","
-        "\"motion\":\"%s\",\"sd_ok\":\"%s\",\"cam_ok\":\"%s\"",
+        "\"motion\":\"%s\",\"sd_ok\":\"%s\",\"cam_ok\":\"%s\","
+        "\"night\":\"%s\",\"night_hold\":\"%s\",\"cam_on\":\"%s\",\"asleep_min\":%d,"
+        "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -202,7 +222,17 @@ static void publish_state(void)
         FIRMWARE_VERSION, ip,
         motion_active() ? "ON" : "OFF",
         storage_sd_present() ? "ON" : "OFF",
-        (camera_available() && !camera_fault()) ? "ON" : "OFF");
+        /* A camera that is deliberately asleep is NOT a fault, and reporting it
+         * as one would light up "Camera disconnected" in HA every single night
+         * (FSD §14). cam_ok now means "no fault"; cam_on is the separate,
+         * honest answer to "is the sensor powered right now". */
+        (!camera_fault() && (camera_available() || camera_asleep())) ? "ON" : "OFF",
+        night_state_str(),
+        night_hold_reason()[0] ? night_hold_reason() : "none",
+        camera_asleep() ? "OFF" : "ON",
+        night_asleep_s() / 60,
+        camera_fault() ? "ON" : "OFF",          /* ON = problem, HA alerts on it */
+        (unsigned long) camera_recovery_count());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

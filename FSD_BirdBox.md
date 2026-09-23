@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.06
+**Version:** 3.07
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -439,7 +439,15 @@ from the broker noticing the box stopped answering.
 internal RAM, largest internal block, free PSRAM, uptime, SD free, SD used,
 WiFi reconnects, firmware version, IP address, SD-card and camera health.
 Operational: capture events, motion triggers, last species, last confidence,
-and a motion binary sensor. An unavailable on-die temperature sensor is
+and a motion binary sensor. Night sleep (§14) reports its state, the reason an
+enabled box is still awake, whether the sensor is powered and how long it has
+been asleep, so dusk and dawn transitions are visible and alertable in HA with
+history rather than only by polling the box. Camera health is reported as a
+`problem` binary sensor (auto-recovery gave up, needs a power cycle) plus a
+recovery counter — a climbing count is the early warning that shows up long
+before a hard fault, and nightly sleep/wake cycling is new stress on that path.
+A camera that is deliberately asleep is NOT reported as a fault, or HA would
+raise "camera disconnected" every night. An unavailable on-die temperature sensor is
 **omitted** from the message rather than published as its `-1000` sentinel, so
 HA shows "unknown" instead of drawing a cliff through the history graph.
 
