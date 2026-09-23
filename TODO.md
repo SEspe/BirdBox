@@ -108,24 +108,28 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
     lever** — it is applied at `camera_init` and needs a reboot (`settings.h`), so a
     thermal path cannot step it down without restarting the box. Needs hysteresis
     (act at ~80 °C, release at ~70 °C) or it will oscillate at the threshold.
-  - **Reference numbers, measured on real hardware.** All die temperature, both
-    boxes, same weather, `.240` at HD as the control throughout:
+  - **Reference numbers — read the caveats, they matter.**
 
-    | condition | temp |
-    |---|---|
-    | HD, idle, no stream (`.240`, and `.205` after reverting) | **40–41 °C** |
-    | UXGA, idle | **51–53 °C** |
-    | **QXGA, idle** | **57 °C** |
-    | UXGA + one live stream viewer | **69–72 °C** (peak 72.2) |
-    | camera powered down overnight (§14) | **38 °C** |
+    **ESTABLISHED (same box, short window, control unmoved):**
+    - **One attached Live-tab viewer ≈ +14 °C.** Seen as a *step*, not a ramp,
+      which is how it was told apart from sun: the control box did not move at
+      that moment. Confirmed twice. **This is the most effective lever a
+      throttler could pull, and unlike resolution it CAN be pulled at runtime.**
+    - **Camera powered down overnight ≈ −10 °C** (§14). `.205` ran 38 °C asleep
+      against 51–53 °C awake; ~4 °C of that 14 °C drop was ambient cooling,
+      measured on the control, leaving ~10 °C for the camera itself.
 
-    So: **resolution is worth ~12 °C (UXGA) to ~17 °C (QXGA) over HD**, and **one
-    attached Live-tab viewer is worth ~14 °C on its own** — a *step*, not a ramp,
-    which is how it was told apart from sun (the control box did not move).
-    That makes stopping the stream the single most effective runtime lever, and
-    it is the one the throttler can actually pull, unlike resolution.
-    Night sleep removes ~10 °C of the overnight figure; ~4 °C of the observed
-    night drop was ambient cooling, measured on the control.
+    **NOT ESTABLISHED — earlier claims of "~12 °C for UXGA, ~17 °C for QXGA over
+    HD" are RETRACTED.** Those came from readings taken at different times of
+    day, with different stream states, and none at thermal steady state (the
+    QXGA figure was 5.6 min after boot; the HD figure was still climbing when it
+    was recorded). Worse, they compared `.205` against `.240` — a bench unit
+    indoors against a box outdoors in September, so most of the gap is **ambient,
+    not resolution**. Observed spread at HD alone: `.240` 40 °C outdoors,
+    `.205` 63 °C indoors with a viewer attached.
+
+    **To actually measure resolution cost:** one box, Live tab closed, ≥20 min
+    settling at each resolution, same afternoon, A/B. Not yet run.
   - Remember the sensor reads the **die**, not enclosure air (typically 20–30 °C above
     ambient). The genuine risk is not the chip — it is a sealed box in direct summer sun,
     where the same workload lands far higher. Shade beats any firmware lever here.

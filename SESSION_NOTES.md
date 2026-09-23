@@ -172,3 +172,27 @@ Two things worth keeping:
   separated them.
 
 `.205` reverted to HD (`res` 6 → 3 + reboot, `resActive` confirms 3).
+
+### CORRECTION to the thermal table above (same afternoon)
+
+The resolution deltas recorded earlier (~12 °C UXGA, ~17 °C QXGA over HD) are
+**retracted**. They were not measured cleanly:
+
+- readings were taken with **different stream states** (the ~14 °C confound),
+- **none were at thermal steady state** — the QXGA figure was 5.6 min after a
+  boot, the HD figure was still climbing when recorded,
+- and they compared **`.205` indoors against `.240` outdoors**, so most of the
+  gap is ambient rather than resolution. At HD alone the two boxes read 40 °C
+  and 63 °C.
+
+What survives: the **live-viewer step (~+14 °C)**, because it was a step on one
+box with the control unmoved, and the **overnight camera-off saving (~10 °C)**.
+
+Lesson, and it is the second time today: **one variable at a time, and wait for
+steady state.** The morning's misattribution (the panic that looked like a dawn
+wake) and this one share a root — reading a transient as a settled result.
+
+Also: detection works at HD. `.205` logged triggers and events within four
+minutes of the HD reboot, after zero events during hours at UXGA/QXGA. Not
+conclusive on its own (it is a bench unit with light traffic) but it is the
+first activity it had logged all day.
