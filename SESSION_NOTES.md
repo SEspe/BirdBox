@@ -196,3 +196,56 @@ Also: detection works at HD. `.205` logged triggers and events within four
 minutes of the HD reboot, after zero events during hours at UXGA/QXGA. Not
 conclusive on its own (it is a bench unit with light traffic) but it is the
 first activity it had logged all day.
+
+---
+
+## End of 2026-09-23 — state and what is still unproven
+
+**Shipped today**
+
+| Version | FSD | What |
+|---|---|---|
+| 0.77.2 | v3.06 | Only one task may decode a frame (fixes the v3.05 race + the panic) |
+| 0.78.0 | v3.07 | Night state + camera health reported to Home Assistant |
+
+Commits: `b2cbc10`, `fe0c6b9`, `cdc3475`, `56f5b07`, `6d88219`. master ==
+origin/master, tree clean.
+
+**Units at 17:48**
+
+| | `.205` test | `.240` production |
+|---|---|---|
+| Firmware | **0.78.0** | 0.75.1 (three behind) |
+| Resolution | **HD** (reverted from QXGA) | HD |
+| Night sleep | mode 1, armed | off |
+| Home Assistant | connected, **121 publishes, 0 errors** | not configured |
+| Temp | 54 °C (indoors, viewer attached part of the day) | 40 °C (outdoors) |
+| Events today | 3 | 69 |
+| `camRecoveries` / `camFault` | 0 / false | — |
+
+`.205` has held **2 h** since the HD reboot and ~10 h on 0.77.2+ with no panic
+recurrence.
+
+**Still unproven, in priority order**
+
+1. **A real dawn wake has NEVER been observed.** Yesterday's attempt was eaten
+   by the panic. Tonight is attempt two — and it will now record itself into HA
+   (`night`, `night_hold`, `cam_on`, `asleep_min`) instead of needing a poller.
+2. **Deep sleep (mode 2)** — implemented, never exercised on hardware.
+3. **Detection above HD** — uncharacterised; `.205` logged 0 events during hours
+   at UXGA/QXGA but it is a bench unit with light traffic, so that is not
+   evidence. HD triggers within 4 minutes of reverting.
+4. **Resolution thermal cost** — retracted, see the correction above. Needs one
+   box, stream closed, ≥20 min per resolution, same afternoon.
+5. **Boot-quarantine ambient blind spot** — known, 2-line fix, deliberately
+   unflashed (TODO.md).
+
+**Two method lessons from today, both learned the hard way**
+
+- **A crash and a wake look identical from state alone.** A panic clears
+  `s_asleep`/`s_dark`, so a crashed box reports exactly like a woken one. Check
+  `uptime` and `resetReason` *first*. This cost a morning.
+- **One variable at a time, and wait for steady state.** The retracted
+  resolution numbers mixed stream states, boot transients and two boxes in
+  different environments. The control box (`.240`, untouched all session) is the
+  only reason the live-viewer step could be separated from sun.
