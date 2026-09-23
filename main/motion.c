@@ -518,8 +518,18 @@ static void motion_task(void *arg)
              * decode, it drives nothing but the illuminator/fast-shutter/night
              * state, and when the sensor is deliberately powered down
              * decode_gray() simply returns -1 and this costs nothing. */
-            int amb = decode_gray();
-            if (amb >= 0) ambient_update(amb);
+            /* EXACTLY ONE TASK MAY DECODE AT A TIME. decode_gray() writes the
+             * shared s_rgb/s_cur buffers and mutates s_px, so two callers at
+             * once corrupt both frames and, eventually, the heap. While
+             * NIGHT-paused the night task owns the measurement (its wake
+             * probe), so this loop must stay out of the way; while merely
+             * maintenance-paused nobody else samples, so it samples here. That
+             * split is what keeps the pause from blinding the ambient reading
+             * without racing the probe for the decoder. */
+            if (!s_night_paused) {
+                int amb = decode_gray();
+                if (amb >= 0) ambient_update(amb);
+            }
             s_have_bg = false;
             vTaskDelay(pdMS_TO_TICKS(DETECT_PERIOD_MS));
             continue;

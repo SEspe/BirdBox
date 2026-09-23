@@ -108,7 +108,14 @@ static bool probe_is_bright(void)
      * bright would wake the box on a glitch. Stay asleep and retry next
      * interval, which is what "inconclusive" should cost. */
     bool bright = (luma >= 0) && !motion_ambient_dark();
-    if (!bright) camera_sleep();
+    /* Put the sensor back down, and CHECK that it went. A failed drain used to
+     * be dropped on the floor, which left the camera running for a whole probe
+     * interval while the state still said "sleeping" — worth about +11 °C over
+     * ten minutes, and invisible except in the temperature trace. */
+    if (!bright) {
+        for (int i = 0; i < 3 && camera_sleep() != ESP_OK; i++)
+            vTaskDelay(pdMS_TO_TICKS(300));
+    }
     s_probing = false;
     ESP_LOGI(TAG, "probe: luma %d -> %s", luma, bright ? "bright" : "still dark");
     return bright;
@@ -161,6 +168,15 @@ static void night_task(void *arg)
         }
 
         /* ── Asleep ─────────────────────────────────────────────────────── */
+        /* Mirror of the awake-side reconcile: if we believe we are asleep but
+         * the sensor is somehow powered, put it back down now rather than
+         * burning a whole probe interval (and the heat) on a state nobody can
+         * see. Idempotent, so it costs nothing in the normal case. */
+        if (!camera_asleep() && !s_probing) {
+            ESP_LOGW(TAG, "asleep but camera is powered — re-sleeping it");
+            camera_sleep();
+        }
+
         if (mode == NIGHT_DEEP_SLEEP &&
             (now - s_boot_us) > (int64_t) NIGHT_MIN_AWAKE_S * 1000000 &&
             !web_server_ota_active()) {   /* never deep-sleep mid-OTA */
