@@ -145,3 +145,30 @@ Striping appears only in the dark frame. **The camera is not faulty.**
    the box stayed asleep (needs >90). It woke ~2 min after sunrise, so this is a
    tuning call, not a bug — and thresholds are the operator's.
 4. Boot-quarantine ambient blind spot (TODO.md) still unfixed.
+
+## Thermal characterisation (2026-09-23 afternoon)
+
+Die temperature, both boxes, same weather, `.240` at HD as the control:
+
+| condition | temp |
+|---|---|
+| HD, idle, no stream | **40–41 °C** |
+| UXGA, idle | 51–53 °C |
+| QXGA, idle | **57 °C** |
+| UXGA + one live stream viewer | **69–72 °C** (peak 72.2) |
+| camera powered down overnight | **38 °C** |
+
+Two things worth keeping:
+
+- **One attached Live-tab viewer is worth ~14 °C.** It shows as a *step*, not a
+  ramp, which is how it was distinguished from sun: the control box did not
+  move at the same moment. It is therefore the most effective runtime lever a
+  thermal throttler could pull — and unlike resolution, it *can* be pulled at
+  runtime.
+- **A temperature drop after a settings change was nearly misattributed.**
+  Resolution was raised UXGA → QXGA and the temperature fell 12 °C; the cause
+  was the Live tab closing at the same time, not the resolution, which had
+  moved the wrong way. Two variables changed at once. The control box is what
+  separated them.
+
+`.205` reverted to HD (`res` 6 → 3 + reboot, `resActive` confirms 3).

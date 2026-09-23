@@ -41,7 +41,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       Reword to "AF firmware load failed (fixed-focus module?)" next time that file is open.
 - [ ] **The OV5640 on `.199` is fixed-focus** — AF firmware load fails (`ESP_FAIL`), while
       SCCB is demonstrably healthy. No code fix; focus it by turning the lens thread.
-- [ ] **Nothing has run above HD yet.** UXGA/QXGA/QSXGA are offered and clamped to the
+- [x] ~~**Nothing has run above HD yet.**~~ **EXERCISED 2026-09-23 on `.205`:** UXGA and
+      QXGA both boot and run, `resActive` matches the request, no boot-time degrade. Cost
+      is thermal and it is large — see the temperature table under "Temperature alert +
+      throttling" below (~12 °C for UXGA, ~17 °C for QXGA over HD). Reverted to HD, which
+      remains the right default. Detection above HD was NOT characterised: `.205` logged 0
+      events during its hours at UXGA/QXGA, but it is a bench unit with little traffic, so
+      that is not evidence either way. Original note: UXGA/QXGA/QSXGA are offered and clamped to the
       detected sensor, but no box has been booted at one — expect a slower detect loop and
       a narrower field of view, and watch `resActive` for a boot-time degrade.
 
@@ -102,9 +108,24 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
     lever** — it is applied at `camera_init` and needs a reboot (`settings.h`), so a
     thermal path cannot step it down without restarting the box. Needs hysteresis
     (act at ~80 °C, release at ~70 °C) or it will oscillate at the threshold.
-  - Reference numbers measured 2026-09-22: `.240` at HD idles **41 °C**, `.205` at UXGA
-    **53 °C**, peaking **67 °C** under simultaneous WiFi TX + flash write. So UXGA costs
-    ~12 °C over HD, and 75 °C is a sane warn line with real headroom.
+  - **Reference numbers, measured on real hardware.** All die temperature, both
+    boxes, same weather, `.240` at HD as the control throughout:
+
+    | condition | temp |
+    |---|---|
+    | HD, idle, no stream (`.240`, and `.205` after reverting) | **40–41 °C** |
+    | UXGA, idle | **51–53 °C** |
+    | **QXGA, idle** | **57 °C** |
+    | UXGA + one live stream viewer | **69–72 °C** (peak 72.2) |
+    | camera powered down overnight (§14) | **38 °C** |
+
+    So: **resolution is worth ~12 °C (UXGA) to ~17 °C (QXGA) over HD**, and **one
+    attached Live-tab viewer is worth ~14 °C on its own** — a *step*, not a ramp,
+    which is how it was told apart from sun (the control box did not move).
+    That makes stopping the stream the single most effective runtime lever, and
+    it is the one the throttler can actually pull, unlike resolution.
+    Night sleep removes ~10 °C of the overnight figure; ~4 °C of the observed
+    night drop was ambient cooling, measured on the control.
   - Remember the sensor reads the **die**, not enclosure air (typically 20–30 °C above
     ambient). The genuine risk is not the chip — it is a sealed box in direct summer sun,
     where the same workload lands far higher. Shade beats any firmware lever here.
