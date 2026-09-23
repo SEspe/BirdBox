@@ -83,3 +83,65 @@ because they are the operator's calls:
 A wrong hypothesis is worth recording: the first theory was that noise lifted
 the frame mean above `AMBIENT_DARK_ON_THR` (35). Measurement said 4.18. The
 threshold was never the problem; **measure before tuning.**
+
+---
+
+# 2026-09-23 — overnight result
+
+## What the night actually proved
+
+The wake **probe** works: `luma` went from `-1` to real readings (12 → 16 → 62)
+across the night, so `camera_wake()` → measure → `camera_sleep()` does cycle.
+Sleep held 8 h 26 m with no reboots and `detect:true` throughout — the v3.05
+split-brain fix survived a full night.
+
+**Temperature, the operator's observation, confirmed and decomposed:**
+
+| | camera | temp |
+|---|---|---|
+| `.205` awake, UXGA (yesterday) | on | 51–53 °C |
+| `.205` asleep, UXGA | off | **38.2 °C** |
+| `.240` awake, HD (control, never slept) | on | 37.2 °C |
+
+`.240` drifted 41.2 → 37.2 overnight, so ~4 °C of the 14 °C drop is ambient
+cooling and **~10 °C is the camera being off**. Asleep-at-UXGA ≈ awake-at-HD.
+
+## The crash, and how the temperature trace found it
+
+`resetReason:"panic"` at 07:17, `uptime` 109 s. The "dawn wake" in the log was
+**not** the night module resuming — a panic clears `s_asleep`/`s_dark`, so a
+crashed box is indistinguishable from a woken one by state alone. **Check
+`uptime` and `resetReason` before believing a wake.**
+
+Cause was mine, introduced in v3.05: `decode_gray()` writes shared
+`s_rgb`/`s_cur` and mutates `s_px`, and v3.05 gave it a third caller on a
+DIFFERENT task. While night-paused the motion loop (every 250 ms) and the night
+task's probe decoded into the same buffers concurrently. Symptom chain, all in
+the log: `luma:-1` → a `camera_sleep()` drain that could not complete, leaving
+the sensor powered for a full 10-minute interval while the state read
+"sleeping" (**+11 °C, 38 → 49**, invisible in every field except temperature) →
+panic. Fixed in 0.77.2 / v3.06: exactly one decoder at a time, plus a
+`camera_sleep()` retry and an asleep-side reconcile.
+
+## Night noise — settled with a metric
+
+Fixed-pattern noise is columnar; real scenes are not. Ratio of column-to-column
+jitter over row-to-row jitter, same sensor:
+
+| frame | mean | col/row ratio |
+|---|---|---|
+| day 17:08 | 139.9 | 0.41 |
+| **night 21:48** | 4.2 | **7.14** |
+| dawn 07:18 | 97.9 | 0.58 |
+
+Striping appears only in the dark frame. **The camera is not faulty.**
+
+## Still open
+
+1. **A genuine dawn wake has never been observed** — the one chance was eaten by
+   the panic. Next real test is tonight.
+2. Deep sleep (mode 2) still never exercised.
+3. Wake threshold is conservative: `luma` 62 at 07:07 was already well lit and
+   the box stayed asleep (needs >90). It woke ~2 min after sunrise, so this is a
+   tuning call, not a bug — and thresholds are the operator's.
+4. Boot-quarantine ambient blind spot (TODO.md) still unfixed.
