@@ -249,3 +249,57 @@ recurrence.
   resolution numbers mixed stream states, boot transients and two boxes in
   different environments. The control box (`.240`, untouched all session) is the
   only reason the live-viewer step could be separated from sun.
+
+---
+
+## 2026-09-24 — test unit moved to the production tray
+
+`.205` was moved from the indoor bench to the **same feeder tray as `.240`**,
+different viewpoint. Two consequences beyond the obvious:
+
+- The thermal "control" is gone in its old form but replaced by something
+  better: both units now share ambient, so a clean resolution A/B is finally
+  possible (the comparison retracted on 2026-09-23 was confounded by an indoor
+  bench against an outdoor box).
+- **Every night-sleep result before this was measured indoors under artificial
+  light**, which is unlike any real deployment. The v3.08 fast-shutter bug was
+  verified in code independently, but the environment was a confound on that
+  inverted trend.
+
+### Shipped today
+
+| Version | FSD | What |
+|---|---|---|
+| 0.78.1 | v3.08 | Cached sensor setting survived a sensor reset — inverted night detection |
+| 0.78.2 | v3.09 | Motion cluster telemetry to Home Assistant |
+
+### "`.240` detected a bird, `.205` did not" — diagnosed
+
+Not a fault. **`area_thr = 1 + (100 - sens) / 10`**, so sensitivity 80 needed
+**3 %** where `.240`'s 88 needed **2 %** — a 50 % higher bar. And that same value
+double-duties as the per-cell "this cell moved" test (`motion.c:289`), so a
+higher setting also marks fewer cells, shrinking the cluster and its weight. The
+effect compounds; it is not a simple 3→2 step. Geometry made it worse: in
+`.205`'s view the tray recedes, so a bird at the *back* (where `.240` caught its
+blue tit) subtends far fewer pixels.
+
+Tuning aligned to `.240`, all live without reboot: **mount Close (cap 40)**,
+**cooldown 30 s**, **sensitivity 88**. Result within the hour: triggers went
+1 → 3, and a frame with a great tit at the back plus a second bird in the near
+corner measured **21 cells against cap 40** — headroom the old Medium/28 would
+not have had. Kjøttmeis at **97 %** (`.240` got 75 % on the same bird).
+
+### Two traps worth remembering
+
+- **`/api/motion` field names are backwards from what they suggest**: `rej` is
+  the largest rejected cluster SIZE, `rejN` is the COUNT. Misread it once.
+  The HA entities added in v3.09 use unambiguous names (`rejected`,
+  `rejected_max`).
+- **Comparing stale readings invents bugs.** A "trigger fired in a masked zone
+  cell" contradiction turned out to be a zone reading from two hours earlier
+  compared against a current trigger — the zone had since been opened to all 64
+  cells. Re-read both sides at the same moment before concluding anything.
+
+Both units are now identically tuned (sens 88, Close/40, cool 30, conf 25, HD),
+on the same tray, with no live viewers. Differences from here are attributable
+to **viewpoint and sensor** (OV5640 vs OV2640).

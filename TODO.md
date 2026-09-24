@@ -84,6 +84,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 
 
 ## Found 2026-09-22, not yet fixed
+- [ ] **`/api/motion` `rej` and `rejN` are named backwards from what they mean.**
+      `rej` is the largest rejected cluster SIZE, `rejN` is the COUNT — easy to
+      misread, and it was misread once. The HA entities (v3.09) use clear names
+      (`rejected`, `rejected_max`); renaming the JSON fields would break the
+      live-view overlay that consumes them, so it needs the UI updated in the
+      same change.
+
 - [ ] **The boot quarantine skips ambient sampling.** `motion_task()` takes the
       pause branch first, then `continue`s on the quarantine branch BEFORE reaching
       `decode_gray()`, so the box is blind to dark/bright for `detect_quarantine_s`
