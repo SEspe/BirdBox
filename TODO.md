@@ -84,7 +84,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 
 
 ## Found 2026-09-22, not yet fixed
-- [ ] **No JSON emitter checks its `snprintf` return.** Ten of them across
+- [x] ~~**No JSON emitter checks its `snprintf` return.**~~ **FIXED 0.78.4 /
+      FSD v3.11** — and it was worse than "malformed JSON": eight sites passed
+      the unclamped return straight to `httpd_resp_send()` (out-of-bounds READ,
+      shipping adjacent memory to an unauthenticated LAN client) and seven more
+      in `ha.c` accumulated with `sizeof(buf) - n`, which underflows `size_t`
+      into an enormous length (out-of-bounds WRITE). See `json_fit()` and
+      `jcat()`.
       `web_server.c` and `ha.c`, none guarded. A truncated reply is silently
       malformed: it takes down the entire Settings tab, or turns all 29 Home
       Assistant entities "unknown" at once, and the firmware cannot tell you it

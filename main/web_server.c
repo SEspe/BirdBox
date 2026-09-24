@@ -2872,6 +2872,32 @@ static esp_err_t h_wifi_save(httpd_req_t *req)
 /* GET /api/wificfg — configured network names (primary + alt1) and the AP the
  * device is currently associated with, for the WiFi tab (FSD §4.7). Passwords
  * are never returned. */
+/* Guard every JSON reply against its own buffer.
+ *
+ * snprintf() returns what it WOULD have written, not what it did. So when a
+ * reply is clipped, `n` comes back LARGER than the buffer — and the emitters
+ * below hand `n` straight to httpd_resp_send(). That reads past the end of the
+ * buffer and ships whatever follows it in memory to an unauthenticated LAN
+ * client. Clamping is therefore not tidiness, it closes an out-of-bounds read.
+ *
+ * The log line matters just as much. A truncated reply is also invalid JSON,
+ * which takes down whichever tab or integration consumes it — a clipped
+ * /api/settings kills the whole Settings tab, a clipped Home Assistant state
+ * turns every entity "unknown" at once — and nothing else anywhere says why.
+ * Four of these buffers were grown by hand in a single week purely by eyeball;
+ * this is what makes the next overflow announce itself instead of hiding. */
+static int json_fit(const char *what, int n, size_t cap)
+{
+    if (n < 0) return 0;
+    if (n >= (int) cap) {
+        ESP_LOGE(TAG, "%s: JSON TRUNCATED — needed %d bytes, buffer is %u. "
+                      "Reply is malformed; grow the buffer.",
+                 what, n, (unsigned) cap);
+        return (int) cap - 1;          /* never hand httpd a length past the end */
+    }
+    return n;
+}
+
 static void json_escape(char *dst, size_t dsz, const char *src)
 {
     size_t j = 0;
@@ -2898,7 +2924,7 @@ static esp_err_t h_wificfg(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "{\"primary\":\"%s\",\"alt\":\"%s\",\"connected\":\"%s\"}", p, a, c);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -2915,7 +2941,7 @@ static esp_err_t h_portal_status(httpd_req_t *req)
     char buf[96];
     int n = snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"ip\":\"%s\"}", s, ip);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -3008,7 +3034,7 @@ static esp_err_t h_time_set(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf), "{\"set\":%s,\"synced\":%s}",
                      set ? "true" : "false", (already || set) ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -3099,6 +3125,10 @@ static esp_err_t h_captures_file(httpd_req_t *req)
         return ESP_OK;
     }
     size_t n;
+    /* NOT a json_fit() site: this is a raw file read, `n` is an fread count and
+     * `buf` is a heap pointer, so sizeof(buf) would be the pointer width and
+     * clamp every JPEG to a few bytes. Only snprintf-derived lengths need the
+     * guard. */
     while ((n = fread(buf, 1, 4096, f)) > 0) {
         if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) break;
     }
@@ -4278,7 +4308,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.ha_user,     /* same validation as ha_host */
         g_settings.ha_pass[0] ? "true" : "false",
         (unsigned) g_settings.sleep_mode, (unsigned) g_settings.sleep_probe_min);
-    httpd_resp_send_chunk(req, buf, n);
+    httpd_resp_send_chunk(req, buf, json_fit(__func__, n, sizeof(buf)));
     /* The `models` array used to be emitted here: the .tflite files on the
      * card, offered as choices for the `region` picker. Both are gone (v2.90) —
      * the on-device model went in 0.74.0 — which also takes an opendir of
@@ -4720,7 +4750,7 @@ static esp_err_t h_settings_export(httpd_req_t *req)
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        "attachment; filename=birdbox-settings.cfg");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -5071,7 +5101,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         (unsigned long) motion_fast_last_ms(), (unsigned long) motion_fast_avg_ms(),
         hw);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -5267,7 +5297,7 @@ static esp_err_t h_ota_from_url_status(httpd_req_t *req)
         "{\"state\":\"%s\",\"read\":%d,\"total\":%d,\"msg\":\"%s\"}",
         st, s_otau_read, s_otau_total, s_otau_msg);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 
@@ -5969,7 +5999,7 @@ static esp_err_t h_heapdbg(httpd_req_t *req)
         n += snprintf(buf + n, sizeof(buf) - n, ",%s}", pr);
     }
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, n);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "0.78.3"
+#define FIRMWARE_VERSION    "0.78.4"
 #define FIRMWARE_NAME       "BirdBox"
 #define MDNS_HOSTNAME       "birdbox"      /* http://birdbox.local/ */
 #define WIFI_AP_SSID        "BirdBox-Config"

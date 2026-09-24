@@ -31,6 +31,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -125,6 +126,29 @@ static const ha_entity_t ENTITIES[] = {
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
+/* Safe accumulating append.
+ *
+ * `n += snprintf(buf + n, cap - n, ...)` is a trap: snprintf returns what it
+ * WOULD have written, so the moment n passes cap the expression `cap - n`
+ * underflows (it is size_t) into an enormous length, and the next append
+ * writes past the end of the buffer. Five of these run back to back building
+ * every discovery payload, so the error compounds rather than showing up once.
+ *
+ * Returns the new length clamped to the buffer, and appends nothing once full.
+ * Callers compare the result against cap to detect truncation. */
+static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
+{
+    if (n < 0) n = 0;
+    if ((size_t) n >= cap) return (int) cap;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(buf + n, cap - (size_t) n, fmt, ap);
+    va_end(ap);
+    if (w < 0) return n;
+    n += w;
+    return (size_t) n >= cap ? (int) cap : n;
+}
+
 static void box_ip(char *out, size_t n)
 {
     out[0] = '\0';
@@ -168,22 +192,29 @@ static void publish_discovery(void)
             "\"stat_t\":\"%s\",\"avty_t\":\"%s\","
             "\"val_tpl\":\"{{value_json.%s}}\"",
             e->name, s_id, e->key, s_topic_state, s_topic_avty, e->key);
-        if (e->dev_cla)  n += snprintf(payload + n, sizeof(payload) - n,
+        if (e->dev_cla)  n = jcat(payload, sizeof(payload), n,
                                        ",\"dev_cla\":\"%s\"", e->dev_cla);
-        if (e->unit)     n += snprintf(payload + n, sizeof(payload) - n,
+        if (e->unit)     n = jcat(payload, sizeof(payload), n,
                                        ",\"unit_of_meas\":\"%s\"", e->unit);
-        if (e->stat_cla) n += snprintf(payload + n, sizeof(payload) - n,
+        if (e->stat_cla) n = jcat(payload, sizeof(payload), n,
                                        ",\"stat_cla\":\"%s\"", e->stat_cla);
-        if (e->diag)     n += snprintf(payload + n, sizeof(payload) - n,
+        if (e->diag)     n = jcat(payload, sizeof(payload), n,
                                        ",\"ent_cat\":\"diagnostic\"");
         /* The device block is what makes all twenty-nine entities collapse into a
          * single "BirdBox" device in HA instead of twenty-nine loose ones. */
-        snprintf(payload + n, sizeof(payload) - n,
+        n = jcat(payload, sizeof(payload), n,
             ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
             "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
             s_id, FIRMWARE_NAME, camera_caps()->name[0] ? camera_caps()->name : "ESP32",
             FIRMWARE_VERSION, ip);
 
+        /* A clipped discovery config is invalid JSON, and HA answers by simply
+         * not creating that entity — silently, with nothing on the box to say
+         * why one sensor is missing while the rest appeared. */
+        if ((size_t) n >= sizeof(payload))
+            ESP_LOGE(TAG, "discovery payload for '%s' TRUNCATED (%u bytes) — "
+                          "entity will not appear in Home Assistant",
+                     e->key, (unsigned) sizeof(payload));
         esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
     }
     ESP_LOGI(TAG, "published %u discovery configs", (unsigned) ENTITY_COUNT);
@@ -252,9 +283,17 @@ static void publish_state(void)
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */
-    if (t > -100.0f) n += snprintf(buf + n, sizeof(buf) - n, ",\"temp\":%.1f", t);
-    snprintf(buf + n, sizeof(buf) - n, "}");
+    if (t > -100.0f) n = jcat(buf, sizeof(buf), n, ",\"temp\":%.1f", t);
+    n = jcat(buf, sizeof(buf), n, "}");
 
+    /* One malformed state message takes EVERY entity to "unknown" at once,
+     * because they all read their value out of this single document. */
+    if ((size_t) n >= sizeof(buf)) {
+        ESP_LOGE(TAG, "state message TRUNCATED (%u bytes) — all %u entities "
+                      "will read unknown; grow the buffer",
+                 (unsigned) sizeof(buf), (unsigned) ENTITY_COUNT);
+        return;
+    }
     if (esp_mqtt_client_publish(s_client, s_topic_state, buf, 0, 0, 0) >= 0) s_pubs++;
 }
 
