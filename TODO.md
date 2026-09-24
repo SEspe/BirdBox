@@ -84,6 +84,17 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 
 
 ## Found 2026-09-22, not yet fixed
+- [ ] **No JSON emitter checks its `snprintf` return.** Ten of them across
+      `web_server.c` and `ha.c`, none guarded. A truncated reply is silently
+      malformed: it takes down the entire Settings tab, or turns all 29 Home
+      Assistant entities "unknown" at once, and the firmware cannot tell you it
+      happened. Four buffers were grown by hand in one week purely by eyeball.
+      One `if (n >= (int) sizeof(buf)) ESP_LOGE(...)` per emitter converts a
+      silent failure class into a loud one.
+- [ ] **`classify.cpp` last-species strings are read unsynchronised.**
+      `s_last_species`/`s_last_latin` are written by the event task and read by
+      HTTP handlers; a torn read is possible. Cosmetic, but real.
+
 - [ ] **`/api/motion` `rej` and `rejN` are named backwards from what they mean.**
       `rej` is the largest rejected cluster SIZE, `rejN` is the COUNT — easy to
       misread, and it was misread once. The HA entities (v3.09) use clear names

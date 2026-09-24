@@ -629,8 +629,29 @@ int      motion_cluster_cap(void)               { return cluster_cap(); }
 bool motion_detection_enabled(void)            { return s_detect_enabled; }
 void motion_set_detection_enabled(bool enabled) { s_detect_enabled = enabled; }
 
-bool motion_night_paused(void)            { return s_night_paused; }
-void motion_set_night_paused(bool paused) { s_night_paused = paused; }
+bool motion_night_paused(void) { return s_night_paused; }
+
+void motion_set_night_paused(bool paused)
+{
+    s_night_paused = paused;
+    /* Switch the illuminator off on the way into a night pause. It is driven
+     * ONLY from detect_once(), which does not run while paused, so without this
+     * it stays lit all night over an unwatched scene with the camera powered
+     * down — burning current and making heat to light nothing, which is one of
+     * the exact wastes night sleep exists to stop (FSD §14).
+     *
+     * Done HERE, inside the module that owns the illuminator, rather than from
+     * night.c: clearing s_illum_on alongside the hardware keeps belief and
+     * reality in step. A caller reaching around this cache would recreate the
+     * stale-cache failure v3.08 had to fix for fast shutter — the flag would
+     * still say "on", so detect_once() would never re-apply it and the
+     * illuminator would stay dark on the night it was actually wanted.
+     * Resuming needs nothing: detect_once() re-evaluates on its next frame. */
+    if (paused && s_illum_on) {
+        illum_set(false);
+        s_illum_on = false;
+    }
+}
 
 bool motion_ambient_dark(void) { return s_dark; }
 

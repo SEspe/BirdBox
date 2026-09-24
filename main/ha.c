@@ -51,6 +51,7 @@ static bool     s_connected;
 static char     s_err[80];
 static unsigned s_pubs;
 static TaskHandle_t s_task;
+static volatile bool s_stop_req;   /* ha_stop() asks; ha_task() exits and self-deletes */
 
 /* "78f1f8" — the MAC's last three bytes. Unique per board, stable across
  * reflashes and DHCP moves, and short enough to read in an entity id. */
@@ -301,14 +302,35 @@ static void ha_task(void *arg)
 {
     (void) arg;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(HA_PUBLISH_INTERVAL_S * 1000));
+        /* Sleep in 1 s slices rather than one long delay, so a stop request is
+         * honoured within a second instead of up to a full publish interval. */
+        for (int i = 0; i < HA_PUBLISH_INTERVAL_S && !s_stop_req; i++)
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        if (s_stop_req) break;
         if (s_client && s_connected) publish_state();
     }
+    /* Exit at a loop boundary and delete OURSELVES. ha_stop() used to call
+     * vTaskDelete() on this task from outside, which could kill it anywhere —
+     * including inside esp_mqtt_client_publish() holding an esp-mqtt internal
+     * mutex, after which destroying the client can deadlock or corrupt. That
+     * ran on EVERY settings save (ha_apply), so it was a narrow window on a
+     * frequently-travelled path. */
+    s_task = NULL;
+    vTaskDelete(NULL);
 }
 
 static void ha_stop(void)
 {
-    if (s_task) { vTaskDelete(s_task); s_task = NULL; }
+    /* Ask, then wait — never delete the publish task from outside. It clears
+     * s_task and deletes itself once it reaches a loop boundary, so the client
+     * below is only ever destroyed with no publish in flight. */
+    if (s_task) {
+        s_stop_req = true;
+        for (int i = 0; i < 60 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(50));
+        if (s_task) ESP_LOGW(TAG, "publish task did not exit in 3 s — "
+                                  "destroying the client anyway");
+        s_stop_req = false;
+    }
     if (s_client) {
         esp_mqtt_client_stop(s_client);
         esp_mqtt_client_destroy(s_client);

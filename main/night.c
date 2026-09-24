@@ -131,6 +131,11 @@ static void night_task(void *arg)
         int64_t now = esp_timer_get_time();
 
         if (mode == NIGHT_OFF) {
+            /* Clear the hold reason too, or the last one from before the
+             * feature was switched off lingers forever — HA would show
+             * night "disabled" next to night_hold "live viewer". A stale
+             * diagnostic is worse than a blank one. */
+            s_hold = "";
             resume_online();
             vTaskDelay(pdMS_TO_TICKS(NIGHT_CHECK_S * 1000));
             continue;
