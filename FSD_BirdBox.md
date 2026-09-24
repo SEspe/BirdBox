@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.11
+**Version:** 3.12
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -476,9 +476,15 @@ calls and the illuminator are all waste after dark — along with the heat they
 make. The box therefore stops working when its own view goes dark, and resumes
 by itself at dawn. Off by default.
 
-**The trigger is what the camera sees, not a clock.** It reuses the ambient
-luma reading `motion.c` already computes from every detect frame, with the same
-hysteresis the illuminator follows. No location, no clock and no sunrise table
+**The trigger is what the camera sees, not a clock — and it is CONTRAST, not
+brightness.** Mean brightness is useless outdoors: AGC's job is to drive it to
+a target, so it holds near 140 as the light fails and only collapses once the
+sensor runs out of gain. A dusk frame too dark to photograph measures a HIGHER
+mean than noon. Amplifying a dark scene amplifies its noise too and leaves the
+frame flat, so contrast separates cleanly: 48-60 in real light, 12-18 at
+unusable dusk, ~0 in true dark. A frame is called dark only if it is also
+without highlights, so a flat but genuinely lit scene — a blank wall, fog,
+snow — is not mistaken for night. The same hysteresis drives the illuminator. No location, no clock and no sunrise table
 are required, so a shaded or north-facing site behaves correctly and nothing
 needs re-tuning as the seasons move.
 

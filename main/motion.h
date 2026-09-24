@@ -53,3 +53,10 @@ int  motion_ambient_probe(void);
  * sensor is powered, so pausing can never blind the reading that ends it. */
 bool motion_night_paused(void);
 void motion_set_night_paused(bool paused);
+
+/* Contrast (std) and peak luma of the last decoded frame — the values that
+ * decide darkness since v3.12. Mean brightness is only a display number: AGC
+ * holds it near 140 as the light fails, so an unusable dusk frame measured a
+ * HIGHER mean than noon. Exposed so "dark" is explainable rather than magic. */
+int motion_ambient_contrast(void);
+int motion_ambient_peak(void);

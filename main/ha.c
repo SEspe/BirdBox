@@ -104,6 +104,9 @@ static const ha_entity_t ENTITIES[] = {
     { "night_hold",   "Night hold reason",     NULL,             NULL,  NULL,           true,  false },
     { "cam_on",       "Camera powered",        NULL,             NULL,  NULL,           true,  true  },
     { "asleep_min",   "Asleep for",            "duration",       "min", "measurement",  true,  false },
+    /* The value that decides day/night since v3.12. Mean brightness is a
+     * display number only — AGC holds it near 140 as the light fails. */
+    { "contrast",     "Scene contrast",        NULL,             NULL,  "measurement",  true,  false },
     /* Camera health. `problem` is the device class HA alerts on, so cam_fault
      * is the one worth a notification: auto-recovery gave up and the sensor
      * needs a real power cycle. cam_recoveries is the EARLY WARNING — a
@@ -251,7 +254,7 @@ static void publish_state(void)
         "\"motion\":\"%s\",\"sd_ok\":\"%s\",\"cam_ok\":\"%s\","
         "\"night\":\"%s\",\"night_hold\":\"%s\",\"cam_on\":\"%s\",\"asleep_min\":%d,"
         "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu,"
-        "\"cluster_cells\":%d,\"cluster_cap\":%d,"
+        "\"contrast\":%d,\"cluster_cells\":%d,\"cluster_cap\":%d,"
         "\"rejected\":%lu,\"rejected_max\":%d",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
@@ -278,6 +281,7 @@ static void publish_state(void)
         night_asleep_s() / 60,
         camera_fault() ? "ON" : "OFF",          /* ON = problem, HA alerts on it */
         (unsigned long) camera_recovery_count(),
+        motion_ambient_contrast(),
         motion_cluster_cells(), motion_cluster_cap(),
         (unsigned long) motion_reject_count(), motion_reject_cells());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a

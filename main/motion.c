@@ -33,6 +33,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -85,8 +86,33 @@ static const char *TAG = "motion";
  * disabled, the image overexposed and couldn't correct itself. Gating it on
  * this same dark/bright signal means it only ever engages when the scene is
  * genuinely too dim for the fixed short exposure to overexpose. */
-#define AMBIENT_DARK_ON_THR   35   /* avg luma below this -> too dark, turn on */
-#define AMBIENT_DARK_OFF_THR  90   /* avg luma above this -> bright enough, turn off */
+/* DARKNESS IS DECIDED ON CONTRAST, NOT BRIGHTNESS.
+ *
+ * Measured on the feeder across one day (v3.12), 1/8-scale green channel:
+ *
+ *   daylight, usable        mean 130-140   std 49-60   max 255
+ *   dawn, usable            mean  98       std 52      max 238
+ *   dusk, TOO DARK TO USE   mean 148       std 12      max 180
+ *   true dark               mean   4       std  0.5    max  11
+ *
+ * The mean is worthless outdoors: AGC's entire job is to drive it to a target,
+ * so it holds near 140 as the light fails and only collapses once the sensor
+ * runs out of gain. A dusk frame too dark to photograph measured a HIGHER mean
+ * than noon — so a mean threshold can essentially never fire, which is exactly
+ * why the box sat "online, bright" through a night it could not see.
+ *
+ * Contrast does not lie. Amplifying a dark scene amplifies its noise too and
+ * leaves the frame flat: 12 against 49-60 for real light, a 4x gap with
+ * nothing in between. Stored as VARIANCE to avoid a sqrt per frame, so these
+ * are std^2: 25^2 and 35^2.
+ *
+ * AMBIENT_HIGHLIGHT is the safety net. A flat frame is not always a dark one —
+ * a blank wall, fog or snow is low-contrast in full daylight — so a frame is
+ * only called dark if it ALSO has no highlights. Real light here always
+ * reached 238-255; the unusable dusk frame peaked at 180. */
+#define AMBIENT_DARK_ON_VAR   625   /* std < 25: no real detail -> dark     */
+#define AMBIENT_DARK_OFF_VAR 1225   /* std > 35: a real scene   -> bright   */
+#define AMBIENT_HIGHLIGHT     210   /* peak luma that proves genuine light  */
 /* Night probe (FSD §14): frames discarded after a camera wake before the
  * reading is trusted, and the gap between them. ~1 s total, which is enough
  * for the OV2640/OV5640 AEC to converge on the real scene. */
@@ -98,6 +124,8 @@ static const char *TAG = "motion";
 static uint8_t *s_bg, *s_bg_slow, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
 static bool     s_dark     = false;   /* hysteresis-debounced ambient state */
+static int      s_last_var = 0;       /* variance of the last decoded frame */
+static int      s_last_max = 0;       /* peak luma of the last decoded frame */
 static bool     s_illum_on = false;
 static bool     s_fshut_on = false;
 static uint32_t s_cam_gen   = 0;   /* camera_init_generation() we last configured for */
@@ -158,7 +186,7 @@ static int cluster_cap(void)
  *
  * Factored out of detect_once() so the night probe (FSD §14) can measure
  * ambient light through the IDENTICAL path while the detect loop is paused.
- * That identity is the whole point: AMBIENT_DARK_ON_THR/OFF_THR are tuned
+ * That identity is the whole point: the AMBIENT_DARK_*_VAR thresholds are tuned
  * against this exact 1/8-scale, green-channel transform, and a second
  * measurement taken any other way would not be comparable to them. */
 static int decode_gray(void)
@@ -191,12 +219,22 @@ static int decode_gray(void)
     /* Grayscale ≈ green channel of RGB565 (6 bits, scaled to 8) — a stable
      * transform is all differencing needs, not colorimetric accuracy. */
     const uint16_t *rgb = (const uint16_t *) s_rgb;
-    long luma_sum = 0;
+    long long luma_sum = 0, luma_sq = 0;
+    int luma_max = 0;
     for (int i = 0; i < px; i++) {
-        s_cur[i] = (uint8_t) (((rgb[i] >> 5) & 0x3F) << 2);
-        luma_sum += s_cur[i];
+        int v = ((rgb[i] >> 5) & 0x3F) << 2;
+        s_cur[i] = (uint8_t) v;
+        luma_sum += v;
+        luma_sq  += (long long) v * v;
+        if (v > luma_max) luma_max = v;
     }
-    return (int) (luma_sum / px);
+    int avg = (int) (luma_sum / px);
+    /* Variance, not std: comparing against a squared threshold avoids a sqrt
+     * on every detect frame. int64 throughout — at the QSXGA ceiling this sums
+     * 76 800 squares of up to 65 025, which overflows int32 comfortably. */
+    s_last_var = (int) (luma_sq / px - (long long) avg * avg);
+    s_last_max = luma_max;
+    return avg;
 }
 
 /* Feed one luma reading through the dark/bright hysteresis. Shared by the
@@ -204,8 +242,18 @@ static int decode_gray(void)
  * matter which one is currently running (FSD §14). */
 static void ambient_update(int avg)
 {
-    if (!s_dark && avg < AMBIENT_DARK_ON_THR)       s_dark = true;
-    else if (s_dark && avg > AMBIENT_DARK_OFF_THR)  s_dark = false;
+    (void) avg;   /* kept for logging/telemetry; it does NOT decide darkness */
+    /* CONTRAST decides, not brightness — see the threshold block above for the
+     * measurements. Highlights are the safety net: a flat but genuinely lit
+     * scene (a blank wall, fog, snow) also has low contrast, and without the
+     * max check the box would call that night. Real daylight in this data
+     * always reached 238-255; the unusable dusk frame peaked at 180. */
+    bool flat   = s_last_var < AMBIENT_DARK_ON_VAR;
+    bool nohigh = s_last_max < AMBIENT_HIGHLIGHT;
+    bool rich   = s_last_var > AMBIENT_DARK_OFF_VAR;
+
+    if (!s_dark && flat && nohigh)          s_dark = true;
+    else if (s_dark && (rich || s_last_max >= AMBIENT_HIGHLIGHT)) s_dark = false;
 }
 
 static bool detect_once(void)
@@ -654,6 +702,13 @@ void motion_set_night_paused(bool paused)
 }
 
 bool motion_ambient_dark(void) { return s_dark; }
+
+/* The numbers that actually DECIDE darkness, exposed so the reason is visible.
+ * Without these, /api/night showing luma 148 next to dark:true reads as a
+ * contradiction — the mean is now only a display value (see the threshold
+ * block: it stays ~140 as the light fails, which is the whole problem). */
+int motion_ambient_contrast(void) { return (int) sqrtf((float) (s_last_var > 0 ? s_last_var : 0)); }
+int motion_ambient_peak(void)     { return s_last_max; }
 
 /* One-shot ambient measurement for the night probe (FSD §14), used while the
  * detect loop is paused and therefore not producing readings of its own.

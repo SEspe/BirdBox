@@ -4662,13 +4662,14 @@ static esp_err_t h_night(httpd_req_t *req)
     char buf[200];
     snprintf(buf, sizeof(buf),
              "{\"mode\":%u,\"state\":\"%s\",\"asleep\":%s,\"asleepS\":%d,"
-             "\"luma\":%d,\"dark\":%s,\"probeMin\":%u,\"camAsleep\":%s,"
+             "\"luma\":%d,\"contrast\":%d,\"peak\":%d,\"dark\":%s,\"probeMin\":%u,\"camAsleep\":%s,"
              /* Why an enabled box is still awake — without it, "online" while
               * dark is indistinguishable from a broken scheduler (§14). */
              "\"hold\":\"%s\"}",
              (unsigned) g_settings.sleep_mode, night_state_str(),
              night_asleep() ? "true" : "false", night_asleep_s(),
-             night_last_luma(), motion_ambient_dark() ? "true" : "false",
+             night_last_luma(), motion_ambient_contrast(), motion_ambient_peak(),
+             motion_ambient_dark() ? "true" : "false",
              (unsigned) g_settings.sleep_probe_min,
              camera_asleep() ? "true" : "false",
              night_hold_reason());
