@@ -376,3 +376,5 @@ latched dark, slept one tick later. **It is asleep now**, 54 min, camera down,
 - **Before tuning a threshold, ask whether the METRIC can work at all.** Three
   nights of fixes sat downstream of a measurement that could not distinguish
   day from night.
+
+**Closed 2026-09-24 (operator confirmation):** the Home Assistant entities do render — `Scene contrast` is visible in HA. That was the one link not verifiable from here, since the broker password is write-only by design and cannot be subscribed with.
