@@ -303,3 +303,76 @@ not have had. Kjøttmeis at **97 %** (`.240` got 75 % on the same bird).
 Both units are now identically tuned (sens 88, Close/40, cool 30, conf 25, HD),
 on the same tray, with no live viewers. Differences from here are attributable
 to **viewpoint and sensor** (OV5640 vs OV2640).
+
+---
+
+## End of 2026-09-24 — six releases, and a metric that could not work
+
+### Shipped
+
+| Version | FSD | What |
+|---|---|---|
+| 0.78.1 | v3.08 | Cached sensor setting survived a sensor reset — inverted night detection |
+| 0.78.2 | v3.09 | Motion cluster telemetry to Home Assistant |
+| 0.78.3 | v3.10 | Four fixes from a consistency sweep |
+| 0.78.4 | v3.11 | Clamped every `snprintf`-derived length — two memory-safety bugs |
+| 0.79.0 | v3.12 | **Darkness decided on contrast, not brightness** |
+
+Commits: `c695aed`, `ca7f83e`, `0df53ef`, `f9cfe1a`, `2f741b3`, `4fe2ad8`.
+
+### The headline: the metric could not work
+
+The operator reported the box "online, bright" at an hour already too dark to
+photograph. Not a threshold to tune — **mean brightness cannot detect darkness
+outdoors**, because AGC exists precisely to hold the mean at a target. The
+unusable dusk frame measured **mean 148, the highest reading of the week,
+higher than noon**. A dark threshold of 35 on that could never fire, which is
+why the box had never once slept on its own schedule.
+
+Every earlier night-sleep fix was real but downstream of this.
+
+| | contrast (std) | peak |
+|---|---|---|
+| Daylight / dawn | **48–60** | 238–255 |
+| **Unusable dusk** | **12–18** | 180 |
+| True dark | 0.5 | 11 |
+
+4× gap, nothing in between. Thresholds std 25 / 35, stored as variance to avoid
+a per-frame sqrt. `AMBIENT_HIGHLIGHT` guards the case a flat frame is *not*
+dark — blank wall, fog, snow — by also requiring no highlights.
+
+Verified live: first frame after quarantine read contrast 18 / peak 172,
+latched dark, slept one tick later. **It is asleep now**, 54 min, camera down,
+43 °C against ~52 °C awake.
+
+### Also today
+
+- **`.205` moved to the production feeder tray**, same tray as `.240`. Both now
+  identically tuned (sens 88, mount Close/40, cool 30 s, conf 25, HD), so
+  remaining differences are **viewpoint and sensor** only.
+- **"`.240` detected, `.205` did not"** — diagnosed, not a fault:
+  `area_thr = 1 + (100 - sens)/10`, so sens 80 needed 3 % where 88 needed 2 %,
+  and the same value double-duties as the per-cell test, so the effect compounds.
+- **Consistency sweep** found four bugs (illuminator burning all night during
+  sleep; `ha_stop()` deleting the publish task mid-call on every settings save;
+  a spec sentence v3.06 made false; stale `night_hold`) plus the `snprintf`
+  class: an **out-of-bounds read** at 8 sites shipping adjacent memory to LAN
+  clients, and an **out-of-bounds write** at 7 sites in `ha.c` via `size_t`
+  underflow in `sizeof(buf) - n`.
+
+### Still unproven
+
+1. **A real dawn wake — still never observed.** Tonight is the first attempt
+   where the box is genuinely asleep outdoors beforehand.
+2. Deep sleep (mode 2) — implemented, never exercised.
+3. Detection above HD — uncharacterised.
+4. Resolution thermal cost — retracted 2026-09-23, not re-measured.
+
+### Method lessons, cumulative
+
+- A crash and a wake are identical from state alone — check `uptime` and
+  `resetReason` first.
+- One variable at a time, wait for steady state, keep an untouched control.
+- **Before tuning a threshold, ask whether the METRIC can work at all.** Three
+  nights of fixes sat downstream of a measurement that could not distinguish
+  day from night.
