@@ -4,8 +4,8 @@
  *
  * ONE state topic, not one per entity. Every sensor's discovery config points
  * at the same "birdbox/<id>/state" topic and picks its own field out of the
- * JSON with a value_template. Twenty-five entities therefore cost ONE publish a
- * minute instead of twenty-five, which matters on a box whose link has already
+ * JSON with a value_template. Twenty-nine entities therefore cost ONE publish a
+ * minute instead of twenty-nine, which matters on a box whose link has already
  * proven able to drop to a couple of KB/s.
  *
  * Discovery messages are RETAINED, the state message is not. Retained
@@ -110,6 +110,17 @@ static const ha_entity_t ENTITIES[] = {
      * cycling (§14) is new stress on exactly that path. */
     { "cam_fault",    "Camera fault",          "problem",        NULL,  NULL,           true,  true  },
     { "cam_recoveries","Camera recoveries",    NULL,             NULL,  "total_increasing", true, false },
+    /* Motion cluster telemetry (§3.1). The diagnostic is a TREND, which is
+     * exactly what HA history is for: `rejected` climbing while `triggers`
+     * stays flat is the signature of a cluster cap set too low for the mount —
+     * the box is seeing birds and discarding them as wind. Before this existed
+     * that rejection left no trace at all, so a box throwing away every bird
+     * looked identical to one with nothing in front of it. `cluster_cells`
+     * against `cluster_cap` shows how much headroom the current mount has. */
+    { "cluster_cells","Last cluster size",     NULL,             NULL,  "measurement",  true,  false },
+    { "cluster_cap",  "Cluster cap",           NULL,             NULL,  "measurement",  true,  false },
+    { "rejected",     "Oversized rejections",  NULL,             NULL,  "total_increasing", true, false },
+    { "rejected_max", "Largest rejected",      NULL,             NULL,  "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -164,8 +175,8 @@ static void publish_discovery(void)
                                        ",\"stat_cla\":\"%s\"", e->stat_cla);
         if (e->diag)     n += snprintf(payload + n, sizeof(payload) - n,
                                        ",\"ent_cat\":\"diagnostic\"");
-        /* The device block is what makes all twenty-five entities collapse into a
-         * single "BirdBox" device in HA instead of twenty-five loose ones. */
+        /* The device block is what makes all twenty-nine entities collapse into a
+         * single "BirdBox" device in HA instead of twenty-nine loose ones. */
         snprintf(payload + n, sizeof(payload) - n,
             ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
             "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
@@ -199,7 +210,7 @@ static void publish_state(void)
 
     /* Grew with the four night-sleep fields (v3.07) — a truncated state message
      * is silently invalid JSON and every entity reading it goes unknown. */
-    char buf[896];
+    char buf[1024];
     int n = snprintf(buf, sizeof(buf),
         "{\"rssi\":%d,\"heap\":%lu,\"heap_int\":%lu,\"heap_int_big\":%lu,"
         "\"psram\":%lu,\"uptime\":%lld,\"sd_free\":%llu,\"sd_used\":%u,"
@@ -207,7 +218,9 @@ static void publish_state(void)
         "\"species\":\"%s\",\"sp_conf\":%u,\"version\":\"%s\",\"ip\":\"%s\","
         "\"motion\":\"%s\",\"sd_ok\":\"%s\",\"cam_ok\":\"%s\","
         "\"night\":\"%s\",\"night_hold\":\"%s\",\"cam_on\":\"%s\",\"asleep_min\":%d,"
-        "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu",
+        "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu,"
+        "\"cluster_cells\":%d,\"cluster_cap\":%d,"
+        "\"rejected\":%lu,\"rejected_max\":%d",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -232,7 +245,9 @@ static void publish_state(void)
         camera_asleep() ? "OFF" : "ON",
         night_asleep_s() / 60,
         camera_fault() ? "ON" : "OFF",          /* ON = problem, HA alerts on it */
-        (unsigned long) camera_recovery_count());
+        (unsigned long) camera_recovery_count(),
+        motion_cluster_cells(), motion_cluster_cap(),
+        (unsigned long) motion_reject_count(), motion_reject_cells());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

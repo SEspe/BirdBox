@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.08
+**Version:** 3.09
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -446,6 +446,11 @@ history rather than only by polling the box. Camera health is reported as a
 `problem` binary sensor (auto-recovery gave up, needs a power cycle) plus a
 recovery counter — a climbing count is the early warning that shows up long
 before a hard fault, and nightly sleep/wake cycling is new stress on that path.
+Motion cluster telemetry (§3.1) is published too — last cluster size, the
+current cap, the oversized-rejection count and the largest rejected cluster —
+because the useful diagnostic is a TREND: rejections climbing while triggers
+stay flat means the cap is too low for the mount and the box is discarding real
+birds as wind.
 A camera that is deliberately asleep is NOT reported as a fault, or HA would
 raise "camera disconnected" every night. An unavailable on-die temperature sensor is
 **omitted** from the message rather than published as its `-1000` sentinel, so
