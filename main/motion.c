@@ -90,14 +90,17 @@ static const char *TAG = "motion";
 /* Night probe (FSD §14): frames discarded after a camera wake before the
  * reading is trusted, and the gap between them. ~1 s total, which is enough
  * for the OV2640/OV5640 AEC to converge on the real scene. */
-#define AMBIENT_PROBE_FRAMES     4
-#define AMBIENT_PROBE_SETTLE_MS  250
+#define AMBIENT_PROBE_MIN_FRAMES    6   /* never trust fewer than ~1.5 s        */
+#define AMBIENT_PROBE_MAX_FRAMES   24   /* cap ~6 s, then take what we have     */
+#define AMBIENT_PROBE_STABLE_DELTA  3   /* consecutive frames this close = done */
+#define AMBIENT_PROBE_SETTLE_MS   250
 
 static uint8_t *s_bg, *s_bg_slow, *s_cur, *s_rgb;
 static bool     s_have_bg = false;
 static bool     s_dark     = false;   /* hysteresis-debounced ambient state */
 static bool     s_illum_on = false;
 static bool     s_fshut_on = false;
+static uint32_t s_cam_gen   = 0;   /* camera_init_generation() we last configured for */
 static int      s_px = 0;
 static int      s_w = 0, s_h = 0;        /* current detect-frame dimensions */
 static roi_t    s_roi;                   /* changed-cell bbox of the last trigger */
@@ -219,6 +222,18 @@ static bool detect_once(void)
     bool want_illum = (g_settings.ir_led_mode == 1) && s_dark;
     if (want_illum != s_illum_on) { illum_set(want_illum); s_illum_on = want_illum; }
 
+    /* The sensor is reset to a known baseline by every camera_hw_init() — boot,
+     * watchdog recovery, and night-sleep wake — and that baseline has fast
+     * shutter OFF. A cached "it is already on" therefore describes a sensor
+     * that no longer exists, and the compare below would never re-apply it.
+     * That is precisely what inverted night detection: after the first wake
+     * probe the box metered the night with full auto exposure, read it as
+     * bright, and stayed awake all night (FSD §14/v3.08). */
+    uint32_t gen = camera_init_generation();
+    if (gen != s_cam_gen) {
+        s_cam_gen = gen;
+        s_fshut_on = false;      /* hw_init forced it off; forget what we cached */
+    }
     bool want_fshut = (g_settings.fast_shutter == 1) && s_dark;
     if (want_fshut != s_fshut_on) { camera_set_fast_shutter(want_fshut); s_fshut_on = want_fshut; }
 
@@ -631,10 +646,24 @@ bool motion_ambient_dark(void) { return s_dark; }
  * Returns the average luma 0-255, or -1 if no frame could be decoded. */
 int motion_ambient_probe(void)
 {
-    int avg = -1;
-    for (int i = 0; i < AMBIENT_PROBE_FRAMES; i++) {
+    /* Settle until the reading CONVERGES, not for a fixed time. A freshly woken
+     * sensor's AEC/AGC is still hunting, and a fixed ~1 s was measured to
+     * under-read badly: at dawn a probe reported luma 70 while the settled
+     * detector, same scene and same minute, reported 105 — either side of the
+     * bright threshold, so the box stayed asleep in daylight. Stop as soon as
+     * two consecutive frames agree closely, and cap the wait so a flickering
+     * scene cannot hold the camera on. */
+    int avg = -1, prev = -1, stable = 0;
+    for (int i = 0; i < AMBIENT_PROBE_MAX_FRAMES; i++) {
         vTaskDelay(pdMS_TO_TICKS(AMBIENT_PROBE_SETTLE_MS));
         avg = decode_gray();
+        if (avg < 0) continue;
+        if (prev >= 0 && abs(avg - prev) <= AMBIENT_PROBE_STABLE_DELTA) {
+            if (++stable >= 2 && i + 1 >= AMBIENT_PROBE_MIN_FRAMES) break;
+        } else {
+            stable = 0;
+        }
+        prev = avg;
     }
     if (avg >= 0) ambient_update(avg);
     /* The scene almost certainly changed while the camera was off, so never

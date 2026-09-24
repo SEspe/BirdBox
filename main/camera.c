@@ -51,6 +51,10 @@ static volatile int64_t  s_last_good_us= 0;     /* esp_timer of last good frame*
 static volatile uint32_t s_recoveries  = 0;     /* successful re-inits         */
 static volatile int64_t  s_last_recov_us = 0;   /* esp_timer of last recovery  */
 static volatile bool     s_fault       = false;
+/* Incremented on every SUCCESSFUL hw init (boot, watchdog recovery, night
+ * wake). Lets readers outside this file detect that their cached sensor state
+ * is stale — see camera_init_generation(). */
+static volatile uint32_t s_init_gen    = 0;
 static volatile uint32_t s_fault_clears= 0;     /* times a real frame cleared it (v2.97) */
 /* Frame size actually running, as a RES index — CAMERA_RES_NONE until a size
  * initializes. Kept separate from g_settings.resolution (the user's *request*)
@@ -285,6 +289,14 @@ static esp_err_t camera_hw_init(void)
                                          whether fast_shutter should engage */
     s_last_good_us = esp_timer_get_time();       /* seed heartbeat: no false
                                                     stall before the 1st grab */
+    /* Bump LAST, and only on success. Anything outside this file that caches
+     * sensor register state must notice that the sensor was just reset and
+     * re-apply it — see camera_init_generation() in camera.h. The line above is
+     * exactly why: fast shutter is forced off here, and motion.c's cached
+     * "it is already on" flag used to survive that, so after any wake or
+     * watchdog recovery the box ran with full auto exposure while believing it
+     * had a short one. That silently inverted night detection (FSD §14). */
+    s_init_gen++;
     return ESP_OK;
 }
 
@@ -461,6 +473,9 @@ esp_err_t camera_wake(void)
 }
 
 bool camera_asleep(void) { return s_asleep; }
+
+/* See camera.h: readers that cache sensor state compare this to spot a reset. */
+uint32_t camera_init_generation(void) { return s_init_gen; }
 
 static void cam_wd_task(void *arg)
 {

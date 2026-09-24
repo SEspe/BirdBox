@@ -177,3 +177,16 @@ const char *camera_af_error(void);
 esp_err_t camera_sleep(void);
 esp_err_t camera_wake(void);
 bool      camera_asleep(void);
+
+/* Increments on every successful sensor initialisation — boot, watchdog
+ * recovery and night-sleep wake alike.
+ *
+ * ANY module that caches sensor register state MUST compare this against the
+ * generation it last configured, and re-apply on a change. camera_hw_init()
+ * resets the sensor to a known baseline (notably fast shutter OFF), so a cache
+ * that survives an init silently describes a sensor that no longer matches it.
+ * That exact bug inverted night detection: motion.c believed fast shutter was
+ * engaged after a wake when the hardware had dropped it, so the box metered the
+ * night with full auto exposure, read it as "bright", and stayed awake all
+ * night — then slept at dawn (FSD §14/v3.08). */
+uint32_t camera_init_generation(void);
