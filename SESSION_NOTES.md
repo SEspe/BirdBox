@@ -438,3 +438,37 @@ and sensor are second-order.
 1. Deep sleep (mode 2) — implemented, never exercised on hardware.
 2. Detection above HD — uncharacterised.
 3. Resolution thermal cost — retracted 2026-09-23, never re-measured.
+
+### 2026-09-26 later — v0.79.0 released, both boxes to 0.80.0, alt networks configured
+
+**Released v0.79.0** (Latest) with `BirdBox_esp32s3_v0.79.0.bin`, gated as
+planned on observing a dawn wake. Built from the committed tree and confirmed
+to be the binary already running on `.205`, so the release is the tested image
+rather than a hopeful rebuild. Notes lead on the contrast finding rather than
+the feature, and fold in 0.77.x/0.78.x which were never released separately.
+
+**`.240` (production) updated 0.75.1 → 0.79.0 → 0.80.0.** Every setting
+survived both jumps (`sens 88`, `mount 0`, `cool 30`, `conf 25`, HD, `lang 1`,
+`inatcv 1`) and the opt-in features stayed off (`night: 0`, `haen: 0`), so
+production gained the code with **no behaviour change**.
+
+**Both boxes now have a real second network**, entered through the WiFi tab by
+the operator rather than over the API — `/wifi-save` needs the password, and it
+would have ended up in the session transcript. Before: `.205` had **both slots
+set to `VK24-2`** (a duplicate, so failover rotated to an identical config) and
+`.240` had no alt at all. After: `primary VK24-2 / alt VK24` on both, both
+connected to VK24-2 (`.205` −59 dBm, `.240` −72 dBm).
+
+**The signal-preference logic is deployed but UNEXERCISED.** `.205` was briefly
+a perfect test — it fell through to `VK24` at **−82 dBm** while `VK24-2` was at
+−59, a 23 dB gap against a 12 dB margin — but an operator restart moved it back
+before the ~45 min confirmation sequence could run. Both boxes now sit on their
+preferred network, so there is nothing for the feature to correct. It is proven
+by construction only; it will prove itself the first time a box genuinely lands
+on the wrong AP and quietly moves back. Watch `apSsid` and `wifiDisc` in
+`/api/sysinfo`.
+
+Worth knowing: a **boot-time fall-through is how a box ends up on the wrong AP**
+in the first place. `wifi_start` gives the primary 15 s and then tries the alt;
+`.205` missed that window once and `.240` did not. Before 0.80.0 there was no
+way back.
