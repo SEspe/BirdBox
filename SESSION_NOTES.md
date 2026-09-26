@@ -378,3 +378,63 @@ latched dark, slept one tick later. **It is asleep now**, 54 min, camera down,
   day from night.
 
 **Closed 2026-09-24 (operator confirmation):** the Home Assistant entities do render — `Scene contrast` is visible in HA. That was the one link not verifiable from here, since the broker password is write-only by design and cannot be subscribed with.
+
+---
+
+## 2026-09-26 — the dawn wake, finally observed
+
+**Night sleep is proven end to end.** Open since 2026-09-22; three earlier
+attempts failed (a panic that looked like a wake, an indoor light regime, and a
+metric that could not detect darkness at all).
+
+**Evidence, from the box's own SD card rather than HA** — an overnight gap in
+the capture record with `uptime` unbroken across it:
+
+| date | first capture | last capture |
+|---|---|---|
+| 25 Sep | 08:23 | **19:09** |
+| 26 Sep | **07:23** | ongoing |
+
+12 h 14 m with zero captures. `uptime` **131 544 s = 36.5 h**, `resetReason`
+`software` (the 0.79.0 flash) — so two nights and two dawns with **no reboot**.
+That distinction is the whole point: a panic clears the sleep state and looks
+exactly like a wake, which is how the first attempt fooled us.
+
+**The contrast metric validated over 36 h of continuous operation** (HA graph):
+
+| period | contrast |
+|---|---|
+| daytime | 48–52, peaking 70–75 at midday |
+| dusk transition | near-vertical 52 → ~15 |
+| overnight | 8–22 |
+| dawn transition | sharp 15 → 50 |
+
+**Nothing ever occupies 22–48 except during the transitions themselves**, so the
+thresholds (25 sleep / 35 wake) sit in a band the signal never visits — which is
+why both transitions are decisive rather than hunting. The 4× gap predicted from
+seven still frames holds across 36 h. Margin: highest overnight reading ~22
+against a wake threshold of 35, and hysteresis means a brief excursion past 25
+does nothing.
+
+**The A/B closed.** Before tuning alignment `.205` had 1 event to `.240`'s 13.
+Now **287 vs 321** — within 11 %, and `.205` slept ~12 h of that window, so its
+daytime rate is effectively equal. Matched tuning was the whole story; viewpoint
+and sensor are second-order.
+
+### Watch items (neither alarming yet)
+
+- **`camRecoveries: 2`** on `.205`, was 0. Nightly sleep/wake cycling stressing
+  the sensor — the risk flagged when the feature was built. Both self-healed,
+  `camFault: false`. A climbing count would matter.
+- **`rejN: 5, rej: 43`** — five oversized clusters discarded over 36 h, largest
+  43 cells against cap 40. **Close/40 is the highest cap available**, so a
+  43-cell cluster cannot be admitted without a code change. Whole-frame change
+  measures ~50 cells, so 43 is more likely wind or a light step than a bird —
+  but if `rejN` climbs while birds are visibly missed, that lever has no
+  headroom left.
+
+### Still open
+
+1. Deep sleep (mode 2) — implemented, never exercised on hardware.
+2. Detection above HD — uncharacterised.
+3. Resolution thermal cost — retracted 2026-09-23, never re-measured.
