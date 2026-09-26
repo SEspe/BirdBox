@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.13
+**Version:** 3.14
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -450,6 +450,8 @@ history rather than only by polling the box. Camera health is reported as a
 `problem` binary sensor (auto-recovery gave up, needs a power cycle) plus a
 recovery counter — a climbing count is the early warning that shows up long
 before a hard fault, and nightly sleep/wake cycling is new stress on that path.
+**Per-species visit counters.** One monotonic sensor per species actually seen, so Home Assistant can answer “how many great tits this week” — its statistics engine derives per-day deltas from a cumulative total, which a text sensor holding the last species cannot support at all. Counts are read from the **visit log**, not tallied as events happen: relabelling a bird in the Gallery rewrites the log, and a live counter would never see the correction. Re-reading also makes the totals survive reboots without persisting anything, which is what lets them be honest `total_increasing` sensors. The read is SD-bound, so it runs on a slow cadence of its own rather than with every state message. Entities are keyed on the Latin binomial so switching UI language does not orphan them, and the confirmed false-positive total is published alongside as the honest measure of detector noise.
+
 Motion cluster telemetry (§3.1) is published too — last cluster size, the
 current cap, the oversized-rejection count and the largest rejected cluster —
 because the useful diagnostic is a TREND: rejections climbing while triggers

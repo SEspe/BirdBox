@@ -28,6 +28,7 @@
 #include "species_i18n.h"
 #include "web_server.h"
 #include "night.h"
+#include "stats.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -107,6 +108,9 @@ static const ha_entity_t ENTITIES[] = {
     /* The value that decides day/night since v3.12. Mean brightness is a
      * display number only — AGC holds it near 140 as the light fails. */
     { "contrast",     "Scene contrast",        NULL,             NULL,  "measurement",  true,  false },
+    /* Motion triggers the classifier confidently called "no bird" — a rising
+     * share against real visits is the honest measure of detector noise. */
+    { "false_pos",    "False positives",       NULL,             NULL,  "total_increasing", true, false },
     /* Camera health. `problem` is the device class HA alerts on, so cam_fault
      * is the one worth a notification: auto-recovery gave up and the sensor
      * needs a real power cycle. cam_recoveries is the EARLY WARNING — a
@@ -152,6 +156,93 @@ static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
     return (size_t) n >= cap ? (int) cap : n;
 }
 
+/* ── Per-species visit counters (FSD §13/§3.4) ───────────────────────────────
+ * "How many Kjøttmeis this week" is the question Home Assistant is actually
+ * good at, and a text sensor holding the LAST species cannot answer it: there
+ * is nothing to aggregate. One monotonic counter per species can, because HA's
+ * long-term statistics engine derives per-hour/day/month deltas from exactly
+ * that shape — so visits-per-day needs no templating, and a utility_meter gives
+ * daily/weekly cycles for free.
+ *
+ * COUNTS COME FROM THE VISIT LOG, NOT FROM COUNTING EVENTS AS THEY HAPPEN.
+ * That is the important choice. An in-memory counter would be cheaper and would
+ * be WRONG: relabelling a bird in the Gallery rewrites the log's `corrected`
+ * column, and those corrections are exactly what the operator spends effort on.
+ * A live counter would never see them and would drift away from the Stats tab
+ * for good. Re-reading the log also makes the counters survive reboots without
+ * persisting anything, which is what lets them be honest `total_increasing`
+ * sensors rather than ones that silently reset.
+ *
+ * The log read is SD-bound (~2 s), so it runs on its own slow cadence rather
+ * than with every 60 s state message — 2 s per 15 min is a 0.2 % duty cycle,
+ * and species totals do not move faster than that anyway. */
+#define HA_SPECIES_MAX      16    /* entities; the feeder shows ~6 in practice */
+#define HA_SPECIES_REFRESH_MIN 15 /* minutes between visit-log re-reads        */
+
+static struct {
+    char     slug[28];            /* MQTT/uniq_id-safe key, from the binomial  */
+    char     name[64];            /* localized display name                    */
+    uint32_t n;
+    bool     announced;           /* discovery config published for it yet     */
+} s_sp[HA_SPECIES_MAX];
+static int      s_sp_count;
+static uint32_t s_false_pos;
+static int64_t  s_sp_next_us;     /* 0 = due now */
+
+/* Latin binomial -> "parus_major". Stable across UI language changes, which
+ * matters because the display name is localized and switching language would
+ * otherwise orphan every entity. */
+static void slugify(const char *in, char *out, size_t n)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < n; i++) {
+        unsigned char c = (unsigned char) in[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char) (c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) out[o++] = (char) c;
+        else if (o && out[o - 1] != '_') out[o++] = '_';
+    }
+    while (o && out[o - 1] == '_') o--;      /* no trailing separator */
+    out[o] = '\0';
+    if (!o) strlcpy(out, "unknown", n);
+}
+
+static void publish_species_discovery(int i);
+
+/* Re-read the visit log and refresh the species table. Announces any species
+ * seen for the first time. */
+static void species_refresh(void)
+{
+    stats_t *st = calloc(1, sizeof(stats_t));   /* ~2.6 kB: never on the stack */
+    if (!st) { ESP_LOGW(TAG, "species refresh: no memory"); return; }
+    if (stats_collect(st) == ESP_OK) {
+        s_false_pos = st->false_pos;
+        for (int r = 0; r < st->sp_count && r < HA_SPECIES_MAX; r++) {
+            /* Key on the binomial where the row has one — a merged row can
+             * span several raw common names (v2.70), and the binomial is the
+             * species' real identity. */
+            const char *key = st->sp_latin[r][0] ? st->sp_latin[r] : st->sp[r];
+            char slug[28];
+            slugify(key, slug, sizeof(slug));
+
+            int i = 0;
+            while (i < s_sp_count && strcmp(s_sp[i].slug, slug) != 0) i++;
+            if (i == s_sp_count) {
+                if (s_sp_count >= HA_SPECIES_MAX) continue;   /* table full */
+                strlcpy(s_sp[i].slug, slug, sizeof(s_sp[i].slug));
+                s_sp[i].announced = false;
+                s_sp_count++;
+            }
+            species_localize(st->sp[r], st->sp_latin[r], g_settings.lang,
+                             s_sp[i].name, sizeof(s_sp[i].name));
+            s_sp[i].n = st->sp_n[r];
+            if (!s_sp[i].announced && s_connected) publish_species_discovery(i);
+        }
+    }
+    free(st);
+    s_sp_next_us = esp_timer_get_time() +
+                   (int64_t) HA_SPECIES_REFRESH_MIN * 60 * 1000000LL;
+}
+
 static void box_ip(char *out, size_t n)
 {
     out[0] = '\0';
@@ -179,6 +270,41 @@ static void json_safe(const char *in, char *out, size_t n)
 /* Home Assistant MQTT Discovery. Abbreviated keys (stat_t, val_tpl, dev_cla…)
  * are HA's own documented short forms; they keep each payload comfortably
  * inside the client's 1.5 KB buffer once the device block is included. */
+
+/* Discovery for one species counter. total_increasing is the whole point: it
+ * is what lets HA derive visits-per-day from a cumulative total. Not marked
+ * diagnostic — these are the data the box exists to produce. */
+static void publish_species_discovery(int i)
+{
+    char ip[16];
+    box_ip(ip, sizeof(ip));
+    char topic[128], payload[640], name_e[96];
+    json_safe(s_sp[i].name, name_e, sizeof(name_e));
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/birdbox_%s/sp_%s/config",
+             s_id, s_sp[i].slug);
+    int n = snprintf(payload, sizeof(payload),
+        "{\"name\":\"%s\",\"uniq_id\":\"birdbox_%s_sp_%s\","
+        "\"stat_t\":\"%s\",\"avty_t\":\"%s\","
+        "\"val_tpl\":\"{{value_json.sp_%s}}\","
+        "\"stat_cla\":\"total_increasing\",\"unit_of_meas\":\"visits\","
+        "\"ic\":\"mdi:bird\"",
+        name_e, s_id, s_sp[i].slug, s_topic_state, s_topic_avty, s_sp[i].slug);
+    n = jcat(payload, sizeof(payload), n,
+        ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
+        "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
+        s_id, FIRMWARE_NAME, camera_caps()->name[0] ? camera_caps()->name : "ESP32",
+        FIRMWARE_VERSION, ip);
+    if ((size_t) n >= sizeof(payload)) {
+        ESP_LOGE(TAG, "species discovery for '%s' TRUNCATED — entity will not appear",
+                 s_sp[i].slug);
+        return;
+    }
+    esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
+    s_sp[i].announced = true;
+    ESP_LOGI(TAG, "announced species entity sp_%s (%s, n=%lu)",
+             s_sp[i].slug, s_sp[i].name, (unsigned long) s_sp[i].n);
+}
 static void publish_discovery(void)
 {
     char ip[16];
@@ -220,7 +346,9 @@ static void publish_discovery(void)
                      e->key, (unsigned) sizeof(payload));
         esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
     }
-    ESP_LOGI(TAG, "published %u discovery configs", (unsigned) ENTITY_COUNT);
+    for (int i = 0; i < s_sp_count; i++) { s_sp[i].announced = false; publish_species_discovery(i); }
+    ESP_LOGI(TAG, "published %u discovery configs + %d species",
+             (unsigned) ENTITY_COUNT, s_sp_count);
 }
 
 static void publish_state(void)
@@ -245,7 +373,7 @@ static void publish_state(void)
 
     /* Grew with the four night-sleep fields (v3.07) — a truncated state message
      * is silently invalid JSON and every entity reading it goes unknown. */
-    char buf[1024];
+    char buf[1600];   /* + per-species counters (v3.14) */
     int n = snprintf(buf, sizeof(buf),
         "{\"rssi\":%d,\"heap\":%lu,\"heap_int\":%lu,\"heap_int_big\":%lu,"
         "\"psram\":%lu,\"uptime\":%lld,\"sd_free\":%llu,\"sd_used\":%u,"
@@ -289,6 +417,15 @@ static void publish_state(void)
      * missing value as "unknown", which is what it is. */
     if (t > -100.0f) n = jcat(buf, sizeof(buf), n, ",\"temp\":%.1f", t);
     n = jcat(buf, sizeof(buf), n, "}");
+
+    /* Per-species visit counts and the confirmed false-positive total. Appended
+     * with jcat so a long species list can never run past the buffer; if it
+     * does, the truncation check below catches it and the message is dropped
+     * rather than published malformed. */
+    n = jcat(buf, sizeof(buf), n, ",\"false_pos\":%lu", (unsigned long) s_false_pos);
+    for (int i = 0; i < s_sp_count; i++)
+        n = jcat(buf, sizeof(buf), n, ",\"sp_%s\":%lu",
+                 s_sp[i].slug, (unsigned long) s_sp[i].n);
 
     /* One malformed state message takes EVERY entity to "unknown" at once,
      * because they all read their value out of this single document. */
@@ -350,6 +487,10 @@ static void ha_task(void *arg)
         for (int i = 0; i < HA_PUBLISH_INTERVAL_S && !s_stop_req; i++)
             vTaskDelay(pdMS_TO_TICKS(1000));
         if (s_stop_req) break;
+        /* Slow, SD-bound: re-read the visit log on its own cadence, never with
+         * every state message. Also picks up Gallery relabels, which a live
+         * counter would miss entirely. */
+        if (s_connected && esp_timer_get_time() >= s_sp_next_us) species_refresh();
         if (s_client && s_connected) publish_state();
     }
     /* Exit at a loop boundary and delete OURSELVES. ha_stop() used to call
@@ -436,7 +577,7 @@ esp_err_t ha_start(void)
         ha_stop();
         return err;
     }
-    xTaskCreate(ha_task, "ha", 4096, NULL, 2, &s_task);
+    xTaskCreate(ha_task, "ha", 6144, NULL, 2, &s_task);   /* stats_collect below it */
     ESP_LOGI(TAG, "Home Assistant reporting to %s every %d s", uri, HA_PUBLISH_INTERVAL_S);
     return ESP_OK;
 }
