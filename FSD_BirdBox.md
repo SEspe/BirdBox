@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.12
+**Version:** 3.13
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -270,6 +270,10 @@ The device stores **two** networks: a **primary** (`ssid`/`pass`) and an optiona
 - **Shared IP setting:** the DHCP-or-static IP configuration (§4.5) applies to **whichever** network connects. A single static address is only valid if the primary and alt1 are on the **same subnet**; for APs on different subnets, use DHCP. The WiFi tab states this.
 - **Visibility:** the WiFi tab shows the currently-connected AP plus both configured SSIDs (`GET /api/wificfg`, passwords never exposed); the Debug tab's WiFi Link section shows the connected network name (`apSsid` in `/api/sysinfo`).
 - **Editing:** saving with `slot=1` and a blank SSID removes alt1. The boot-button reset (§4.6) erases both networks. Passwords are write-only — the tab shows SSIDs but never pre-fills passwords.
+
+**Signal-based preference.** Failover alone only reacts to total failure, which leaves the common bad case untouched: a connection that works but is awful. A box sat on a −85 dBm AP at 2.9 KB/s for hours while a −58 dBm one was in range, because nothing was failing; failover also never returns to primary once it has moved off. The box therefore re-evaluates periodically and moves to a materially stronger stored network.
+
+It is deliberately hard to trigger, because a switch costs a reconnect and with it the stream, any in-flight OTA and a DHCP round trip — the cost of a wrong decision far exceeds the cost of waiting another hour. The candidate must beat the current AP by a wide margin, must do so on several consecutive checks, and a long cooldown after any switch makes ping-pong impossible by construction even if both APs sit right at the margin. Never runs while streaming or mid-OTA. If the better-looking AP will not accept the connection, the box returns to the previous network immediately rather than waiting for ordinary failover. Inert unless two genuinely different SSIDs are stored — both slots holding the same name is a real configuration and switching between identical configs is churn.
 
 ### 4.8 mDNS — `http://birdbox.local/`
 

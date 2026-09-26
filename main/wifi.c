@@ -523,6 +523,122 @@ static void start_config_portal(void)
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
+
+/* ── Signal-based network preference (FSD §4.7) ──────────────────────────────
+ * Failover only ever switched on TOTAL FAILURE: five consecutive connect
+ * errors rotate to the other stored network. That leaves the common bad case
+ * untouched — a connection that works but is awful. A box sat on a −85 dBm AP
+ * for hours at 2.9 KB/s while a −58 dBm one was in range, because nothing was
+ * failing. It also never returns to primary once it has moved off it.
+ *
+ * DELIBERATELY HARD TO TRIGGER. A switch costs a reconnect (and with it the
+ * stream, any in-flight OTA and a DHCP round trip), so the cost of a wrong
+ * decision is far higher than the cost of staying put one more hour. Every
+ * constant below is set to avoid oscillation rather than to react quickly:
+ *
+ *   - the candidate must beat the current AP by a wide MARGIN, not merely win
+ *   - it must do so on CONSECUTIVE checks, so one lucky scan cannot move us
+ *   - a long COOLDOWN after any switch makes ping-pong impossible by
+ *     construction, even if both APs sit right at the margin
+ *   - never while streaming or mid-OTA
+ *
+ * Worst case that still switches: a genuinely better AP wins three checks in a
+ * row, so roughly 45 minutes of sustained advantage before anything moves. */
+#define WIFI_PREF_CHECK_MIN      15   /* minutes between evaluations          */
+#define WIFI_PREF_MARGIN_DB      12   /* candidate must beat current by this  */
+#define WIFI_PREF_CONFIRMS        3   /* consecutive wins before switching    */
+#define WIFI_PREF_COOLDOWN_MIN  120   /* no further switch for this long      */
+
+static int     s_pref_confirms   = 0;
+static int64_t s_pref_cooldown_until_us = 0;
+
+/* RSSI of a stored SSID from a targeted scan, or 0 if not seen. Scanning while
+ * connected takes the radio off-channel briefly, so this is filtered to the
+ * one SSID and kept short — and the caller skips it entirely while a stream or
+ * an OTA is in flight. */
+static int scan_rssi(const char *ssid)
+{
+    wifi_scan_config_t sc = {
+        .ssid = (uint8_t *) ssid,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active = { .min = 80, .max = 160 },
+    };
+    if (esp_wifi_scan_start(&sc, true) != ESP_OK) return 0;
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    if (n == 0) { esp_wifi_scan_get_ap_records(&n, NULL); return 0; }
+    if (n > 8) n = 8;
+    wifi_ap_record_t recs[8];
+    if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) return 0;
+    int best = 0;                       /* strongest BSSID for that SSID */
+    for (int i = 0; i < n; i++)
+        if (recs[i].rssi > best || best == 0) best = recs[i].rssi;
+    return best;
+}
+
+static void wifi_pref_task(void *arg)
+{
+    (void) arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t) WIFI_PREF_CHECK_MIN * 60 * 1000));
+
+        /* Only meaningful with two GENUINELY different networks. Both slots
+         * holding the same SSID is a real configuration (seen in the field),
+         * and switching between identical configs would be pure churn. */
+        if (s_net_count < 2 || !s_connected || s_portal_mode) continue;
+        if (strcmp(s_nets[0].ssid, s_nets[1].ssid) == 0) continue;
+        if (esp_timer_get_time() < s_pref_cooldown_until_us) continue;
+        /* A scan interrupts the radio; never do it under a viewer or an OTA. */
+        if (web_server_streaming() || web_server_ota_active()) continue;
+
+        wifi_ap_record_t cur;
+        if (esp_wifi_sta_get_ap_info(&cur) != ESP_OK) continue;
+
+        int other = (s_cur_net + 1) % s_net_count;
+        int other_rssi = scan_rssi(s_nets[other].ssid);
+        if (other_rssi == 0) { s_pref_confirms = 0; continue; }
+
+        if (other_rssi >= cur.rssi + WIFI_PREF_MARGIN_DB) {
+            s_pref_confirms++;
+            ESP_LOGI(TAG, "pref: %s %d dBm beats %s %d dBm (%d/%d confirmations)",
+                     s_nets[other].ssid, other_rssi, s_nets[s_cur_net].ssid,
+                     cur.rssi, s_pref_confirms, WIFI_PREF_CONFIRMS);
+        } else {
+            if (s_pref_confirms) ESP_LOGI(TAG, "pref: advantage gone, reset");
+            s_pref_confirms = 0;
+            continue;
+        }
+        if (s_pref_confirms < WIFI_PREF_CONFIRMS) continue;
+
+        /* Sustained and wide enough: move, and be ready to move back. */
+        int was = s_cur_net;
+        ESP_LOGW(TAG, "pref: switching to %s (%d dBm) from %s (%d dBm)",
+                 s_nets[other].ssid, other_rssi, s_nets[was].ssid, cur.rssi);
+        s_pref_confirms = 0;
+        s_pref_cooldown_until_us = esp_timer_get_time() +
+                                   (int64_t) WIFI_PREF_COOLDOWN_MIN * 60 * 1000000LL;
+        s_cur_net = other;
+        set_sta_config(other);
+        xEventGroupClearBits(s_wifi_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+        esp_wifi_disconnect();
+        esp_wifi_connect();
+        EventBits_t bits = xEventGroupWaitBits(s_wifi_eg, WIFI_CONNECTED_BIT,
+                                               pdFALSE, pdFALSE, pdMS_TO_TICKS(20000));
+        if (!(bits & WIFI_CONNECTED_BIT)) {
+            /* The better-looking AP would not take us. Go straight back rather
+             * than leaving the box on a network it cannot join — the ordinary
+             * failover path would get there eventually, but only after five
+             * more failures, and the box is off the air until then. */
+            ESP_LOGW(TAG, "pref: %s would not connect — reverting to %s",
+                     s_nets[other].ssid, s_nets[was].ssid);
+            s_cur_net = was;
+            set_sta_config(was);
+            esp_wifi_connect();
+        }
+    }
+}
+
 esp_err_t wifi_start(void)
 {
     check_credential_reset();
@@ -581,6 +697,11 @@ esp_err_t wifi_start(void)
 
         if (connected) {
             ESP_LOGI(TAG, "WiFi connected to %s", s_nets[s_cur_net].ssid);
+            /* Signal-based preference (§4.7). Started only once a connection
+             * exists; it no-ops unless two genuinely different networks are
+             * stored, so a box with one SSID pays a sleeping task and nothing
+             * else. */
+            xTaskCreate(wifi_pref_task, "wifipref", 3072, NULL, 2, NULL);
             /* Clock: SNTP + timezone (FSD §3.4). Best-effort — events before
              * first sync get placeholder timestamps. */
             start_sntp();
