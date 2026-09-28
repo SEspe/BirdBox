@@ -472,3 +472,44 @@ Worth knowing: a **boot-time fall-through is how a box ends up on the wrong AP**
 in the first place. `wifi_start` gives the primary 15 s and then tries the alt;
 `.205` missed that window once and `.240` did not. Before 0.80.0 there was no
 way back.
+
+---
+
+## 2026-09-28 — HA rework, a use-after-free, and an unsolved OTA panic
+
+**Classification is NOT broken** — the day's data just looked that way. Today
+was **rainy**: `.240` logged 41 "no bird" and **1** real visit, against 55–175
+on 25–27 Sep. All-time it has **1076 classified birds across 16 species**
+(Dompap 248, Kjøttmeis 235, Bokfink 214, Spettmeis 170…). The 41 rejections are
+the false-positive filter working correctly on raindrops. **Tomorrow in daylight
+is the real test of classification quality.**
+
+**HA model reworked (0.83.5 / v3.16).** Thirty per-species counters answered the
+wrong question; replaced by **one `Bird visits` sensor** (`total_increasing`,
+1302) carrying `species`, `confidence` and `false_positives` as **attributes**,
+so the trend graphs from the total and a point on the history still says which
+bird it was. Old entities **tombstoned** (retained discovery configs would
+otherwise replay forever). Caveat worth knowing: `species` is the *last
+identified* bird, not strictly that visit's — they coincide when classification
+is prompt. Publishing the state at classification time instead of on the 60 s
+tick would make it exact, if it ever matters.
+
+**Fixed: a use-after-free that panicked every settings save (0.82.6 / v3.15).**
+`ha_apply()` → `ha_stop()` waited 3 s for the publish task, then destroyed the
+MQTT client. Fine when the loop body was a sleep; **not** fine once the visit-log
+read (~2 s of SD) was in it. Now waits 10 s and **refuses to free the client at
+all** if the task has not exited. Verified: save returns `{"ok":true}` with
+uptime continuous.
+
+**UNSOLVED: `POST /ota/upload` panics whenever `haen=1`.** 6/6 with HA on, 2/2
+clean with `haen=0`. Usually after the image is written, but **once mid-upload**
+with the old image left running — so not cosmetic. **Workaround: `haen=0` → OTA
+→ `haen=1`.** Three hypotheses tested and wrong (see TODO.md — do not re-try).
+What remains: not MQTT *activity* but the subsystem having been **created**,
+pointing at internal DRAM (~99 kB with HA up vs ~119–139 kB without). Next step
+needs a backtrace, which needs hardware — coredump is disabled, there is no
+coredump partition, and adding one changes the partition table, which cannot be
+delivered by OTA.
+
+**Both units identically tuned** (sens 88, mount Close/40, cool 30, conf 25,
+HD, iNat conf 25) on the same tray. Differences are viewpoint and sensor only.
