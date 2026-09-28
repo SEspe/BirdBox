@@ -40,6 +40,6 @@ unsigned    ha_publish_count(void);
  * answered from outside: the box's view and HA's view are separate, and
  * without this there is no way to tell a filter that is not filtering from a
  * tombstone that is not landing. */
-int         ha_species_count(void);
-const char *ha_species_slug(int i);
-uint32_t    ha_species_n(int i);
+uint32_t    ha_visits_total(void);
+uint32_t    ha_false_pos(void);
+

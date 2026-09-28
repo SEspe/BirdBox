@@ -91,6 +91,9 @@ static const ha_entity_t ENTITIES[] = {
     { "sd_used",      "SD used",               NULL,             "%",   "measurement",  true,  false },
     { "wifi_rec",     "WiFi reconnects",       NULL,             NULL,  "total_increasing", true, false },
     { "events",       "Capture events",        NULL,             NULL,  "total_increasing", false, false },
+    /* THE trend entity: cumulative bird visits, with the species and
+     * confidence attached as attributes (see publish_discovery). */
+    { "visits",       "Bird visits",           NULL,             "visits", "total_increasing", false, false },
     { "triggers",     "Motion triggers",       NULL,             NULL,  "total_increasing", false, false },
     { "species",      "Last species",          NULL,             NULL,  NULL,           false, false },
     { "sp_conf",      "Last confidence",       NULL,             "%",   "measurement",  false, false },
@@ -177,7 +180,6 @@ static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
  * The log read is SD-bound (~2 s), so it runs on its own slow cadence rather
  * than with every 60 s state message — 2 s per 15 min is a 0.2 % duty cycle,
  * and species totals do not move faster than that anyway. */
-#define HA_SPECIES_MAX      16    /* entities; the feeder shows ~6 in practice */
 #define HA_SPECIES_REFRESH_MIN 15 /* minutes between visit-log re-reads        */
 /* Only species seen within this window get an entity. The visit log is
  * all-time — nearly two months on the test unit — and publishing every species
@@ -197,13 +199,18 @@ static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
  * it is evidence; one is not. Both tests must pass. */
 #define HA_SPECIES_MIN_VISITS   2
 
-static struct {
-    char     slug[28];            /* MQTT/uniq_id-safe key, from the binomial  */
-    char     name[64];            /* localized display name                    */
-    uint32_t n;
-    bool     announced;           /* discovery config published for it yet     */
-} s_sp[HA_SPECIES_MAX];
-static int      s_sp_count;
+/* One entity per species was the first design, and it answered the wrong
+ * question. Thirty counters tell you "how many Kjøttmeis all-time"; what was
+ * actually wanted is the TREND — visits over time, with the species visible
+ * for a given visit. That is ONE cumulative `visits` sensor carrying species
+ * and confidence as ATTRIBUTES: HA graphs the trend from the monotonic total,
+ * and its recorder keeps attributes beside each state change, so a point on
+ * the history still says which bird it was.
+ *
+ * The old entities must be explicitly REMOVED, not merely stopped: their
+ * discovery configs are retained on the broker, so HA replays them forever
+ * otherwise. That is all the species scan below still does. */
+static uint32_t s_visits_total;   /* cumulative bird visits, from the visit log */
 static uint32_t s_false_pos;
 static int64_t  s_sp_next_us;     /* 0 = due now */
 
@@ -223,8 +230,6 @@ static void slugify(const char *in, char *out, size_t n)
     out[o] = '\0';
     if (!o) strlcpy(out, "unknown", n);
 }
-
-static void publish_species_discovery(int i);
 
 /* Is this species' last sighting inside the recency window? ISO-8601 sorts
  * lexically, so a string compare against a cutoff date is enough.
@@ -264,71 +269,6 @@ static void tombstone_species(const char *slug)
 
 /* Re-read the visit log and refresh the species table. Announces any species
  * seen for the first time. */
-static void species_refresh(void)
-{
-    stats_t *st = calloc(1, sizeof(stats_t));   /* ~2.6 kB: never on the stack */
-    if (!st) { ESP_LOGW(TAG, "species refresh: no memory"); return; }
-    if (stats_collect(st) == ESP_OK) {
-        s_false_pos = st->false_pos;
-        bool still[HA_SPECIES_MAX] = {0};   /* mark-and-sweep */
-        for (int r = 0; r < st->sp_count; r++) {
-            /* Rows that fail the filters are TOMBSTONED, not merely skipped.
-             * Skipping is not enough: after a reboot the in-memory table starts
-             * empty, so the sweep below can only remove what this boot added —
-             * anything announced by an earlier boot (or an earlier, looser
-             * filter) keeps its retained discovery config on the broker and
-             * goes on showing a stale value in HA forever. The box only ever
-             * announces species that appear in this log, so the log is a
-             * superset of everything it could have created: tombstoning every
-             * non-qualifying row here cleans up regardless of which firmware
-             * or filter created it. Empty retained publishes are idempotent,
-             * so repeating them costs nothing. */
-            if (st->sp_n[r] < HA_SPECIES_MIN_VISITS ||
-                !species_recent(st->sp_last[r])) {
-                const char *k = st->sp_latin[r][0] ? st->sp_latin[r] : st->sp[r];
-                char dead[28];
-                slugify(k, dead, sizeof(dead));
-                int e = 0;
-                while (e < s_sp_count && strcmp(s_sp[e].slug, dead) != 0) e++;
-                if (e == s_sp_count && s_connected) tombstone_species(dead);
-                continue;
-            }
-            /* Key on the binomial where the row has one — a merged row can
-             * span several raw common names (v2.70), and the binomial is the
-             * species' real identity. */
-            const char *key = st->sp_latin[r][0] ? st->sp_latin[r] : st->sp[r];
-            char slug[28];
-            slugify(key, slug, sizeof(slug));
-
-            int i = 0;
-            while (i < s_sp_count && strcmp(s_sp[i].slug, slug) != 0) i++;
-            if (i < s_sp_count) still[i] = true;
-            if (i == s_sp_count) {
-                if (s_sp_count >= HA_SPECIES_MAX) continue;   /* table full */
-                still[i] = true;
-                strlcpy(s_sp[i].slug, slug, sizeof(s_sp[i].slug));
-                s_sp[i].announced = false;
-                s_sp_count++;
-            }
-            species_localize(st->sp[r], st->sp_latin[r], g_settings.lang,
-                             s_sp[i].name, sizeof(s_sp[i].name));
-            s_sp[i].n = st->sp_n[r];
-            if (!s_sp[i].announced && s_connected) publish_species_discovery(i);
-        }
-        /* Sweep: anything that fell out of the window is removed from HA
-         * rather than left publishing nothing and reading "unknown" forever. */
-        for (int i = s_sp_count - 1; i >= 0; i--) {
-            if (still[i]) continue;
-            if (s_sp[i].announced && s_connected) tombstone_species(s_sp[i].slug);
-            for (int k = i; k < s_sp_count - 1; k++) s_sp[k] = s_sp[k + 1];
-            s_sp_count--;
-        }
-    }
-    free(st);
-    s_sp_next_us = esp_timer_get_time() +
-                   (int64_t) HA_SPECIES_REFRESH_MIN * 60 * 1000000LL;
-}
-
 static void box_ip(char *out, size_t n)
 {
     out[0] = '\0';
@@ -339,9 +279,9 @@ static void box_ip(char *out, size_t n)
 }
 
 /* The species name is the only published value that comes from outside the
- * firmware's own control (it is a localized label that has been through a CSV
- * and an online API), so it is the only one that could carry a quote or a
- * backslash and break the JSON document every other entity is reading. */
+ * firmware's own control (a localized label that has been through a CSV and an
+ * online API), so it is the only one that could carry a quote or a backslash
+ * and break the JSON document every other entity reads. */
 static void json_safe(const char *in, char *out, size_t n)
 {
     size_t o = 0;
@@ -353,44 +293,38 @@ static void json_safe(const char *in, char *out, size_t n)
     out[o] = '\0';
 }
 
+static void species_refresh(void)
+{
+    stats_t *st = calloc(1, sizeof(stats_t));   /* ~2.6 kB: never on the stack */
+    if (!st) { ESP_LOGW(TAG, "visit-log refresh: no memory"); return; }
+    if (stats_collect(st) == ESP_OK) {
+        s_false_pos    = st->false_pos;
+        /* Cumulative, and survives reboots because it is derived from the log
+         * rather than counted in RAM — which is also what makes it pick up
+         * Gallery relabels, and what lets it be an honest total_increasing. */
+        s_visits_total = st->total;
+
+        /* Sweep away the per-species entities from the previous design. The
+         * box only ever announced species present in this log, so the log is a
+         * superset of everything it could have created; empty retained
+         * publishes are idempotent, so repeating this costs nothing. */
+        if (s_connected)
+            for (int r = 0; r < st->sp_count; r++) {
+                const char *key = st->sp_latin[r][0] ? st->sp_latin[r] : st->sp[r];
+                char slug[28];
+                slugify(key, slug, sizeof(slug));
+                tombstone_species(slug);
+            }
+    }
+    free(st);
+    s_sp_next_us = esp_timer_get_time() +
+                   (int64_t) HA_SPECIES_REFRESH_MIN * 60 * 1000000LL;
+}
+
 /* Home Assistant MQTT Discovery. Abbreviated keys (stat_t, val_tpl, dev_cla…)
  * are HA's own documented short forms; they keep each payload comfortably
  * inside the client's 1.5 KB buffer once the device block is included. */
 
-/* Discovery for one species counter. total_increasing is the whole point: it
- * is what lets HA derive visits-per-day from a cumulative total. Not marked
- * diagnostic — these are the data the box exists to produce. */
-static void publish_species_discovery(int i)
-{
-    char ip[16];
-    box_ip(ip, sizeof(ip));
-    char topic[128], payload[640], name_e[96];
-    json_safe(s_sp[i].name, name_e, sizeof(name_e));
-
-    snprintf(topic, sizeof(topic), "homeassistant/sensor/birdbox_%s/sp_%s/config",
-             s_id, s_sp[i].slug);
-    int n = snprintf(payload, sizeof(payload),
-        "{\"name\":\"%s\",\"uniq_id\":\"birdbox_%s_sp_%s\","
-        "\"stat_t\":\"%s\",\"avty_t\":\"%s\","
-        "\"val_tpl\":\"{{value_json.sp_%s}}\","
-        "\"stat_cla\":\"total_increasing\",\"unit_of_meas\":\"visits\","
-        "\"ic\":\"mdi:bird\"",
-        name_e, s_id, s_sp[i].slug, s_topic_state, s_topic_avty, s_sp[i].slug);
-    n = jcat(payload, sizeof(payload), n,
-        ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
-        "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
-        s_id, FIRMWARE_NAME, camera_caps()->name[0] ? camera_caps()->name : "ESP32",
-        FIRMWARE_VERSION, ip);
-    if ((size_t) n >= sizeof(payload)) {
-        ESP_LOGE(TAG, "species discovery for '%s' TRUNCATED — entity will not appear",
-                 s_sp[i].slug);
-        return;
-    }
-    esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
-    s_sp[i].announced = true;
-    ESP_LOGI(TAG, "announced species entity sp_%s (%s, n=%lu)",
-             s_sp[i].slug, s_sp[i].name, (unsigned long) s_sp[i].n);
-}
 static void publish_discovery(void)
 {
     char ip[16];
@@ -415,6 +349,17 @@ static void publish_discovery(void)
                                        ",\"stat_cla\":\"%s\"", e->stat_cla);
         if (e->diag)     n = jcat(payload, sizeof(payload), n,
                                        ",\"ent_cat\":\"diagnostic\"");
+        /* The visits trend carries the identification with it. HA's recorder
+         * stores attributes beside each state change, so hovering a point on
+         * the visits history shows WHICH bird that visit was — which is the
+         * whole reason one trend entity beats thirty per-species counters. */
+        if (strcmp(e->key, "visits") == 0)
+            n = jcat(payload, sizeof(payload), n,
+                     ",\"json_attr_t\":\"%s\",\"json_attr_tpl\":"
+                     "\"{{ {'species': value_json.species,"
+                     " 'confidence': value_json.sp_conf,"
+                     " 'false_positives': value_json.false_pos} | tojson }}\"",
+                     s_topic_state);
         /* The device block is what makes all twenty-nine entities collapse into a
          * single "BirdBox" device in HA instead of twenty-nine loose ones. */
         n = jcat(payload, sizeof(payload), n,
@@ -432,9 +377,7 @@ static void publish_discovery(void)
                      e->key, (unsigned) sizeof(payload));
         esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
     }
-    for (int i = 0; i < s_sp_count; i++) { s_sp[i].announced = false; publish_species_discovery(i); }
-    ESP_LOGI(TAG, "published %u discovery configs + %d species",
-             (unsigned) ENTITY_COUNT, s_sp_count);
+    ESP_LOGI(TAG, "published %u discovery configs", (unsigned) ENTITY_COUNT);
 }
 
 static void publish_state(void)
@@ -509,10 +452,8 @@ static void publish_state(void)
      * never sees them, so every species entity reads "unknown" while all the
      * older ones show values. That asymmetry is the tell — a genuinely
      * malformed document would take them ALL to unknown at once. */
-    n = jcat(buf, sizeof(buf), n, ",\"false_pos\":%lu", (unsigned long) s_false_pos);
-    for (int i = 0; i < s_sp_count; i++)
-        n = jcat(buf, sizeof(buf), n, ",\"sp_%s\":%lu",
-                 s_sp[i].slug, (unsigned long) s_sp[i].n);
+    n = jcat(buf, sizeof(buf), n, ",\"false_pos\":%lu,\"visits\":%lu",
+             (unsigned long) s_false_pos, (unsigned long) s_visits_total);
 
     n = jcat(buf, sizeof(buf), n, "}");
 
@@ -700,9 +641,8 @@ void ha_apply(void)
     ha_start();
 }
 
-int         ha_species_count(void)      { return s_sp_count; }
-const char *ha_species_slug(int i)      { return (i >= 0 && i < s_sp_count) ? s_sp[i].slug : ""; }
-uint32_t    ha_species_n(int i)         { return (i >= 0 && i < s_sp_count) ? s_sp[i].n : 0; }
+uint32_t    ha_visits_total(void)  { return s_visits_total; }
+uint32_t    ha_false_pos(void)     { return s_false_pos; }
 
 bool        ha_enabled(void)       { return g_settings.ha_enabled && g_settings.ha_host[0]; }
 bool        ha_connected(void)     { return s_connected; }

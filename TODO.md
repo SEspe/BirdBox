@@ -83,6 +83,27 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       left to the operator.
 
 
+## Found 2026-09-28, NOT fixed — OTA panics while Home Assistant is enabled
+- [ ] **`POST /ota/upload` panics the box whenever `haen=1`.** Reproducible A/B:
+      **6/6 panics with HA enabled, 2/2 clean (`resetReason:"software"`) with
+      `haen=0`.** Timing varies — usually after the image is written and the
+      boot partition set (so the new firmware still boots), but at least once
+      **mid-upload**, leaving the old image running. So it is NOT cosmetic.
+      **Workaround, proven: `haen=0` → OTA → `haen=1`.**
+      Three hypotheses were tested and are WRONG, do not re-try them:
+      1. `species_refresh()` colliding with the flash write — guarded, still panics.
+      2. The guard itself being broken (`web_server_ota_active()` was blind to
+         `/ota/upload`) — genuinely broken and now fixed, but not the cause.
+      3. MQTT activity during the write — `ha_suspend()` stopped the client
+         before the first flash write and it STILL panicked. Reverted, because
+         it cost up to 10 s on every upload for no benefit.
+      Note what 1-3 rule out: it is not MQTT *activity* during the write, since
+      `haen=0` differs by the ha task **never being created at all**. Suspect
+      memory: internal DRAM is ~20-40 kB lower with HA up (~99 kB vs ~119-139 kB).
+      **Next step needs a backtrace, and that needs hardware access** —
+      core dump is `ENABLE_TO_NONE` and there is no coredump partition;
+      adding one changes the partition table, which cannot be delivered by OTA.
+
 ## Found 2026-09-22, not yet fixed
 - [x] ~~**No JSON emitter checks its `snprintf` return.**~~ **FIXED 0.78.4 /
       FSD v3.11** — and it was worse than "malformed JSON": eight sites passed

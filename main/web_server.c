@@ -4684,19 +4684,11 @@ static esp_err_t h_ha_status(httpd_req_t *req)
     json_escape(err, sizeof(err), ha_last_error());
     int n = snprintf(buf, sizeof(buf),
              "{\"enabled\":%s,\"connected\":%s,\"published\":%u,\"error\":\"%s\","
-             "\"speciesCount\":%d,\"species\":[",
+             "\"visits\":%lu,\"falsePos\":%lu}",
              ha_enabled() ? "true" : "false",
              ha_connected() ? "true" : "false",
-             ha_publish_count(), err, ha_species_count());
-    /* Same clamped-append discipline as ha.c's jcat(): an unclamped
-     * `sizeof(buf) - n` underflows once n passes the buffer and the next
-     * append writes past the end (FSD v3.11). */
-    for (int i = 0; i < ha_species_count() && n > 0 && n < (int) sizeof(buf); i++)
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n,
-                      "%s{\"k\":\"%s\",\"n\":%lu}", i ? "," : "",
-                      ha_species_slug(i), (unsigned long) ha_species_n(i));
-    if (n > 0 && n < (int) sizeof(buf))
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "]}");
+             ha_publish_count(), err,
+             (unsigned long) ha_visits_total(), (unsigned long) ha_false_pos());
     json_fit(__func__, n, sizeof(buf));   /* log if it clipped; sendstr is safe */
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
