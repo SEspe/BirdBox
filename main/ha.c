@@ -33,6 +33,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -178,6 +179,23 @@ static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
  * and species totals do not move faster than that anyway. */
 #define HA_SPECIES_MAX      16    /* entities; the feeder shows ~6 in practice */
 #define HA_SPECIES_REFRESH_MIN 15 /* minutes between visit-log re-reads        */
+/* Only species seen within this window get an entity. The visit log is
+ * all-time — nearly two months on the test unit — and publishing every species
+ * ever recorded produces a long tail of one-off sightings sitting at n=1
+ * forever (Konglebit, Grankorsnebb, Pilfink…). A recency window tracks what is
+ * actually AT the feeder now, which is what a "species traffic" trend is for.
+ *
+ * COUNTS STAY ALL-TIME even though the entity set is windowed. A windowed
+ * count would fall as old sightings age out, and a total_increasing sensor
+ * that decreases is read by HA as a counter reset — it would corrupt exactly
+ * the daily-delta statistics this whole feature exists to produce. */
+#define HA_SPECIES_RECENT_DAYS 30
+/* ...and it must have been seen more than once. A single sighting is as likely
+ * to be a misclassification as a real visitor — the online classifier returns
+ * a best guess, and one-offs like Konglebit or Grankorsnebb at n=1 are exactly
+ * the shape a wrong answer takes. Two independent visits is weak evidence, but
+ * it is evidence; one is not. Both tests must pass. */
+#define HA_SPECIES_MIN_VISITS   2
 
 static struct {
     char     slug[28];            /* MQTT/uniq_id-safe key, from the binomial  */
@@ -208,6 +226,42 @@ static void slugify(const char *in, char *out, size_t n)
 
 static void publish_species_discovery(int i);
 
+/* Is this species' last sighting inside the recency window? ISO-8601 sorts
+ * lexically, so a string compare against a cutoff date is enough.
+ *
+ * Guarded against the pre-SNTP ~1970 clock (FSD §3.4): before the first sync
+ * every real timestamp looks decades in the FUTURE relative to "now", the
+ * cutoff is nonsense, and a naive compare would age out every species at once
+ * and tombstone the lot. Keep everything until the clock is trustworthy. */
+static bool species_recent(const char *last_iso)
+{
+    if (!last_iso[0]) return false;
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    if (tm_now.tm_year + 1900 < 2020) return true;      /* clock not yet real */
+    time_t cut = now - (time_t) HA_SPECIES_RECENT_DAYS * 86400;
+    struct tm tm_cut;
+    localtime_r(&cut, &tm_cut);
+    char cutoff[11];
+    strftime(cutoff, sizeof(cutoff), "%Y-%m-%d", &tm_cut);
+    return strncmp(last_iso, cutoff, 10) >= 0;
+}
+
+/* Remove an entity from Home Assistant: an EMPTY RETAINED payload to its
+ * discovery topic. Deleting it in the HA UI does not stick — the retained
+ * config is replayed by the broker and HA recreates the entity on the next
+ * reconnect. Only a tombstone actually forgets it. */
+static void tombstone_species(const char *slug)
+{
+    char topic[128];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/birdbox_%s/sp_%s/config",
+             s_id, slug);
+    esp_mqtt_client_publish(s_client, topic, "", 0, 1, 1);
+    ESP_LOGI(TAG, "removed species entity sp_%s (no sighting in %d days)",
+             slug, HA_SPECIES_RECENT_DAYS);
+}
+
 /* Re-read the visit log and refresh the species table. Announces any species
  * seen for the first time. */
 static void species_refresh(void)
@@ -216,7 +270,29 @@ static void species_refresh(void)
     if (!st) { ESP_LOGW(TAG, "species refresh: no memory"); return; }
     if (stats_collect(st) == ESP_OK) {
         s_false_pos = st->false_pos;
-        for (int r = 0; r < st->sp_count && r < HA_SPECIES_MAX; r++) {
+        bool still[HA_SPECIES_MAX] = {0};   /* mark-and-sweep */
+        for (int r = 0; r < st->sp_count; r++) {
+            /* Rows that fail the filters are TOMBSTONED, not merely skipped.
+             * Skipping is not enough: after a reboot the in-memory table starts
+             * empty, so the sweep below can only remove what this boot added —
+             * anything announced by an earlier boot (or an earlier, looser
+             * filter) keeps its retained discovery config on the broker and
+             * goes on showing a stale value in HA forever. The box only ever
+             * announces species that appear in this log, so the log is a
+             * superset of everything it could have created: tombstoning every
+             * non-qualifying row here cleans up regardless of which firmware
+             * or filter created it. Empty retained publishes are idempotent,
+             * so repeating them costs nothing. */
+            if (st->sp_n[r] < HA_SPECIES_MIN_VISITS ||
+                !species_recent(st->sp_last[r])) {
+                const char *k = st->sp_latin[r][0] ? st->sp_latin[r] : st->sp[r];
+                char dead[28];
+                slugify(k, dead, sizeof(dead));
+                int e = 0;
+                while (e < s_sp_count && strcmp(s_sp[e].slug, dead) != 0) e++;
+                if (e == s_sp_count && s_connected) tombstone_species(dead);
+                continue;
+            }
             /* Key on the binomial where the row has one — a merged row can
              * span several raw common names (v2.70), and the binomial is the
              * species' real identity. */
@@ -226,8 +302,10 @@ static void species_refresh(void)
 
             int i = 0;
             while (i < s_sp_count && strcmp(s_sp[i].slug, slug) != 0) i++;
+            if (i < s_sp_count) still[i] = true;
             if (i == s_sp_count) {
                 if (s_sp_count >= HA_SPECIES_MAX) continue;   /* table full */
+                still[i] = true;
                 strlcpy(s_sp[i].slug, slug, sizeof(s_sp[i].slug));
                 s_sp[i].announced = false;
                 s_sp_count++;
@@ -236,6 +314,14 @@ static void species_refresh(void)
                              s_sp[i].name, sizeof(s_sp[i].name));
             s_sp[i].n = st->sp_n[r];
             if (!s_sp[i].announced && s_connected) publish_species_discovery(i);
+        }
+        /* Sweep: anything that fell out of the window is removed from HA
+         * rather than left publishing nothing and reading "unknown" forever. */
+        for (int i = s_sp_count - 1; i >= 0; i--) {
+            if (still[i]) continue;
+            if (s_sp[i].announced && s_connected) tombstone_species(s_sp[i].slug);
+            for (int k = i; k < s_sp_count - 1; k++) s_sp[k] = s_sp[k + 1];
+            s_sp_count--;
         }
     }
     free(st);
@@ -373,7 +459,7 @@ static void publish_state(void)
 
     /* Grew with the four night-sleep fields (v3.07) — a truncated state message
      * is silently invalid JSON and every entity reading it goes unknown. */
-    char buf[1600];   /* + per-species counters (v3.14) */
+    char buf[2048];   /* base ~700 B + up to 24 species x ~40 B (v3.14) */
     int n = snprintf(buf, sizeof(buf),
         "{\"rssi\":%d,\"heap\":%lu,\"heap_int\":%lu,\"heap_int_big\":%lu,"
         "\"psram\":%lu,\"uptime\":%lld,\"sd_free\":%llu,\"sd_used\":%u,"
@@ -416,16 +502,19 @@ static void publish_state(void)
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */
     if (t > -100.0f) n = jcat(buf, sizeof(buf), n, ",\"temp\":%.1f", t);
-    n = jcat(buf, sizeof(buf), n, "}");
 
-    /* Per-species visit counts and the confirmed false-positive total. Appended
-     * with jcat so a long species list can never run past the buffer; if it
-     * does, the truncation check below catches it and the message is dropped
-     * rather than published malformed. */
+    /* Per-species visit counts and the confirmed false-positive total.
+     * MUST come before the closing brace. Appended after it they are trailing
+     * content outside the JSON object: HA parses the object happily and simply
+     * never sees them, so every species entity reads "unknown" while all the
+     * older ones show values. That asymmetry is the tell — a genuinely
+     * malformed document would take them ALL to unknown at once. */
     n = jcat(buf, sizeof(buf), n, ",\"false_pos\":%lu", (unsigned long) s_false_pos);
     for (int i = 0; i < s_sp_count; i++)
         n = jcat(buf, sizeof(buf), n, ",\"sp_%s\":%lu",
                  s_sp[i].slug, (unsigned long) s_sp[i].n);
+
+    n = jcat(buf, sizeof(buf), n, "}");
 
     /* One malformed state message takes EVERY entity to "unknown" at once,
      * because they all read their value out of this single document. */
@@ -435,6 +524,7 @@ static void publish_state(void)
                  (unsigned) sizeof(buf), (unsigned) ENTITY_COUNT);
         return;
     }
+    if (!s_client || s_stop_req) return;   /* client may be going away */
     if (esp_mqtt_client_publish(s_client, s_topic_state, buf, 0, 0, 0) >= 0) s_pubs++;
 }
 
@@ -489,8 +579,20 @@ static void ha_task(void *arg)
         if (s_stop_req) break;
         /* Slow, SD-bound: re-read the visit log on its own cadence, never with
          * every state message. Also picks up Gallery relabels, which a live
-         * counter would miss entirely. */
-        if (s_connected && esp_timer_get_time() >= s_sp_next_us) species_refresh();
+         * counter would miss entirely.
+         *
+         * NEVER while an OTA is in flight. This reads the SD card and allocates
+         * ~2.6 kB while the OTA is writing flash, and internal DRAM is the
+         * scarce pool on this board — the two together panicked a box mid-
+         * upload. The same reasoning already keeps the WiFi scan away from an
+         * OTA. Deferring costs at most one refresh interval. */
+        if (s_connected && !s_stop_req && !web_server_ota_active() &&
+            esp_timer_get_time() >= s_sp_next_us) species_refresh();
+        /* Re-check AFTER the refresh: it reads the SD card and can take a
+         * couple of seconds, which is long enough for ha_stop() to have asked
+         * us to quit and given up waiting. Publishing into a client that is
+         * being destroyed is a use-after-free. */
+        if (s_stop_req) break;
         if (s_client && s_connected) publish_state();
     }
     /* Exit at a loop boundary and delete OURSELVES. ha_stop() used to call
@@ -510,10 +612,18 @@ static void ha_stop(void)
      * below is only ever destroyed with no publish in flight. */
     if (s_task) {
         s_stop_req = true;
-        for (int i = 0; i < 60 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(50));
-        if (s_task) ESP_LOGW(TAG, "publish task did not exit in 3 s — "
-                                  "destroying the client anyway");
+        /* Wait long enough to cover a species refresh in progress. That reads
+         * the whole visit log from SD and can take a couple of seconds; the
+         * original 3 s was not enough margin, and giving up early meant
+         * destroying the MQTT client under a task still using it — a
+         * use-after-free that panicked the box on every settings save once the
+         * refresh existed (it is ha_apply() that brings us here). */
+        for (int i = 0; i < 200 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(50));
+        if (s_task) ESP_LOGE(TAG, "publish task did not exit in 10 s — "
+                                  "leaving the client alone rather than "
+                                  "destroying it under a live task");
         s_stop_req = false;
+        if (s_task) return;          /* refuse to free memory still in use */
     }
     if (s_client) {
         esp_mqtt_client_stop(s_client);
@@ -589,6 +699,10 @@ void ha_apply(void)
     s_err[0] = '\0';
     ha_start();
 }
+
+int         ha_species_count(void)      { return s_sp_count; }
+const char *ha_species_slug(int i)      { return (i >= 0 && i < s_sp_count) ? s_sp[i].slug : ""; }
+uint32_t    ha_species_n(int i)         { return (i >= 0 && i < s_sp_count) ? s_sp[i].n : 0; }
 
 bool        ha_enabled(void)       { return g_settings.ha_enabled && g_settings.ha_host[0]; }
 bool        ha_connected(void)     { return s_connected; }

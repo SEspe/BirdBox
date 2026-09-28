@@ -4680,13 +4680,24 @@ static esp_err_t h_night(httpd_req_t *req)
 
 static esp_err_t h_ha_status(httpd_req_t *req)
 {
-    char buf[192], err[80];
+    char buf[640], err[80];
     json_escape(err, sizeof(err), ha_last_error());
-    snprintf(buf, sizeof(buf),
-             "{\"enabled\":%s,\"connected\":%s,\"published\":%u,\"error\":\"%s\"}",
+    int n = snprintf(buf, sizeof(buf),
+             "{\"enabled\":%s,\"connected\":%s,\"published\":%u,\"error\":\"%s\","
+             "\"speciesCount\":%d,\"species\":[",
              ha_enabled() ? "true" : "false",
              ha_connected() ? "true" : "false",
-             ha_publish_count(), err);
+             ha_publish_count(), err, ha_species_count());
+    /* Same clamped-append discipline as ha.c's jcat(): an unclamped
+     * `sizeof(buf) - n` underflows once n passes the buffer and the next
+     * append writes past the end (FSD v3.11). */
+    for (int i = 0; i < ha_species_count() && n > 0 && n < (int) sizeof(buf); i++)
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n,
+                      "%s{\"k\":\"%s\",\"n\":%lu}", i ? "," : "",
+                      ha_species_slug(i), (unsigned long) ha_species_n(i));
+    if (n > 0 && n < (int) sizeof(buf))
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "]}");
+    json_fit(__func__, n, sizeof(buf));   /* log if it clipped; sendstr is safe */
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -5115,6 +5126,9 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
  * bootloader's rollback (sdkconfig's CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE +
  * main.c's esp_ota_mark_app_valid_cancel_rollback()): if this new image
  * never reaches that call, the next boot reverts to the current slot. */
+/* Set for the duration of a POST /ota/upload. See web_server_ota_active(). */
+static volatile bool s_upload_active = false;
+
 static esp_err_t h_ota_upload(httpd_req_t *req)
 {
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
@@ -5128,7 +5142,10 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     }
 
     esp_ota_handle_t ota = 0;
+    s_upload_active = true;          /* cleared on every failure path below;
+                                        the success path ends in esp_restart */
     if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
+        s_upload_active = false;
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
         return ESP_OK;
     }
@@ -5150,12 +5167,14 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     }
 
     if (!ok || esp_ota_end(ota) != ESP_OK) {
+        s_upload_active = false;
         esp_ota_abort(ota);
         ESP_LOGE(TAG, "OTA upload failed");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA failed");
         return ESP_OK;
     }
     if (esp_ota_set_boot_partition(part) != ESP_OK) {
+        s_upload_active = false;
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set boot partition failed");
         return ESP_OK;
     }
@@ -5190,7 +5209,14 @@ static volatile otau_state_t s_otau_state = OTAU_IDLE;
  * both into one veto meant a single forgotten browser tab silently disabled
  * night sleep for good, which is how this was found. */
 bool web_server_streaming(void)  { return s_stream_clients > 0; }
-bool web_server_ota_active(void) { return s_otau_state == OTAU_RUNNING; }
+/* True for BOTH ways firmware arrives. s_otau_state tracks only the from-URL
+ * download; a plain POST /ota/upload never touched it, so everything that asks
+ * "is an OTA in flight?" answered NO during the most common flash path. Night
+ * sleep used this to avoid sleeping mid-write, and the WiFi scan and the
+ * visit-log read used it to stay off a busy box — none of those guards fired
+ * for an upload. A box could have powered its camera down, or entered DEEP
+ * sleep, part-way through a firmware write. */
+bool web_server_ota_active(void) { return s_otau_state == OTAU_RUNNING || s_upload_active; }
 static volatile int s_otau_read = 0, s_otau_total = 0;
 static char s_otau_msg[96] = "";
 static char s_otau_url[300] = "";

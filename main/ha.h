@@ -34,3 +34,12 @@ bool        ha_enabled(void);
 bool        ha_connected(void);
 const char *ha_last_error(void);   /* "" until something fails */
 unsigned    ha_publish_count(void);
+
+/* Species entities the box is currently publishing — count, and the slug list.
+ * Added because "why is a stale species still in Home Assistant" could not be
+ * answered from outside: the box's view and HA's view are separate, and
+ * without this there is no way to tell a filter that is not filtering from a
+ * tombstone that is not landing. */
+int         ha_species_count(void);
+const char *ha_species_slug(int i);
+uint32_t    ha_species_n(int i);
