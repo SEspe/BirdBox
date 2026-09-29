@@ -16,9 +16,11 @@ this file is the "where we stopped and what is still unproven" layer.
 | 0.89.0 | v3.22 | Page reports when it is older than the firmware (banner) |
 | 0.89.1 | — | Fix: visit thumbnails never loaded (hidden container + `loading=lazy`) |
 | 0.89.2 | v3.23 | `/api/event` decodes its parameter; diagnosis post-mortem recorded |
+| 0.90.0 | v3.24 | **The detector reports itself** — live per-frame telemetry |
 
 Commits: `b771904` `72817e5` `eb4cb34` `68b99ef` `00bb28d` `3752dcf` `c12aaf7`
-`0c7c66e` `b199bd9` `292af63` `1e25cfe`. master == origin/master.
+`0c7c66e` `b199bd9` `292af63` `1e25cfe` `511e90e` `2c198ab` `63a24a6`.
+master == origin/master.
 **Released: v0.89.2** on GitHub (asset `BirdBox_esp32s3_v0.89.2.bin`,
 verified byte-identical after download). Previous release was v0.79.0.
 
@@ -26,7 +28,7 @@ verified byte-identical after download). Previous release was v0.79.0.
 
 | | `.205` test | `.240` production |
 |---|---|---|
-| Firmware | **0.89.2** | **0.80.0** (deliberately untouched) |
+| Firmware | **0.90.0** | **0.80.0** (deliberately untouched) |
 | Camera | OV5640 | OV2640 @ HD |
 | Home Assistant | enabled | not configured |
 | Uptime at write | 227 s (**just panicked**, see below) | 293 055 s (3.4 days), 617 events |
@@ -131,12 +133,68 @@ releases fixed real defects the user was never executing.
 Related: parsing the served page proves **syntax, not behaviour** — esprima
 happily accepted `getAttribute('href ')`.
 
+## Evening: the resolution episode, and the instrument it forced
+
+The user raised `.205` to **QSXGA 2560x1920**, saw a visit, and got no
+detection. Investigation, in order:
+
+- Ruled out the detect buffer (`DETECT_MAX` is 320x240, sized exactly for
+  QSXGA's 1/8 decode), the decode itself (`/api/night` showed live
+  `contrast:51 peak:252`, from the same `decode_gray()`), the camera
+  (`POST /api/capture` returned a 581 KB frame, 6 MB PSRAM free), the zone
+  (59 of 64 cells) and sensitivity (88 -> a cell needs 2%).
+- **Then got it wrong twice.** First read `/api/motion` `cells:0 rej:0` as
+  "the detector is producing nothing" — they are **last-trigger snapshots**
+  (motion.c:498) and prove only that nothing fired. Then offered
+  `POST /api/capture` timings (~2.6-3.2 s at QSXGA) as evidence the loop had
+  slowed — but HD measures ~2.57 s with a 5x smaller JPEG, so that number is
+  SD write and HTTP, not frame cost.
+- Set resolution back to **HD (index 3)**. The settings save panicked the box
+  (HA enabled), but the setting persisted and a resolution change needs the
+  reboot anyway.
+- A 30-minute watch at HD saw no triggers either — **but the window was dusk**,
+  so zero was the expected result either way. Inconclusive, not negative.
+
+**0.90.0 then made it answerable, and paid for itself in under a minute.** On
+the first frame after boot quarantine cleared:
+
+```
+frames:1 loopMs:400 livePct:3 liveClust:3 thr:2 liveCells:17  -> n:1 TRIGGERED
+```
+
+So **detection at HD is healthy**, and the real detect cadence is **~400 ms**
+against the 250 ms the loop asks for. The silence was dusk: `contrast` fell
+51 -> 32 -> 0, `dark:true`, `state:"sleeping"`.
+
+**Released v0.89.2** on GitHub during the session (asset verified byte-identical
+after download). 0.90.0 is committed but not released.
+
+## The HA panic: four data points today
+
+| when | trigger |
+|---|---|
+| 0.84.0 flash | `haen` 0->1 after OTA |
+| deliberate trial at 0.85.0 | `haen` 0->1 — **clean** |
+| ~18:17 | **spontaneous**, ~3h45m into an 0.89.2 boot, nothing in flight |
+| resolution change | settings save with HA enabled |
+
+So it is not specific to the flash write, and the runtime enable is
+**intermittent** (1 panic / 1 clean) — a worse reproducer than the OTA path
+(6/6), not a better one. `guardReboots:0` throughout, so never the heap guard.
+**Cheapest next measurement, no backtrace needed:** watch uptime/resetReason on
+`.205` for a day with `haen=1`, then a day with `haen=0`. `.240` — HA never
+configured, 3.4 days uptime, 617 events — is already the control.
+
 ## Suggested next steps
 
 1. Read a day's `err:<reason>` tags; confirm or kill the 401-storm theory. This
    unblocks the framing work.
 2. Then, and only then, discuss framing: the misses are edge-clipped birds, and
    the detection zone is the user's call (never changed uninvited).
-3. Re-check the queue peak at dawn.
+3. Re-check the queue peak at dawn, and confirm detection recovers in daylight
+   (`/api/motion` `n` and `frames` should both climb; night sleep wakes it).
+4. If a higher resolution is wanted again, it is now a one-request question:
+   raise it, read `loopMs` and `liveClust` vs `thr`, and see the cost at once
+   instead of waiting a day.
 4. Consider updating `.240` (still 0.80.0) from the new release when you are
    ready — remember to disable HA first.

@@ -63,6 +63,11 @@ gets an entry there.
   step, Escape closes). Reachable from the live view’s last-identified badge,
   a Gallery tile, or a Stats species image. The frame list comes from the visit
   log on the device, so every view agrees on which frames make up one visit.
+- **The detector reports itself** — every compared frame publishes how many
+  frames have been processed, the real gap between them, how much of the
+  detection zone changed, the largest moving cluster and the threshold it has
+  to beat. So "is detection working, or are there simply no birds?" is a
+  question the Debug tab answers, rather than something to infer from silence.
 - **Classification backlog is visible** — identification is an online round trip
   of roughly half a minute per visit, so a busy feeder queues. The live view
   shows a queue badge while work is waiting, and the device reports the queue

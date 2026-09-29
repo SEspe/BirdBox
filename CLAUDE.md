@@ -62,9 +62,16 @@ $env:IDF_PATH = "D:\esp\v6.0.1\esp-idf"
 
 ## Flash & OTA
 
-Reference unit is currently at **`192.168.1.111`** (it has moved before — it
-briefly sat on `192.168.10.236` — always confirm with `GET /api/status` first, which reports
-`version`/`ip`/`heap`/`sdPresent`/`clockSrc`).
+Two units, both DHCP and both have moved before — **always confirm with**
+`GET /api/status` first (reports `version`/`ip`/`heap`/`sdPresent`/`clockSrc`);
+try `http://birdbox.local/`, else sweep the /24.
+
+| | address | role |
+|---|---|---|
+| test | `192.168.10.205` | OV5640. Where everything is tried first. |
+| production | `192.168.10.240` | OV2640 @ HD. **Do not touch without being asked** — it is the untouched control for any A/B. |
+
+(Earlier addresses, for grep: `192.168.1.111`, `192.168.10.236`.)
 
 **OTA (normal path, no cable):** `POST /ota/upload`, raw octet-stream body =
 `build/BirdBox.bin`. Dual OTA partitions with automatic rollback if the new
@@ -76,6 +83,21 @@ curl -s -X POST -H "Content-Type: application/octet-stream" \
   --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload
 # 200 "OK" -> device reboots; poll /api/status until version flips.
 ```
+
+**Two rules around every OTA, both learned the hard way:**
+
+- **Set `haen=0` before `POST /ota/upload`, then `haen=1` after.** The upload
+  panics the box while Home Assistant is enabled (6/6 with it on, 2/2 clean with
+  it off), sometimes mid-upload. The panic also fires on a settings save and
+  spontaneously at runtime with HA up, so it is not specific to the flash write.
+- **After flashing, open `http://<ip>/?v=<n>` — not a plain reload.** The whole
+  UI is one page carrying its own script, so a cached copy runs the OLD
+  release's JavaScript while `/api/status` truthfully reports the new version: a
+  new control silently does nothing and every device-side check passes. The page
+  sends `no-cache` and shows a banner on a version mismatch, but **a page cached
+  before that banner existed cannot warn you** — so a changed query string,
+  which is a guaranteed cache miss, is the only reliable way in. This cost four
+  flashed releases once; do not repeat it.
 
 **Serial flash (first time / bricked):** from `build/`, enumerate the port
 first (`[System.IO.Ports.SerialPort]::GetPortNames()` — it changes across
@@ -97,6 +119,24 @@ ship tests). Verification is empirical, on real hardware:
    exercise it in the web UI; `POST /api/capture` proves the camera path.
 4. **For any web-UI change, grep the *served* page** (`curl http://<ip>/`) for
    the tokens you added — the compiler cannot verify the inline JS (see below).
+
+**Know what each check proves — several here proved less than they appeared to:**
+
+- **Parsing the served page proves SYNTAX, not behaviour.** An esprima pass
+  happily accepted `getAttribute('href ')` — one stray space that made a click a
+  no-op. For a behavioural change, also assert the exact emitted token and
+  exercise the endpoint the click calls.
+- **A `curl` test with raw slashes does not exercise the browser path**, which
+  sends `encodeURIComponent` output. Pass `%2F` explicitly. Beware Git Bash
+  mangling it: `curl --data-urlencode "f=/captures/…"` became
+  `C%3a%2fProgram+Files%2fGit%2f…` (MSYS path conversion) — a *false failure*
+  that was believed and acted on.
+- **`POST /api/capture` timing is NOT a per-frame cost proxy.** HD measures
+  ~2.57 s against QSXGA's ~2.6–3.2 s despite a 5x smaller JPEG, because the SD
+  write and HTTP dominate. Use `/api/motion` `loopMs` for the real detect cadence.
+- **Match the test window to the behaviour.** Half an hour at dusk cannot test a
+  daylight behaviour: zero triggers is the expected result either way. Check
+  `/api/night` `state`/`dark`/`contrast` before reading silence as a fault.
 
 ## Load-bearing code patterns & gotchas
 
@@ -120,6 +160,33 @@ ship tests). Verification is empirical, on real hardware:
 - **Guard every "today"/date comparison against the pre-SNTP ~1970 clock.**
   Right after boot `clockSrc` is not yet `ntp`; a naive date compare
   misfiles/misreads. There is a boot detection quarantine for exactly this.
+
+- **Counters that publish only on success answer the wrong question.** Three
+  separate blind spots came from this, all fixed by making the quiet path
+  visible — copy the pattern rather than re-learning it:
+  - `/api/motion` `cells`/`rej`/`c` are **last-trigger snapshots**, written
+    after a trigger fires. They read zero whether the detector sees nothing,
+    rejects everything, or is not running at all. For "is detection working?"
+    use the live fields: `frames`, `loopMs` (real cadence — ~400 ms at HD vs the
+    250 ms the loop asks for), `livePct`, `liveClust`/`liveCells` against `thr`,
+    `gstep`, `decErr`.
+  - The visit log stored a bare `err` for five distinct iNat failures; it now
+    stores `err:<reason>` (`401`, `net`, `429`, `tmo`, …) from
+    `inat_last_code()`. Keep the short tag separate from the human-readable
+    message — the message is free text for the Debug card and changes wording.
+  - A full classify queue dropped an event with only an `ESP_LOGW`; `clsQDrops`
+    counts it, and `clsQPeak` exists because a 60 s poll cannot see a burst that
+    fills and drains between samples.
+
+- **`httpd_query_key_value()` does NOT percent-decode.** Call `url_decode()` on
+  every query parameter, as every handler here does — a handler that forgets it
+  works perfectly under hand-typed curl and fails on every real browser request.
+
+- **Resolution and detection share one stream.** Raising resolution slows the
+  grab+decode the detect loop depends on, so it samples less often and short
+  visits fall between samples; the field of view changes with the aspect ratio
+  too. **HD is the locked default** (§5) for exactly this reason. Read
+  `/api/motion` `loopMs` after any resolution change instead of guessing.
 
 - **Classification never drops work.** Prefer queue/wait/degrade over emitting
   "unclassified".

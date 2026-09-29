@@ -4,7 +4,7 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
-## Added 2026-09-29 (0.84.0-0.89.2)
+## Added 2026-09-29 (0.84.0-0.90.0)
 - [ ] **`err:<reason>` has never fired in the field.** Shipped in 0.84.0; no iNat
       call has failed since. Until one does the tag is unwitnessed and the
       hour-08 error storm stays unexplained. This gates the framing work below.
@@ -19,6 +19,17 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       page that never re-fetches; the remedy is the cache-busting URL
       `http://<ip>/?v=2`. Worth considering: have the OTA success page link to
       `/?v=<version>` so the post-update visit is always a cache miss.
+- [x] ~~**No live detector telemetry**~~ — **DONE 0.90.0 / FSD v3.24.**
+      `/api/motion` now publishes `frames`, `loopMs`, `livePct`, `liveClust`,
+      `liveCells`, `thr`, `gstep`, `decErr` on EVERY compared frame. Measured
+      cadence at HD is **~400 ms** vs the 250 ms the loop requests.
+- [ ] **Confirm detection in daylight after the QSXGA episode.** It fired once
+      immediately at HD (17-cell cluster, 3% vs 2%), but the only sustained
+      window was dusk. Check `/api/motion` `n` and `frames` mid-morning.
+- [ ] **Characterise resolution vs detect cadence properly, now that it is
+      measurable.** Read `loopMs` at HD / SXGA / UXGA / QSXGA and record the
+      numbers in the FSD, replacing the inference that "larger is slower" with
+      actual figures. QSXGA produced zero detections; HD is ~400 ms.
 - [ ] **Re-check the queue peak at dawn.** Measured 4 of 16 (~148 s behind, zero
       drops) at midday; dawn is the busier window and is what would actually
       exercise the 16-deep buffer and the 15 s enqueue wait.
