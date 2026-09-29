@@ -605,12 +605,24 @@ static void classify_task(void *arg)
 
         char line[720];   /* roomy: + the per-frame column (up to ~10 frames) */
         if (have_best) {
-            strlcpy(s_last_species, best.species, sizeof(s_last_species));
-            strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
-            s_last_conf = best.confidence_pct;
-            if (best.latin[0])
+            /* "Last identified" is the last REAL species, and its four parts are
+             * ONE record: name, binomial, confidence and the frame they came
+             * from. They must update together or not at all. They did not: the
+             * name and confidence were written for ANY verdict while the file
+             * was guarded by best.latin[0], so a "no bird" (or "Unidentified
+             * bird") event renamed the record but left the frame behind — the
+             * live view's LAST ID badge then read "no bird" while its link
+             * opened the previous visit's perfectly good Kjottmeis (v3.21).
+             * A non-species verdict is still logged and still drives the CURRENT
+             * badge through s_last_event_ided; it just no longer claims to BE
+             * the last identification. */
+            if (best.latin[0]) {
+                strlcpy(s_last_species, best.species, sizeof(s_last_species));
+                strlcpy(s_last_latin, best.latin, sizeof(s_last_latin));
+                s_last_conf = best.confidence_pct;
                 strlcpy(s_last_file, best_file[0] ? best_file : job.first_path,
                         sizeof(s_last_file));
+            }
             ESP_LOGI(TAG, "event @%s: %s (%u%%, top1 '%s', %d/%d frame(s), %ld ms)",
                      job.ts, best.species, best.confidence_pct, best.top_label[0],
                      scored, job.path_count, (long) best.duration_ms);

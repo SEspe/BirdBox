@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.20
+**Version:** 3.21
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -209,6 +209,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
 
 - Every visit event is appended to a visit log on SD (`/log/visits.csv`, append-only, one file per month): timestamp, species, confidence, frame count, file paths, user correction.
 - Each row also carries a **per-frame diagnostic column** — one entry per frame the online classifier scored: `<binomial>=<pct>` for an accepted species, `<binomial>?=<pct>` when the frame was scored but the species was not accepted, or `err:<reason>` when the call itself failed (`net`, `tmo`, `up`, `norep`, `401`, `http`, `429`, `cooldn`, `jpeg`, `mem`, `init`, `notok`). The reason is recorded, not just the fact of failure, because it is what makes an unclassified event self-explaining afterwards: an event the box never got an answer for and one the classifier genuinely was unsure about look identical in the log otherwise, and the two call for opposite remedies — fix the transport, or move the threshold.
+- **“Last identified” is one record.** The species name, its binomial, the confidence and the frame they came from are updated together and only when a real species was identified. A “no bird” or “unidentified” verdict is logged and drives the live view’s *current* state, but never becomes the last identification — so the last-ID display can never name one thing while linking to another.
 - **Visit viewer.** A motion event is a burst of frames, so clicking a capture opens the whole visit rather than one still: the chosen frame large, the visit’s other frames below it as clickable thumbnails that swap into the large view (arrow keys navigate, Escape closes). Reachable from the live view’s last-identified badge, a Gallery tile, and a Stats species image. The frame list is derived once on the device from the visit log — an event runs from its own logged first frame up to the next one — so every view agrees on which frames make up a visit. If the request fails the click falls back to opening the raw image, and the underlying link still works without JavaScript.
 - **Gallery tab:** browse captures by day; each event's first frame is badged with its species + confidence (joined from the visit log by frame path, localized to the display language); view full-size frames, delete a single capture, multi-select + delete, delete a whole day (photos only), or **wipe a day** (photos + that day's statistics in one action). Favorites (pruning-exempt) and in-gallery label correction remain deferred.
 - **Statistics tab:**
