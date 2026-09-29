@@ -2010,14 +2010,22 @@ ROT_OPTIONS
 "function evOpen(p){if(!p)return;"
 "fetch('/api/event?f='+encodeURIComponent(p)).then(r=>r.json()).then(function(j){"
 "if(!j||!j.files||!j.files.length){window.open(p,'_blank');return;}"
-"g_ev=j;var h='';"
+"g_ev=j;"
+/* Show the overlay BEFORE building the strip, and do NOT lazy-load the
+ * thumbnails (v3.23). Both halves of that were wrong: the thumbnails were
+ * written into a container still at display:none, and a lazy image inside a
+ * hidden element has no intersection to compute, so the browser is free to
+ * never load it. The result was a viewer that opened with its main frame and an
+ * empty thumbnail row. A visit is at most EV_MAX_FRAMES images and typically
+ * 5-18, and they are the entire point of this view, so they load eagerly. */
+"var o=$g('evov');if(o)o.classList.add('on');"
+"var h='';"
 "for(var k=0;k<j.files.length;k++)"
-"h+='<img class=evth loading=lazy onclick=evShow('+k+') src=/captures/'+j.date+'/'+j.files[k]+'>';"
+"h+='<img class=evth onclick=evShow('+k+') src=/captures/'+j.date+'/'+j.files[k]+'>';"
 "var s=$g('evstrip');if(s)s.innerHTML=h;"
 "var t=$g('evsp');"
 "if(t)t.textContent=(j.sp||'unclassified')+(j.pct?' '+j.pct+'%':'')+' - '+j.files.length+' frame'+(j.files.length===1?'':'s');"
 "var want=p.split('/').pop();var idx=j.files.indexOf(want);"
-"var o=$g('evov');if(o)o.classList.add('on');"
 "evShow(idx<0?0:idx);"
 "}).catch(function(){window.open(p,'_blank');});}"
 /* Own key handler: the species panel's is gated on #spop being visible, so the
