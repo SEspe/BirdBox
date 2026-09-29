@@ -2874,9 +2874,28 @@ static esp_err_t h_stream(httpd_req_t *req)
 }
 
 /* ── Handlers ───────────────────────────────────────────────────────────── */
+/* The UI is ONE page whose behaviour is the inline script inside it, and it
+ * shipped with NO cache headers at all - no Cache-Control, no ETag, no
+ * Last-Modified. With nothing to go on a browser applies heuristic caching, so
+ * after an OTA it can keep serving the OLD page: the firmware reports the new
+ * version in /api/status while the tab still runs the previous release's
+ * JavaScript. That is invisible from the device side and looks exactly like a
+ * broken feature - a new control does nothing, or an old behaviour persists -
+ * which is precisely how it was found (v3.20).
+ *
+ * no-cache (revalidate before reuse), NOT no-store (never keep a copy): the
+ * page is ~140 KB of flash with no per-request content, so a 304 on reload is
+ * the cheap outcome, and a box that briefly drops off WiFi can still render
+ * from cache instead of showing nothing. */
+static void no_cache(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, must-revalidate");
+}
+
 static esp_err_t h_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    no_cache(req);
     /* Portal mode: whatever the user opens lands on the setup page */
     httpd_resp_sendstr(req, wifi_in_portal_mode() ? WIFI_SETUP_HTML : INDEX_HTML);
     return ESP_OK;
@@ -2885,6 +2904,7 @@ static esp_err_t h_root(httpd_req_t *req)
 static esp_err_t h_wifi_setup(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    no_cache(req);
     httpd_resp_sendstr(req, WIFI_SETUP_HTML);
     return ESP_OK;
 }
