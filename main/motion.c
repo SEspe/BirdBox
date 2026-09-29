@@ -145,6 +145,26 @@ static volatile uint64_t s_trigger_cells = 0;   /* 8x8 mask of the last trigger'
 static volatile uint32_t s_reject_count  = 0;
 static volatile int      s_reject_cells  = 0;
 static volatile int      s_cluster_cells = 0;
+
+/* LIVE detector telemetry, updated on EVERY compared frame (v3.24).
+ *
+ * s_trigger_cells / s_cluster_cells above are published only AFTER motion
+ * fires, so while nothing is triggering they are last-trigger relics: they read
+ * zero whether the detector is seeing nothing, or seeing plenty and deciding it
+ * is not a bird, or not running at all. That blind spot is what made "detection
+ * stopped when the resolution went up" impossible to separate from "there were
+ * no birds" without sitting on a serial console. These fields answer it:
+ * s_frames proves the loop is alive and at what rate, s_live_pct/s_live_cluster
+ * show how much the scene is actually changing against the threshold it must
+ * beat, and s_decode_fail catches a decode that quietly returns -1. */
+static volatile uint32_t s_frames      = 0;   /* compared frames since boot    */
+static volatile uint32_t s_decode_fail = 0;   /* decode_gray() returned -1     */
+static volatile int32_t  s_loop_ms     = 0;   /* gap between the last two      */
+static volatile int      s_live_pct     = 0;  /* zone changed %, last frame    */
+static volatile int      s_live_cluster = 0;  /* dominant cluster %, last frame*/
+static volatile int      s_live_cells   = 0;  /* cells in that cluster         */
+static volatile int      s_live_thr     = 0;  /* % it had to beat              */
+static volatile bool     s_live_gstep   = false; /* suppressed by a light step */
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 /* Night sleep (FSD §14) pauses detection through its OWN flag rather than
  * s_detect_enabled. Two independent reasons to be paused must not clobber one
@@ -258,8 +278,17 @@ static void ambient_update(int avg)
 
 static bool detect_once(void)
 {
+    /* Sampling rate is a first-class symptom: the loop asks for DETECT_PERIOD_MS
+     * but a large frame costs far more than that to grab and decode, so the real
+     * cadence can fall to seconds and a short visit lands entirely between two
+     * samples. Measured here rather than inferred from frame size. */
+    static int64_t last_us = 0;
+    int64_t now_us = esp_timer_get_time();
+    if (last_us) s_loop_ms = (int32_t) ((now_us - last_us) / 1000);
+    last_us = now_us;
+
     int avg = decode_gray();
-    if (avg < 0) return false;
+    if (avg < 0) { s_decode_fail++; return false; }
     int px = s_px;
 
     /* Runs on every decoded frame regardless of motion/background state, so
@@ -467,6 +496,14 @@ static bool detect_once(void)
     if (global_step && cluster_pct >= area_thr)
         ESP_LOGI(TAG, "motion suppressed: global light step (frame-mean shift %d)", shift_fast);
 
+    /* Every compared frame, trigger or not — the whole point of these. */
+    s_frames++;
+    s_live_pct     = pct;
+    s_live_cluster = cluster_pct;
+    s_live_cells   = best_cnt > 0 ? best_cnt : 0;
+    s_live_thr     = area_thr;
+    s_live_gstep   = global_step;
+
     if (!motion) {
         /* Say so when the ONLY thing in frame was thrown out for being too
          * wide — throttled to once per 5 s so a long wind swath cannot flood
@@ -654,6 +691,15 @@ esp_err_t motion_start(void)
 bool     motion_active(void)        { return s_motion_active; }
 uint32_t motion_trigger_count(void) { return s_trigger_count; }
 uint64_t motion_trigger_cells(void) { return s_trigger_cells; }
+
+uint32_t motion_frames(void)        { return s_frames; }
+uint32_t motion_decode_fails(void)  { return s_decode_fail; }
+int32_t  motion_loop_ms(void)       { return s_loop_ms; }
+int      motion_live_pct(void)      { return s_live_pct; }
+int      motion_live_cluster(void)  { return s_live_cluster; }
+int      motion_live_cells(void)    { return s_live_cells; }
+int      motion_live_thr(void)      { return s_live_thr; }
+bool     motion_live_gstep(void)    { return s_live_gstep; }
 
 uint16_t motion_quarantine_remaining_s(void)
 {

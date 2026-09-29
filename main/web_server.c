@@ -2655,7 +2655,9 @@ ROT_OPTIONS
 "function fmtAge(s){if(s<0)return 'never';"
 "var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
 "return d?d+'d '+h+'h':h?h+'h '+m+'m':m?m+'m '+(s%60)+'s':s+'s';}"
-"function loadDebug(){fetch('/api/sysinfo').then(r=>r.json()).then(function(d){"
+"function loadDebug(){Promise.all([fetch('/api/sysinfo').then(r=>r.json()),"
+"fetch('/api/motion').then(r=>r.json()).catch(()=>null)])"
+".then(function(a){var d=a[0],m=a[1];"
 "$g('dSys').innerHTML="
 "drow('Free heap',Math.round(d.heap/1024)+' KB')+"
 "drow('Min free heap (low-water)',Math.round(d.heapMin/1024)+' KB, '+fmtAge(d.heapMinAgo)+' ago')+"
@@ -2669,6 +2671,9 @@ ROT_OPTIONS
 "drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'))+"
 "drow('HTTP sockets',(d.httpdSock==null||d.httpdSock<0?'n/a':d.httpdSock+' / '+d.httpdSockMax),"
 "(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'')"
+"+drow('Detector',(m==null?'n/a':(m.frames+' frames, '+m.loopMs+' ms/frame'+(m.decErr?', '+m.decErr+' decode errors':'')))"
+",(m&&m.decErr>0)?'bad':'')"
+"+drow('Last frame',(m==null?'n/a':(m.liveClust+'% cluster ('+m.liveCells+' cells) vs '+m.thr+'% needed, zone '+m.livePct+'%'+(m.gstep?', light step':'')+')')))"
 "+drow('Classification queue',(d.clsQ==null?'n/a':d.clsQ+' / '+d.clsQMax+' (peak '+d.clsQPeak+')'),"
 "(d.clsQ!=null&&d.clsQMax&&d.clsQ>=d.clsQMax-4)?'bad':'')"
 "+((d.clsQDrops>0)?drow('Queue drops',d.clsQDrops+' event(s) lost to a full queue','bad'):'')"
@@ -5128,15 +5133,22 @@ static esp_err_t h_motion(httpd_req_t *req)
     char cbuf[65];
     for (int c = 0; c < 64; c++) cbuf[c] = (cells >> c) & 1ULL ? '1' : '0';
     cbuf[64] = '\0';
-    char buf[224];   /* 64-char mask + the cluster/reject counters (v3.01) */
+    char buf[384];   /* 64-char mask + cluster/reject + live telemetry (v3.24) */
     snprintf(buf, sizeof(buf),
              "{\"n\":%lu,\"a\":%s,\"q\":%u,\"c\":\"%s\","
-             "\"cap\":%d,\"cells\":%d,\"rej\":%d,\"rejN\":%lu}",
+             "\"cap\":%d,\"cells\":%d,\"rej\":%d,\"rejN\":%lu,"
+             "\"frames\":%lu,\"loopMs\":%ld,\"decErr\":%lu,"
+             "\"livePct\":%d,\"liveClust\":%d,\"liveCells\":%d,"
+             "\"thr\":%d,\"gstep\":%s}",
              (unsigned long) motion_trigger_count(),
              motion_active() ? "true" : "false",
              (unsigned) motion_quarantine_remaining_s(), cbuf,
              motion_cluster_cap(), motion_cluster_cells(),
-             motion_reject_cells(), (unsigned long) motion_reject_count());
+             motion_reject_cells(), (unsigned long) motion_reject_count(),
+             (unsigned long) motion_frames(), (long) motion_loop_ms(),
+             (unsigned long) motion_decode_fails(),
+             motion_live_pct(), motion_live_cluster(), motion_live_cells(),
+             motion_live_thr(), motion_live_gstep() ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

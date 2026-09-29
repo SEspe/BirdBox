@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.23
+**Version:** 3.24
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -217,6 +217,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
   - species leaderboard (distinct species, visit counts, first/last seen),
   - activity-by-hour-of-day profile,
   - "new species" flag when a species appears for the first time.
+- **The detector reports itself.** Every compared frame publishes how many frames have been processed, the measured gap between them, how much of the zone changed, the dominant cluster’s share and cell count, the threshold it had to beat, whether a global light step suppressed it, and a count of failed decodes — in `/api/motion` and the Debug tab. The trigger-derived counters are last-trigger snapshots and read zero whether the detector is seeing nothing, rejecting everything, or not running, so they cannot answer “is detection working?”; these can, without attaching a serial console.
 - **Classification backlog is visible.** The event queue (16 deep) reports its live depth, its high-water mark since boot and a count of events dropped after the 15 s enqueue wait, in `/api/status`, `/api/sysinfo`, the Debug tab, Home Assistant, and as a badge on the live view that appears only while work is waiting. The peak is reported because a 60 s sample cannot see a burst that fills and drains between polls, and the drop count because an event discarded for want of a queue slot is work the box silently threw away — previously reaching nothing but the serial log.
 - **The interface reports when it is out of date.** The page carries the firmware build it was served from and compares it against the running device on every status poll; a mismatch raises a banner naming both versions with a Reload button. Because the whole interface is one page carrying its own script, a cached copy renders current data with old code — a new control simply does nothing while every device-side check passes — so the page says so rather than leaving it to be mistaken for a fault.
 - The UI page is served `Cache-Control: no-cache, must-revalidate`, so a browser revalidates it instead of reusing a stale copy. The whole interface is one page carrying its own script, so without this a browser can keep running a previous release’s JavaScript after an update — the device reports the new version while the tab behaves like the old one.

@@ -59,4 +59,20 @@ void motion_set_night_paused(bool paused);
  * holds it near 140 as the light fails, so an unusable dusk frame measured a
  * HIGHER mean than noon. Exposed so "dark" is explainable rather than magic. */
 int motion_ambient_contrast(void);
+
+/* Live detector telemetry (v3.24) — updated on EVERY compared frame, unlike
+ * motion_trigger_cells()/motion_cluster_cells(), which publish only after a
+ * trigger and therefore read zero whether the detector is seeing nothing or is
+ * not running at all. Use these to answer "is detection working?" without a
+ * serial console: frames + loop_ms prove the loop is alive and at what cadence,
+ * live_pct/live_cluster against live_thr show how close the scene is to firing,
+ * and decode_fails catches a silently failing decode. */
+uint32_t motion_frames(void);        /* compared frames since boot            */
+uint32_t motion_decode_fails(void);  /* decode_gray() failures since boot     */
+int32_t  motion_loop_ms(void);       /* ms between the last two compares      */
+int      motion_live_pct(void);      /* zone changed %, last frame            */
+int      motion_live_cluster(void);  /* dominant cluster %, last frame        */
+int      motion_live_cells(void);    /* cells in that cluster                 */
+int      motion_live_thr(void);      /* % the cluster must beat to trigger    */
+bool     motion_live_gstep(void);    /* last frame suppressed by a light step */
 int motion_ambient_peak(void);
