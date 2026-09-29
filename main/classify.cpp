@@ -93,6 +93,16 @@ typedef struct {
 } cls_job_t;
 static QueueHandle_t s_jobq = NULL;
 
+/* Queue depth is the one number that says whether a busy hour is keeping up.
+ * Depth alone is not enough: a 60 s HA poll cannot see a burst that fills and
+ * drains between samples, so the high-water mark since boot is kept too, and
+ * drops are COUNTED rather than only logged -- a queue-full drop used to be an
+ * ESP_LOGW to a console nobody reads, and the row it wrote was indistinguishable
+ * from any other unclassified event (v3.18). */
+#define CLS_QUEUE_LEN 16
+static volatile uint16_t s_q_peak  = 0;   /* deepest the queue has ever been    */
+static volatile uint32_t s_q_drops = 0;   /* events lost to a full queue        */
+
 /* ── Model / label loading ──────────────────────────────────────────────── */
 static uint8_t *load_file_psram(const char *path, size_t *out_len)
 {
@@ -954,7 +964,7 @@ esp_err_t classify_init(void)
      * writes its 'unclassified' row. 16 deep (~20 KB, the job carries every
      * frame); a busy visit backlogs a few minutes, fine since rows are stamped
      * with the event time. */
-    s_jobq = xQueueCreate(16, sizeof(cls_job_t));
+    s_jobq = xQueueCreate(CLS_QUEUE_LEN, sizeof(cls_job_t));
     /* 16 KB stack: an iNat/cloud job runs an mbedTLS handshake (~5 KB) plus, on
      * the best-of-crop path, a JPEG decode+re-encode. */
     if (!s_jobq ||
@@ -999,8 +1009,15 @@ bool classify_submit_event(const char (*paths)[96], const roi_t *rois,
      * frames are safely on SD; the cost of blocking is a longer cooldown, not
      * lost images. Bounded so a wedged classifier can't stall capture forever. */
     if (xQueueSend(s_jobq, &job, pdMS_TO_TICKS(15000)) != pdTRUE) {
-        ESP_LOGW(TAG, "classify queue full for 15 s — event logged unclassified");
+        s_q_drops = s_q_drops + 1;   /* ++ on a volatile is deprecated in C++26 */
+        ESP_LOGW(TAG, "classify queue full for 15 s — event logged unclassified "
+                      "(%u dropped since boot)", (unsigned) s_q_drops);
         return false;
+    }
+    /* Sampled right after the send, which is when the queue is at its deepest. */
+    {
+        UBaseType_t depth = uxQueueMessagesWaiting(s_jobq);
+        if (depth > s_q_peak) s_q_peak = (uint16_t) depth;
     }
     return true;
 }
@@ -1058,6 +1075,14 @@ const char *classify_last_file(void)        { return s_last_file; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
 uint32_t    classify_result_seq(void)       { return s_cls_seq; }
+uint16_t    classify_queue_depth(void)
+{
+    return s_jobq ? (uint16_t) uxQueueMessagesWaiting(s_jobq) : 0;
+}
+uint16_t classify_queue_max(void)   { return CLS_QUEUE_LEN; }
+uint16_t classify_queue_peak(void)  { return s_q_peak; }
+uint32_t classify_queue_drops(void) { return s_q_drops; }
+
 bool        classify_busy(void)             { return s_cls_busy; }
 bool        classify_fastfallback_active(void) { return s_fast_active; }
 

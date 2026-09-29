@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.17
+**Version:** 3.18
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -215,6 +215,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
   - species leaderboard (distinct species, visit counts, first/last seen),
   - activity-by-hour-of-day profile,
   - "new species" flag when a species appears for the first time.
+- **Classification backlog is visible.** The event queue (16 deep) reports its live depth, its high-water mark since boot and a count of events dropped after the 15 s enqueue wait, in `/api/status`, `/api/sysinfo`, the Debug tab, Home Assistant, and as a badge on the live view that appears only while work is waiting. The peak is reported because a 60 s sample cannot see a burst that fills and drains between polls, and the drop count because an event discarded for want of a queue slot is work the box silently threw away — previously reaching nothing but the serial log.
 - Charts are rendered client-side in the web UI from JSON APIs (§6); the device only serves data, keeping firmware HTML small (RemoteStart pattern: single-file embedded UI, no external CDN dependencies — the UI must work with no internet access).
 - Time base: SNTP, server configurable in Settings (default `pool.ntp.org`), timezone configurable (default `Europe/Oslo`, auto-DST). Capture files are date-time named (`YYYY-MM-DD_HH-MM-SS.jpg`) under a `YYYY-MM-DD/` day-folder.
 - **Offline / no-NTP fallback (§3.4.1):** on a network without a reachable NTP server (no internet uplink, or UDP-123 blocked), SNTP never syncs and the clock stays at ~1970 — so captures fall back to `/captures/no-date/`. To avoid this, the web UI posts the **browser's clock** to `POST /api/time` on page load and before every snapshot; if (and only if) SNTP hasn't synced, the device sets its clock from it (`settimeofday`, sanity-checked > 2023) and re-applies the timezone. SNTP remains authoritative — a browser clock never overrides an already-synced time. Any captures already stranded in `no-date/` from before the clock was set stay there (harmless); new captures are correctly dated. The current device time and its source (`ntp`/`manual`/`none`) show in the live-view status line and the Debug tab (`time`/`clockSrc` in `/api/status` + `/api/sysinfo`).

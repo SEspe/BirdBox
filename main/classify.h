@@ -119,6 +119,15 @@ int         classify_label_count(void);        /* target_species.h vocabulary
                                                   prompt), NOT model labels */
 const char *classify_last_species(void);       /* last event decision, "" */
 const char *classify_last_latin(void);         /* matching binomial, "" */
+/* Classification backlog (v3.18). Depth is what an event waits behind; peak is
+ * the high-water mark since boot, because a 60 s poll cannot see a burst that
+ * fills and drains between samples; drops counts events lost to a full queue
+ * for 15 s, which previously only reached the serial log. */
+uint16_t    classify_queue_depth(void);
+uint16_t    classify_queue_max(void);
+uint16_t    classify_queue_peak(void);
+uint32_t    classify_queue_drops(void);
+
 bool        classify_busy(void);               /* an event is being scored right now (queue
                                                   non-empty or a job in flight) — drives the
                                                   live view's CLASSIFYING state (v2.54) */

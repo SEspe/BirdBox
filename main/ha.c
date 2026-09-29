@@ -134,6 +134,16 @@ static const ha_entity_t ENTITIES[] = {
     { "cluster_cap",  "Cluster cap",           NULL,             NULL,  "measurement",  true,  false },
     { "rejected",     "Oversized rejections",  NULL,             NULL,  "total_increasing", true, false },
     { "rejected_max", "Largest rejected",      NULL,             NULL,  "measurement",  true,  false },
+    /* Classification backlog (v3.18). `cls_queue` is the live depth, but a 60 s
+     * publish cannot see a burst that fills and drains between samples, so
+     * `cls_queue_peak` carries the high-water mark since boot — that is the
+     * number that answers "did it keep up during the busy hour". `cls_drops`
+     * is the one that matters most: an event dropped after the 15 s enqueue
+     * wait is work the box silently threw away, and before this it reached
+     * nothing but the serial log. */
+    { "cls_queue",    "Classification queue",  NULL,             NULL,  "measurement",  true,  false },
+    { "cls_queue_peak","Classification queue peak", NULL,        NULL,  "measurement",  true,  false },
+    { "cls_drops",    "Classification drops",  NULL,             NULL,  "total_increasing", true, false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -412,7 +422,8 @@ static void publish_state(void)
         "\"night\":\"%s\",\"night_hold\":\"%s\",\"cam_on\":\"%s\",\"asleep_min\":%d,"
         "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu,"
         "\"contrast\":%d,\"cluster_cells\":%d,\"cluster_cap\":%d,"
-        "\"rejected\":%lu,\"rejected_max\":%d",
+        "\"rejected\":%lu,\"rejected_max\":%d,"
+        "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -440,7 +451,9 @@ static void publish_state(void)
         (unsigned long) camera_recovery_count(),
         motion_ambient_contrast(),
         motion_cluster_cells(), motion_cluster_cap(),
-        (unsigned long) motion_reject_count(), motion_reject_cells());
+        (unsigned long) motion_reject_count(), motion_reject_cells(),
+        (unsigned) classify_queue_depth(), (unsigned) classify_queue_peak(),
+        (unsigned long) classify_queue_drops());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

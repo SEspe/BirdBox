@@ -438,6 +438,17 @@ static const char INDEX_HTML[] =
 "font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
 "border-radius:4px}"
 ".cdbadge.on{display:inline-flex}"
+/* Classification backlog (v3.18): bottom-left, the corner the activity lamps
+ * (top-left) and the pause/cool-down badges (top-right) leave free. Shown only
+ * while work is actually waiting, so an idle box is unchanged; turns amber as
+ * the queue approaches full, which is the point at which events start being
+ * dropped after the 15 s enqueue wait. */
+".qbadge{position:absolute;bottom:8px;left:8px;z-index:3;display:none;"
+"align-items:center;gap:6px;background:rgba(60,78,96,.92);color:#dce7f0;"
+"font-size:.72rem;font-weight:700;letter-spacing:.05em;padding:4px 9px;"
+"border-radius:4px}"
+".qbadge.on{display:inline-flex}"
+".qbadge.warn{background:rgba(138,109,63,.95);color:#fff3dc}"
 "button.act.off{background:#8a6d3f}"
 ".zone{position:absolute;inset:0;z-index:4;display:none;"
 "grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}"
@@ -629,6 +640,7 @@ ROT_OPTIONS
 "<div class='fbbadge' id='fbbadge'><span class='dot'></span>FASTBIRD CHECK</div>"
 "<div class='pausebadge' id='pausebadge'>&#9208; DETECTION OFF</div>"
 "<div class='cdbadge' id='cdbadge'></div>"
+"<div class='qbadge' id='qbadge'></div>"
 "<img class='live' id='live' src='/stream' alt='live stream'"
 " onerror='liveErr()' onload='liveOk()'>"
 "<div class='livemsg' id='livemsg'></div>"
@@ -1438,6 +1450,13 @@ ROT_OPTIONS
 "var cd=$g('cdbadge');"
 "if(cd){if(s.cooldownS>0){cd.innerHTML='\\u23F2 COOL-DOWN '+s.cooldownS+'s';cd.classList.add('on');}"
 "else cd.classList.remove('on');}"
+/* Backlog badge (v3.18). Deliberately the same if/else shape as the cool-down
+ * badge above rather than a ternary chain: this file's whole UI is one inline
+ * script, and an unbalanced paren here kills every handler on the page. */
+"var qb=$g('qbadge');"
+"if(qb){if(s.clsQ>0){qb.innerHTML='\u2261 QUEUE '+s.clsQ+' / '+s.clsQMax;"
+"qb.classList.add('on');qb.classList.toggle('warn',s.clsQ>=s.clsQMax-4);}"
+"else qb.classList.remove('on');}"
 "var lm=$g('livemsg');"
 "if(lm&&lm.classList.contains('on')&&s.streamUsed<s.streamMax)liveRetry();"   /* slot freed — reconnect */
 /* Live-view stall watchdog (v2.98). The UI could detect a stream that FAILED
@@ -2555,6 +2574,9 @@ ROT_OPTIONS
 "drow('Last reconnect',fmtAge(d.wifiDiscAgo)+(d.wifiDiscAgo<0?'':' ago'))+"
 "drow('HTTP sockets',(d.httpdSock==null||d.httpdSock<0?'n/a':d.httpdSock+' / '+d.httpdSockMax),"
 "(d.httpdSock>=0&&d.httpdSockMax&&d.httpdSock>=d.httpdSockMax-1)?'bad':'')"
+"+drow('Classification queue',(d.clsQ==null?'n/a':d.clsQ+' / '+d.clsQMax+' (peak '+d.clsQPeak+')'),"
+"(d.clsQ!=null&&d.clsQMax&&d.clsQ>=d.clsQMax-4)?'bad':'')"
+"+((d.clsQDrops>0)?drow('Queue drops',d.clsQDrops+' event(s) lost to a full queue','bad'):'')"
 "+((d.inatCooldown>0)?drow('iNaturalist','rate-limited \\u2014 cooling down '+d.inatCooldown+'s','bad'):'');"
 /* Hardware card (v2.76): board identity, so a suspect module can be compared
  * against the reference unit over HTTP instead of a serial cable. The PSRAM row
@@ -4798,7 +4820,7 @@ static esp_err_t h_status(httpd_req_t *req)
     char tstr[24]; const char *tsrc;
     device_time(tstr, sizeof(tstr), &tsrc);
 
-    char buf[896];   /* grew with spFile/clsBusy/fastBird + two long capture paths */
+    char buf[960];   /* grew with spFile/clsBusy/fastBird, two long capture paths, queue */
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
@@ -4809,6 +4831,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"events\":%lu,\"lastEvent\":\"%s\",\"species\":\"%s\",\"spConf\":%u,"
         "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\","
         "\"clsBusy\":%s,\"fastBird\":%s,\"cooldownS\":%u,"
+        "\"clsQ\":%u,\"clsQMax\":%u,\"clsQPeak\":%u,\"clsQDrops\":%lu,"
         "\"lastFrames\":%d,\"lastFast\":%d}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
@@ -4834,6 +4857,8 @@ static esp_err_t h_status(httpd_req_t *req)
         classify_busy() ? "true" : "false",
         classify_fastfallback_active() ? "true" : "false",
         (unsigned) motion_cooldown_remaining_s(),
+        (unsigned) classify_queue_depth(), (unsigned) classify_queue_max(),
+        (unsigned) classify_queue_peak(), (unsigned long) classify_queue_drops(),
         capture_last_frames(), capture_last_fast());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
@@ -5034,7 +5059,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
 
     /* buf grew with the hardware fragment (v2.76) — snprintf truncates silently,
      * so this must stay ahead of the format above plus hw[]. */
-    char buf[1984];  /* v2.81 added the cam* sensor-capability fields, ~130 B */
+    char buf[2048];  /* v2.81 added the cam* fields ~130 B; v3.18 the clsQ* set ~60 B */
     int n = snprintf(buf, sizeof(buf),
         "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,"
         "\"heapInt\":%lu,\"heapIntBig\":%lu,\"heapPsram\":%lu,\"heapPsramBig\":%lu,"
@@ -5056,6 +5081,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
         "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
         "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
+        "\"clsQ\":%u,\"clsQMax\":%u,\"clsQPeak\":%u,\"clsQDrops\":%lu,"
         /* heapIntBig8 = the guard's EXACT metric (INTERNAL|8BIT), which heapIntBig
          * (INTERNAL only) does not match; guard* = the last guard-fire snapshot,
          * so a "software" reset is provably a guard reboot, not a crash (v2.55). */
@@ -5099,6 +5125,8 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         classify_model_name(), classify_label_count(),
         (int) species_region_count(), (unsigned) g_settings.region_filter,
         httpd_sock, HTTPD_MAX_SOCKETS, inat_cooldown_s(),
+        (unsigned) classify_queue_depth(), (unsigned) classify_queue_max(),
+        (unsigned) classify_queue_peak(), (unsigned long) classify_queue_drops(),
         (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned long) g_grb_count, (unsigned long) g_grb_block,
         (unsigned long) g_grb_free, (unsigned long) g_grb_uptime,

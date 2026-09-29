@@ -133,6 +133,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       makes `ha_apply()`/`ha_start()` on a live box the place to look, which
       is far cheaper to reproduce than an OTA (one settings POST). Seen once,
       so not yet an A/B — confirm it repeats before acting on it.
+      **2026-09-29, second trial: it did NOT repeat.** Same 0→1 flip on the
+      same unit was clean, uptime continuous across the save. So the
+      runtime enable is **intermittent (1 panic / 1 clean)**, not
+      deterministic — which makes it a worse reproducer than the OTA path
+      (6/6), not a better one. Do not build a bisect on it. What survives
+      is the narrowing: a panic with no flash write in flight means the
+      write is not necessary to trigger it.
 
 ## Found 2026-09-22, not yet fixed
 - [x] ~~**No JSON emitter checks its `snprintf` return.**~~ **FIXED 0.78.4 /
