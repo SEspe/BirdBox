@@ -449,6 +449,18 @@ static const char INDEX_HTML[] =
 "border-radius:4px}"
 ".qbadge.on{display:inline-flex}"
 ".qbadge.warn{background:rgba(138,109,63,.95);color:#fff3dc}"
+/* Stale-interface banner (v3.22). The UI is one page carrying its own script,
+ * so a cached copy runs an OLD release's JavaScript while the live data it
+ * renders is current — a new control silently does nothing and every
+ * device-side check passes. The page now knows the build it was served from and
+ * says so when the device has moved on, instead of leaving it to be diagnosed
+ * as a broken feature (which is how it was found, twice). */
+".uivb{position:fixed;left:0;right:0;top:0;z-index:70;display:none;"
+"background:#8a6d3f;color:#fff3dc;font-size:.78rem;line-height:1.35;"
+"padding:8px 12px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.4)}"
+".uivb.on{display:block}"
+".uivb button{margin-left:10px;font-family:inherit;font-size:.74rem;padding:3px 10px;"
+"border:0;border-radius:4px;background:#fff3dc;color:#3a2d12;cursor:pointer;font-weight:700}"
 /* Visit viewer (v3.19): one event is a BURST of frames, and showing only the
  * trigger frame hid the rest. The selected frame fills the space; the visit's
  * other frames sit below as large thumbnails, big enough to judge a bird in. */
@@ -629,6 +641,7 @@ static const char INDEX_HTML[] =
 "@media(max-width:560px){.spnav{font-size:1.1rem;padding:6px 8px}"
 ".spsum{max-height:12em}}"
 "</style></head><body>"
+"<div class='uivb' id='uivb'></div>"
 "<div class='hdr'><h1><img class='logo' src='" BIRD_LOGO "' alt=''> " FIRMWARE_NAME "</h1>"
 "<span class='v'>v" FIRMWARE_VERSION "</span></div>"
 "<div class='tabs'>"
@@ -1189,6 +1202,7 @@ ROT_OPTIONS
 "var s=n.slice(a+1,b).trim(),p=s.split(' ');"
 "if(p.length!==2||!p[0]||!p[1])return '';"
 "if(p[0].charAt(0)!==p[0].charAt(0).toUpperCase())return '';return s;}"
+"var UIVER='" FIRMWARE_VERSION "';"
 "function refHide(){var e=$g('livref');if(e)e.classList.remove('on');g_refCur='';}"
 /* The common name comes from the DEVICE, not from iNat: s.species is already
  * run through species_i18n and therefore follows the Language setting, whereas
@@ -1461,6 +1475,14 @@ ROT_OPTIONS
  * the photo stays up to compare against instead of vanishing on a 1-min TTL. */
 "if(s.species)refShow(s.species,s.spConf);else refHide();"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
+/* One comparison, every poll: the build this script came from vs the build the
+ * device is running now. */
+"if(s.version&&typeof UIVER==='string'&&s.version!==UIVER){var ub=$g('uivb');"
+"if(ub&&!ub.classList.contains('on')){"
+"ub.innerHTML='This page is from firmware '+UIVER+', the box now runs '+s.version"
+"+'. Reload to get the current interface.'"
+"+'<button onclick=location.reload()>Reload<'+'/button>';"
+"ub.classList.add('on');}}"
 /* Live-view state lamp, one at a time in priority order (v2.54, +fastbird v2.56):
  *   RED  DETECTING          — frames being captured (motion)
  *   RED  FASTBIRD DETECTION — slow frames failed, fast-burst backup being scored
