@@ -103,6 +103,16 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       **Next step needs a backtrace, and that needs hardware access** —
       core dump is `ENABLE_TO_NONE` and there is no coredump partition;
       adding one changes the partition table, which cannot be delivered by OTA.
+      **New data point, 2026-09-29 (0.84.0):** the panic is not specific to
+      OTA. Flipping `haen` 0→1 at runtime via `POST /api/settings` panicked
+      the box on its own, with no upload in flight (`resetReason:"panic"`,
+      uptime reset to 4 s). It recovered and has been stable since, and HA
+      started cleanly on the following boot — so what panics is **creating
+      the MQTT subsystem on an already-running system**, not the flash write
+      it happened to coincide with. That fits hypothesis 1-3 being wrong and
+      makes `ha_apply()`/`ha_start()` on a live box the place to look, which
+      is far cheaper to reproduce than an OTA (one settings POST). Seen once,
+      so not yet an A/B — confirm it repeats before acting on it.
 
 ## Found 2026-09-22, not yet fixed
 - [x] ~~**No JSON emitter checks its `snprintf` return.**~~ **FIXED 0.78.4 /
