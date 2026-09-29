@@ -4,6 +4,27 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-09-29 (0.84.0-0.89.2)
+- [ ] **`err:<reason>` has never fired in the field.** Shipped in 0.84.0; no iNat
+      call has failed since. Until one does the tag is unwitnessed and the
+      hour-08 error storm stays unexplained. This gates the framing work below.
+- [ ] **15 "no bird" verdicts a day on weak evidence.** Per-frame scores like
+      `Mollusca?=3`, `Animalia?=36` — iNat guessing non-Aves at 2-12% — file real
+      events as background. §3.2 already requires BOTH a non-Aves top-1 AND no
+      Aves anywhere (v2.45), so this is the threshold/framing question, not a
+      rule bug. Same evidence gate.
+- [ ] **The staleness banner cannot fire on a page that predates it (v3.22).**
+      Dead code in exactly the case it was built for, and "no banner" was
+      wrongly read as proof the page was current. Nothing server-side can fix a
+      page that never re-fetches; the remedy is the cache-busting URL
+      `http://<ip>/?v=2`. Worth considering: have the OTA success page link to
+      `/?v=<version>` so the post-update visit is always a cache miss.
+- [ ] **Re-check the queue peak at dawn.** Measured 4 of 16 (~148 s behind, zero
+      drops) at midday; dawn is the busier window and is what would actually
+      exercise the 16-deep buffer and the 15 s enqueue wait.
+- [ ] **No GitHub release since v0.76.0** while the fleet has moved to 0.89.2
+      (`.205`) and 0.80.0 (`.240`). Worth cutting one.
+
 ## Blocked on evidence (added 2026-09-29, 0.84.0)
 - [ ] **Do not touch `detect_zoom`, the detection zone or the framing until the
       `err:<reason>` tags have been read.** Operator call, and the right one:
@@ -140,6 +161,14 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       (6/6), not a better one. Do not build a bisect on it. What survives
       is the narrowing: a panic with no flash write in flight means the
       write is not necessary to trigger it.
+      **Third data point, 2026-09-29 18:17:37:** `.205` panicked
+      **spontaneously** ~3 h 45 min into an 0.89.2 boot with HA enabled — no
+      OTA, no settings save, nothing in flight. `guardReboots:0`, so not the
+      heap guard. That widens the fault from "creating the MQTT subsystem" to
+      "running with it up at all", and suggests a cheap measurement that needs
+      no backtrace: watch uptime/resetReason on `.205` with `haen=1` for a day,
+      then with `haen=0` for a day, and compare. `.240` (HA never configured,
+      3.4 days uptime) is already the control.
 
 ## Found 2026-09-22, not yet fixed
 - [x] ~~**No JSON emitter checks its `snprintf` return.**~~ **FIXED 0.78.4 /

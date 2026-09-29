@@ -57,6 +57,23 @@ gets an entry there.
   > better, on real captures. Removing it also freed ~6 MB of PSRAM and
   > ~110 KB of flash. Classification is now online-only (iNaturalist + optional
   > cloud).
+- **Visit viewer** — a motion event is a *burst* of frames, so clicking a
+  capture opens the whole visit rather than a single still: the chosen frame
+  large, the visit’s other frames below as clickable thumbnails (arrow keys
+  step, Escape closes). Reachable from the live view’s last-identified badge,
+  a Gallery tile, or a Stats species image. The frame list comes from the visit
+  log on the device, so every view agrees on which frames make up one visit.
+- **Classification backlog is visible** — identification is an online round trip
+  of roughly half a minute per visit, so a busy feeder queues. The live view
+  shows a queue badge while work is waiting, and the device reports the queue
+  depth, its high-water mark since boot, and a count of any events dropped
+  because the queue stayed full — in the Debug tab, `/api/status` and Home
+  Assistant.
+- **Failures say why** — when an identification call fails, the visit log records
+  the reason (`err:401`, `err:net`, `err:429`…) per frame rather than a bare
+  "error", so an unanswered event can be told apart from one the classifier
+  genuinely was unsure about. The two look identical otherwise and call for
+  opposite remedies.
 - **Gallery** — browse captures by day; each image carries a per-image
   **classification state** (unclassified / classified / human-confirmed /
   no-bird / confirmed-no-bird / other-not-a-bird / unknown), colour-badged on
@@ -150,11 +167,16 @@ To reset WiFi credentials: hold the boot button ≥ 5 s while powering on.
 **Live** stream (MJPEG, also usable directly at `/stream` in Home
 Assistant/VLC), with a quick rotation toggle · **Gallery** of captures with
 per-image classification-state badges, state filters (incl. Near-threshold),
+a multi-frame **visit viewer** on any capture,
 one-click confirm / relabel / identify, multi-select delete, and combined
 photo+stats day wipe · **Stats** (visits per day, species leaderboard,
 activity by hour, false-positive row, recheck, reset button) · **Settings**
 (motion, boot quarantine, species ID, camera resolution/contrast/rotation,
 storage, system) · **Debug** · **WiFi** (incl. static IP) · **OTA Update**.
+
+The page is served no-cache and knows the firmware build it came from: if the
+box is updated while a tab is open, a banner says so and offers a reload, so a
+stale page can never be mistaken for a broken feature.
 
 Everything is also available as JSON under `/api/…` — see FSD §6.
 

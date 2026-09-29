@@ -1,4 +1,4 @@
-# Session notes — 2026-09-22
+# Session notes — 2026-09-29
 
 Working notes for resuming. The durable record is `FSD_BirdBox_CHANGELOG.md`;
 this file is the "where we stopped and what is still unproven" layer.
@@ -7,509 +7,135 @@ this file is the "where we stopped and what is still unproven" layer.
 
 | Version | FSD | What |
 |---|---|---|
-| 0.76.0 | v3.03 | Home Assistant integration over MQTT |
-| 0.77.0 | v3.04 | Night sleep on the camera's own light reading |
-| 0.77.1 | v3.05 | Fix: pausing detection blinded the sensor that ends the pause |
+| 0.84.0 | v3.17 | Visit log records **why** an iNat frame failed (`err:<reason>`) |
+| 0.85.0 | v3.18 | Classification **backlog is visible** (depth, peak, drops) |
+| 0.86.0 | v3.19 | **Visit viewer** — a click opens the whole burst, not one frame |
+| 0.86.1 | — | Fix: `getAttribute('href ')`, a stray space, made the click a no-op |
+| 0.87.0 | v3.20 | UI page served `Cache-Control: no-cache, must-revalidate` |
+| 0.88.0 | v3.21 | Fix: "last identified" named one bird while linking to another |
+| 0.89.0 | v3.22 | Page reports when it is older than the firmware (banner) |
+| 0.89.1 | — | Fix: visit thumbnails never loaded (hidden container + `loading=lazy`) |
+| 0.89.2 | v3.23 | `/api/event` decodes its parameter; diagnosis post-mortem recorded |
 
-Released: **v0.76.0** on GitHub (asset `BirdBox_esp32s3_v0.76.0.bin`). 0.77.x is
-committed and pushed but **not released** — worth cutting v0.77.1 once the dawn
-wake is confirmed.
-
-Commits: `e51fb0f` (HA), `c14d694` (backlog), `538b2a7` (night sleep),
-`9820213` (night-sleep fix). master == origin/master, tree clean.
+Commits: `b771904` `72817e5` `eb4cb34` `68b99ef` `00bb28d` `3752dcf` `c12aaf7`
+`0c7c66e` `b199bd9` `292af63` `1e25cfe`. master == origin/master.
+**Nothing released on GitHub today** — 0.89.2 is committed and pushed only.
 
 ## Unit state
 
 | | `.205` test | `.240` production |
 |---|---|---|
-| Firmware | **0.77.1** | **0.75.1** (two behind) |
-| Camera | OV5640 @ UXGA | OV2640 @ HD |
-| Home Assistant | **enabled, connected, publishing** | not configured (endpoint predates fw) |
-| Night sleep | **mode 1 (pause + camera off)** | off |
+| Firmware | **0.89.2** | **0.80.0** (deliberately untouched) |
+| Camera | OV5640 | OV2640 @ HD |
+| Home Assistant | enabled | not configured |
+| Uptime at write | 227 s (**just panicked**, see below) | 293 055 s (3.4 days), 617 events |
 
-`.240` was deliberately never touched. It can take 0.77.1 from its own OTA tab.
+`.240` was left alone all session at the user's instruction. Only `GET
+/api/status` was ever called against it.
 
-## VERIFIED tonight, on hardware, in real darkness
+## The classification numbers (the day's real finding)
 
-- Night sleep entered by itself: `dark` latched on the first ambient sample
-  after the boot quarantine cleared (22:16:41), slept one 30 s tick later
-  (22:16:57), `camAsleep:true`.
-- `detect` stayed **true** through the transition — that is exactly the case
-  that used to leave it stuck `false` and unrecoverable.
-- MQTT: `connected:true`, 187 consecutive publishes at 60 s, zero errors.
-- Whole served-page inline JS parses with esprima after every UI change.
+133 events, **68 named (51%)**, 65 unclassified. The 65 are **two unrelated
+problems** that the log could not previously tell apart:
 
-## NOT yet verified — pick up here
-
-1. **The wake probe.** First probe was due ~22:27 (10 min after sleeping). It
-   should set `luma` to a real number in `/api/night`. Unconfirmed at shutdown.
-2. **The dawn resume** (~07:00–07:30). The whole point of the feature.
-3. **Deep sleep (mode 2).** Never exercised. `.205` is on mode 1.
-4. **Home Assistant entities** actually rendering in HA — the publish path is
-   proven, what HA does with the discovery configs is not.
-
-Check in the morning:
-```sh
-curl -s http://192.168.10.205/api/night     # expect asleep:false, luma>threshold
-curl -s http://192.168.10.205/api/status    # expect detect:true, events climbing
-```
-
-## Known issue, not fixed (2 lines, deliberately left for tomorrow)
-
-**The boot quarantine also skips ambient sampling.** `motion_task()` checks the
-pause branch first, then `continue`s on the quarantine branch *before* reaching
-`decode_gray()`. So the box is ambient-blind for `detect_quarantine_s` after
-every boot. Benign at the 60 s default — it self-clears, and that is what the
-22:16:41 latch above shows — but the setting accepts up to **3600**, and an
-hour-long quarantine would blind darkness detection for that whole hour. Same
-root cause as v3.05, same fix: sample ambient in the quarantine branch too.
-Left unflashed because it was found after the overnight test had started and
-should not go out unverified.
-
-## Camera "vertical lines" — answered, NOT a fault
-
-Striped near-black night frames are **per-column amplifier offset** (fixed
-pattern noise) amplified by maximum AGC in near-total darkness. Measured on the
-same sensor, same day: night frame mean green **4.18/255**, daylight frame
-**139.88** and visually pristine. Banding shows only where signal is near zero
-and vanishes over lit areas. Three settings make it worse, all left untouched
-because they are the operator's calls:
-
-- illuminator `ir:0` on **both** boxes — scene is genuinely black, AGC maxes out
-- `fshut:1` on `.205` — pins a short exposure and lets AGC compensate
-- `ae_level:+2` on `.240` — raises the brightness target, so more gain again
-- `denoise:0` on the OV5640, which has hardware denoise unused
-
-A wrong hypothesis is worth recording: the first theory was that noise lifted
-the frame mean above `AMBIENT_DARK_ON_THR` (35). Measurement said 4.18. The
-threshold was never the problem; **measure before tuning.**
-
----
-
-# 2026-09-23 — overnight result
-
-## What the night actually proved
-
-The wake **probe** works: `luma` went from `-1` to real readings (12 → 16 → 62)
-across the night, so `camera_wake()` → measure → `camera_sleep()` does cycle.
-Sleep held 8 h 26 m with no reboots and `detect:true` throughout — the v3.05
-split-brain fix survived a full night.
-
-**Temperature, the operator's observation, confirmed and decomposed:**
-
-| | camera | temp |
+| Cause | n | share |
 |---|---|---|
-| `.205` awake, UXGA (yesterday) | on | 51–53 °C |
-| `.205` asleep, UXGA | off | **38.2 °C** |
-| `.240` awake, HD (control, never slept) | on | 37.2 °C |
-
-`.240` drifted 41.2 → 37.2 overnight, so ~4 °C of the 14 °C drop is ambient
-cooling and **~10 °C is the camera being off**. Asleep-at-UXGA ≈ awake-at-HD.
-
-## The crash, and how the temperature trace found it
-
-`resetReason:"panic"` at 07:17, `uptime` 109 s. The "dawn wake" in the log was
-**not** the night module resuming — a panic clears `s_asleep`/`s_dark`, so a
-crashed box is indistinguishable from a woken one by state alone. **Check
-`uptime` and `resetReason` before believing a wake.**
-
-Cause was mine, introduced in v3.05: `decode_gray()` writes shared
-`s_rgb`/`s_cur` and mutates `s_px`, and v3.05 gave it a third caller on a
-DIFFERENT task. While night-paused the motion loop (every 250 ms) and the night
-task's probe decoded into the same buffers concurrently. Symptom chain, all in
-the log: `luma:-1` → a `camera_sleep()` drain that could not complete, leaving
-the sensor powered for a full 10-minute interval while the state read
-"sleeping" (**+11 °C, 38 → 49**, invisible in every field except temperature) →
-panic. Fixed in 0.77.2 / v3.06: exactly one decoder at a time, plus a
-`camera_sleep()` retry and an asleep-side reconcile.
-
-## Night noise — settled with a metric
-
-Fixed-pattern noise is columnar; real scenes are not. Ratio of column-to-column
-jitter over row-to-row jitter, same sensor:
-
-| frame | mean | col/row ratio |
-|---|---|---|
-| day 17:08 | 139.9 | 0.41 |
-| **night 21:48** | 4.2 | **7.14** |
-| dawn 07:18 | 97.9 | 0.58 |
-
-Striping appears only in the dark frame. **The camera is not faulty.**
-
-## Still open
-
-1. **A genuine dawn wake has never been observed** — the one chance was eaten by
-   the panic. Next real test is tonight.
-2. Deep sleep (mode 2) still never exercised.
-3. Wake threshold is conservative: `luma` 62 at 07:07 was already well lit and
-   the box stayed asleep (needs >90). It woke ~2 min after sunrise, so this is a
-   tuning call, not a bug — and thresholds are the operator's.
-4. Boot-quarantine ambient blind spot (TODO.md) still unfixed.
-
-## Thermal characterisation (2026-09-23 afternoon)
-
-Die temperature, both boxes, same weather, `.240` at HD as the control:
-
-| condition | temp |
-|---|---|
-| HD, idle, no stream | **40–41 °C** |
-| UXGA, idle | 51–53 °C |
-| QXGA, idle | **57 °C** |
-| UXGA + one live stream viewer | **69–72 °C** (peak 72.2) |
-| camera powered down overnight | **38 °C** |
-
-Two things worth keeping:
-
-- **One attached Live-tab viewer is worth ~14 °C.** It shows as a *step*, not a
-  ramp, which is how it was distinguished from sun: the control box did not
-  move at the same moment. It is therefore the most effective runtime lever a
-  thermal throttler could pull — and unlike resolution, it *can* be pulled at
-  runtime.
-- **A temperature drop after a settings change was nearly misattributed.**
-  Resolution was raised UXGA → QXGA and the temperature fell 12 °C; the cause
-  was the Live tab closing at the same time, not the resolution, which had
-  moved the wrong way. Two variables changed at once. The control box is what
-  separated them.
-
-`.205` reverted to HD (`res` 6 → 3 + reboot, `resActive` confirms 3).
-
-### CORRECTION to the thermal table above (same afternoon)
-
-The resolution deltas recorded earlier (~12 °C UXGA, ~17 °C QXGA over HD) are
-**retracted**. They were not measured cleanly:
-
-- readings were taken with **different stream states** (the ~14 °C confound),
-- **none were at thermal steady state** — the QXGA figure was 5.6 min after a
-  boot, the HD figure was still climbing when recorded,
-- and they compared **`.205` indoors against `.240` outdoors**, so most of the
-  gap is ambient rather than resolution. At HD alone the two boxes read 40 °C
-  and 63 °C.
-
-What survives: the **live-viewer step (~+14 °C)**, because it was a step on one
-box with the control unmoved, and the **overnight camera-off saving (~10 °C)**.
-
-Lesson, and it is the second time today: **one variable at a time, and wait for
-steady state.** The morning's misattribution (the panic that looked like a dawn
-wake) and this one share a root — reading a transient as a settled result.
-
-Also: detection works at HD. `.205` logged triggers and events within four
-minutes of the HD reboot, after zero events during hours at UXGA/QXGA. Not
-conclusive on its own (it is a bench unit with light traffic) but it is the
-first activity it had logged all day.
-
----
-
-## End of 2026-09-23 — state and what is still unproven
-
-**Shipped today**
-
-| Version | FSD | What |
-|---|---|---|
-| 0.77.2 | v3.06 | Only one task may decode a frame (fixes the v3.05 race + the panic) |
-| 0.78.0 | v3.07 | Night state + camera health reported to Home Assistant |
-
-Commits: `b2cbc10`, `fe0c6b9`, `cdc3475`, `56f5b07`, `6d88219`. master ==
-origin/master, tree clean.
-
-**Units at 17:48**
-
-| | `.205` test | `.240` production |
-|---|---|---|
-| Firmware | **0.78.0** | 0.75.1 (three behind) |
-| Resolution | **HD** (reverted from QXGA) | HD |
-| Night sleep | mode 1, armed | off |
-| Home Assistant | connected, **121 publishes, 0 errors** | not configured |
-| Temp | 54 °C (indoors, viewer attached part of the day) | 40 °C (outdoors) |
-| Events today | 3 | 69 |
-| `camRecoveries` / `camFault` | 0 / false | — |
-
-`.205` has held **2 h** since the HD reboot and ~10 h on 0.77.2+ with no panic
-recurrence.
-
-**Still unproven, in priority order**
-
-1. **A real dawn wake has NEVER been observed.** Yesterday's attempt was eaten
-   by the panic. Tonight is attempt two — and it will now record itself into HA
-   (`night`, `night_hold`, `cam_on`, `asleep_min`) instead of needing a poller.
-2. **Deep sleep (mode 2)** — implemented, never exercised on hardware.
-3. **Detection above HD** — uncharacterised; `.205` logged 0 events during hours
-   at UXGA/QXGA but it is a bench unit with light traffic, so that is not
-   evidence. HD triggers within 4 minutes of reverting.
-4. **Resolution thermal cost** — retracted, see the correction above. Needs one
-   box, stream closed, ≥20 min per resolution, same afternoon.
-5. **Boot-quarantine ambient blind spot** — known, 2-line fix, deliberately
-   unflashed (TODO.md).
-
-**Two method lessons from today, both learned the hard way**
-
-- **A crash and a wake look identical from state alone.** A panic clears
-  `s_asleep`/`s_dark`, so a crashed box reports exactly like a woken one. Check
-  `uptime` and `resetReason` *first*. This cost a morning.
-- **One variable at a time, and wait for steady state.** The retracted
-  resolution numbers mixed stream states, boot transients and two boxes in
-  different environments. The control box (`.240`, untouched all session) is the
-  only reason the live-viewer step could be separated from sun.
-
----
-
-## 2026-09-24 — test unit moved to the production tray
-
-`.205` was moved from the indoor bench to the **same feeder tray as `.240`**,
-different viewpoint. Two consequences beyond the obvious:
-
-- The thermal "control" is gone in its old form but replaced by something
-  better: both units now share ambient, so a clean resolution A/B is finally
-  possible (the comparison retracted on 2026-09-23 was confounded by an indoor
-  bench against an outdoor box).
-- **Every night-sleep result before this was measured indoors under artificial
-  light**, which is unlike any real deployment. The v3.08 fast-shutter bug was
-  verified in code independently, but the environment was a confound on that
-  inverted trend.
-
-### Shipped today
-
-| Version | FSD | What |
-|---|---|---|
-| 0.78.1 | v3.08 | Cached sensor setting survived a sensor reset — inverted night detection |
-| 0.78.2 | v3.09 | Motion cluster telemetry to Home Assistant |
-
-### "`.240` detected a bird, `.205` did not" — diagnosed
-
-Not a fault. **`area_thr = 1 + (100 - sens) / 10`**, so sensitivity 80 needed
-**3 %** where `.240`'s 88 needed **2 %** — a 50 % higher bar. And that same value
-double-duties as the per-cell "this cell moved" test (`motion.c:289`), so a
-higher setting also marks fewer cells, shrinking the cluster and its weight. The
-effect compounds; it is not a simple 3→2 step. Geometry made it worse: in
-`.205`'s view the tray recedes, so a bird at the *back* (where `.240` caught its
-blue tit) subtends far fewer pixels.
-
-Tuning aligned to `.240`, all live without reboot: **mount Close (cap 40)**,
-**cooldown 30 s**, **sensitivity 88**. Result within the hour: triggers went
-1 → 3, and a frame with a great tit at the back plus a second bird in the near
-corner measured **21 cells against cap 40** — headroom the old Medium/28 would
-not have had. Kjøttmeis at **97 %** (`.240` got 75 % on the same bird).
-
-### Two traps worth remembering
-
-- **`/api/motion` field names are backwards from what they suggest**: `rej` is
-  the largest rejected cluster SIZE, `rejN` is the COUNT. Misread it once.
-  The HA entities added in v3.09 use unambiguous names (`rejected`,
-  `rejected_max`).
-- **Comparing stale readings invents bugs.** A "trigger fired in a masked zone
-  cell" contradiction turned out to be a zone reading from two hours earlier
-  compared against a current trigger — the zone had since been opened to all 64
-  cells. Re-read both sides at the same moment before concluding anything.
-
-Both units are now identically tuned (sens 88, Close/40, cool 30, conf 25, HD),
-on the same tray, with no live viewers. Differences from here are attributable
-to **viewpoint and sensor** (OV5640 vs OV2640).
-
----
-
-## End of 2026-09-24 — six releases, and a metric that could not work
-
-### Shipped
-
-| Version | FSD | What |
-|---|---|---|
-| 0.78.1 | v3.08 | Cached sensor setting survived a sensor reset — inverted night detection |
-| 0.78.2 | v3.09 | Motion cluster telemetry to Home Assistant |
-| 0.78.3 | v3.10 | Four fixes from a consistency sweep |
-| 0.78.4 | v3.11 | Clamped every `snprintf`-derived length — two memory-safety bugs |
-| 0.79.0 | v3.12 | **Darkness decided on contrast, not brightness** |
-
-Commits: `c695aed`, `ca7f83e`, `0df53ef`, `f9cfe1a`, `2f741b3`, `4fe2ad8`.
-
-### The headline: the metric could not work
-
-The operator reported the box "online, bright" at an hour already too dark to
-photograph. Not a threshold to tune — **mean brightness cannot detect darkness
-outdoors**, because AGC exists precisely to hold the mean at a target. The
-unusable dusk frame measured **mean 148, the highest reading of the week,
-higher than noon**. A dark threshold of 35 on that could never fire, which is
-why the box had never once slept on its own schedule.
-
-Every earlier night-sleep fix was real but downstream of this.
-
-| | contrast (std) | peak |
-|---|---|---|
-| Daylight / dawn | **48–60** | 238–255 |
-| **Unusable dusk** | **12–18** | 180 |
-| True dark | 0.5 | 11 |
-
-4× gap, nothing in between. Thresholds std 25 / 35, stored as variance to avoid
-a per-frame sqrt. `AMBIENT_HIGHLIGHT` guards the case a flat frame is *not*
-dark — blank wall, fog, snow — by also requiring no highlights.
-
-Verified live: first frame after quarantine read contrast 18 / peak 172,
-latched dark, slept one tick later. **It is asleep now**, 54 min, camera down,
-43 °C against ~52 °C awake.
-
-### Also today
-
-- **`.205` moved to the production feeder tray**, same tray as `.240`. Both now
-  identically tuned (sens 88, mount Close/40, cool 30 s, conf 25, HD), so
-  remaining differences are **viewpoint and sensor** only.
-- **"`.240` detected, `.205` did not"** — diagnosed, not a fault:
-  `area_thr = 1 + (100 - sens)/10`, so sens 80 needed 3 % where 88 needed 2 %,
-  and the same value double-duties as the per-cell test, so the effect compounds.
-- **Consistency sweep** found four bugs (illuminator burning all night during
-  sleep; `ha_stop()` deleting the publish task mid-call on every settings save;
-  a spec sentence v3.06 made false; stale `night_hold`) plus the `snprintf`
-  class: an **out-of-bounds read** at 8 sites shipping adjacent memory to LAN
-  clients, and an **out-of-bounds write** at 7 sites in `ha.c` via `size_t`
-  underflow in `sizeof(buf) - n`.
-
-### Still unproven
-
-1. **A real dawn wake — still never observed.** Tonight is the first attempt
-   where the box is genuinely asleep outdoors beforehand.
-2. Deep sleep (mode 2) — implemented, never exercised.
-3. Detection above HD — uncharacterised.
-4. Resolution thermal cost — retracted 2026-09-23, not re-measured.
-
-### Method lessons, cumulative
-
-- A crash and a wake are identical from state alone — check `uptime` and
-  `resetReason` first.
-- One variable at a time, wait for steady state, keep an untouched control.
-- **Before tuning a threshold, ask whether the METRIC can work at all.** Three
-  nights of fixes sat downstream of a measurement that could not distinguish
-  day from night.
-
-**Closed 2026-09-24 (operator confirmation):** the Home Assistant entities do render — `Scene contrast` is visible in HA. That was the one link not verifiable from here, since the broker password is write-only by design and cannot be subscribed with.
-
----
-
-## 2026-09-26 — the dawn wake, finally observed
-
-**Night sleep is proven end to end.** Open since 2026-09-22; three earlier
-attempts failed (a panic that looked like a wake, an indoor light regime, and a
-metric that could not detect darkness at all).
-
-**Evidence, from the box's own SD card rather than HA** — an overnight gap in
-the capture record with `uptime` unbroken across it:
-
-| date | first capture | last capture |
-|---|---|---|
-| 25 Sep | 08:23 | **19:09** |
-| 26 Sep | **07:23** | ongoing |
-
-12 h 14 m with zero captures. `uptime` **131 544 s = 36.5 h**, `resetReason`
-`software` (the 0.79.0 flash) — so two nights and two dawns with **no reboot**.
-That distinction is the whole point: a panic clears the sleep state and looks
-exactly like a wake, which is how the first attempt fooled us.
-
-**The contrast metric validated over 36 h of continuous operation** (HA graph):
-
-| period | contrast |
-|---|---|
-| daytime | 48–52, peaking 70–75 at midday |
-| dusk transition | near-vertical 52 → ~15 |
-| overnight | 8–22 |
-| dawn transition | sharp 15 → 50 |
-
-**Nothing ever occupies 22–48 except during the transitions themselves**, so the
-thresholds (25 sleep / 35 wake) sit in a band the signal never visits — which is
-why both transitions are decisive rather than hunting. The 4× gap predicted from
-seven still frames holds across 36 h. Margin: highest overnight reading ~22
-against a wake threshold of 35, and hysteresis means a brief excursion past 25
-does nothing.
-
-**The A/B closed.** Before tuning alignment `.205` had 1 event to `.240`'s 13.
-Now **287 vs 321** — within 11 %, and `.205` slept ~12 h of that window, so its
-daytime rate is effectively equal. Matched tuning was the whole story; viewpoint
-and sensor are second-order.
-
-### Watch items (neither alarming yet)
-
-- **`camRecoveries: 2`** on `.205`, was 0. Nightly sleep/wake cycling stressing
-  the sensor — the risk flagged when the feature was built. Both self-healed,
-  `camFault: false`. A climbing count would matter.
-- **`rejN: 5, rej: 43`** — five oversized clusters discarded over 36 h, largest
-  43 cells against cap 40. **Close/40 is the highest cap available**, so a
-  43-cell cluster cannot be admitted without a code change. Whole-frame change
-  measures ~50 cells, so 43 is more likely wind or a light step than a bird —
-  but if `rejN` climbs while birds are visibly missed, that lever has no
-  headroom left.
-
-### Still open
-
-1. Deep sleep (mode 2) — implemented, never exercised on hardware.
-2. Detection above HD — uncharacterised.
-3. Resolution thermal cost — retracted 2026-09-23, never re-measured.
-
-### 2026-09-26 later — v0.79.0 released, both boxes to 0.80.0, alt networks configured
-
-**Released v0.79.0** (Latest) with `BirdBox_esp32s3_v0.79.0.bin`, gated as
-planned on observing a dawn wake. Built from the committed tree and confirmed
-to be the binary already running on `.205`, so the release is the tested image
-rather than a hopeful rebuild. Notes lead on the contrast finding rather than
-the feature, and fold in 0.77.x/0.78.x which were never released separately.
-
-**`.240` (production) updated 0.75.1 → 0.79.0 → 0.80.0.** Every setting
-survived both jumps (`sens 88`, `mount 0`, `cool 30`, `conf 25`, HD, `lang 1`,
-`inatcv 1`) and the opt-in features stayed off (`night: 0`, `haen: 0`), so
-production gained the code with **no behaviour change**.
-
-**Both boxes now have a real second network**, entered through the WiFi tab by
-the operator rather than over the API — `/wifi-save` needs the password, and it
-would have ended up in the session transcript. Before: `.205` had **both slots
-set to `VK24-2`** (a duplicate, so failover rotated to an identical config) and
-`.240` had no alt at all. After: `primary VK24-2 / alt VK24` on both, both
-connected to VK24-2 (`.205` −59 dBm, `.240` −72 dBm).
-
-**The signal-preference logic is deployed but UNEXERCISED.** `.205` was briefly
-a perfect test — it fell through to `VK24` at **−82 dBm** while `VK24-2` was at
-−59, a 23 dB gap against a 12 dB margin — but an operator restart moved it back
-before the ~45 min confirmation sequence could run. Both boxes now sit on their
-preferred network, so there is nothing for the feature to correct. It is proven
-by construction only; it will prove itself the first time a box genuinely lands
-on the wrong AP and quietly moves back. Watch `apSsid` and `wifiDisc` in
-`/api/sysinfo`.
-
-Worth knowing: a **boot-time fall-through is how a box ends up on the wrong AP**
-in the first place. `wifi_start` gives the primary 15 s and then tries the alt;
-`.205` missed that window once and `.240` did not. Before 0.80.0 there was no
-way back.
-
----
-
-## 2026-09-28 — HA rework, a use-after-free, and an unsolved OTA panic
-
-**Classification is NOT broken** — the day's data just looked that way. Today
-was **rainy**: `.240` logged 41 "no bird" and **1** real visit, against 55–175
-on 25–27 Sep. All-time it has **1076 classified birds across 16 species**
-(Dompap 248, Kjøttmeis 235, Bokfink 214, Spettmeis 170…). The 41 rejections are
-the false-positive filter working correctly on raindrops. **Tomorrow in daylight
-is the real test of classification quality.**
-
-**HA model reworked (0.83.5 / v3.16).** Thirty per-species counters answered the
-wrong question; replaced by **one `Bird visits` sensor** (`total_increasing`,
-1302) carrying `species`, `confidence` and `false_positives` as **attributes**,
-so the trend graphs from the total and a point on the history still says which
-bird it was. Old entities **tombstoned** (retained discovery configs would
-otherwise replay forever). Caveat worth knowing: `species` is the *last
-identified* bird, not strictly that visit's — they coincide when classification
-is prompt. Publishing the state at classification time instead of on the 60 s
-tick would make it exact, if it ever matters.
-
-**Fixed: a use-after-free that panicked every settings save (0.82.6 / v3.15).**
-`ha_apply()` → `ha_stop()` waited 3 s for the publish task, then destroyed the
-MQTT client. Fine when the loop body was a sleep; **not** fine once the visit-log
-read (~2 s of SD) was in it. Now waits 10 s and **refuses to free the client at
-all** if the task has not exited. Verified: save returns `{"ok":true}` with
-uptime continuous.
-
-**UNSOLVED: `POST /ota/upload` panics whenever `haen=1`.** 6/6 with HA on, 2/2
-clean with `haen=0`. Usually after the image is written, but **once mid-upload**
-with the old image left running — so not cosmetic. **Workaround: `haen=0` → OTA
-→ `haen=1`.** Three hypotheses tested and wrong (see TODO.md — do not re-try).
-What remains: not MQTT *activity* but the subsystem having been **created**,
-pointing at internal DRAM (~99 kB with HA up vs ~119–139 kB without). Next step
-needs a backtrace, which needs hardware — coredump is disabled, there is no
-coredump partition, and adding one changes the partition table, which cannot be
-delivered by OTA.
-
-**Both units identically tuned** (sens 88, mount Close/40, cool 30, conf 25,
-HD, iNat conf 25) on the same tray. Differences are viewpoint and sensor only.
+| Every frame errored — the box never got an answer | 34 | 52% |
+| Mostly errored | 5 | 8% |
+| Answered, every frame under the 25% threshold | 16 | 25% |
+| Cleared 25% on one frame only (no 2-frame corroboration) | 9 | 14% |
+| Cleared 25% on ≥2 frames but species disagreed | 1 | 2% |
+
+**60% were transport failures, not classifier misses.** Ceiling if those were
+answered: ~80% identified. Errors were a **burst**: 7 in hour 07, **32 in hour
+08**, 0 in hour 09.
+
+**Ruled out live, not by inference:**
+- *Not* the rate limiter — `inatCooldown` was 0 across 55 samples; error runs
+  outlast the 60 s cooldown (08:44:17→08:46:33, four dead events); real rate is
+  ~15 req/min against a 100/min limit.
+- *Not* memory or TLS — iNat buffers are all PSRAM; 12 real handshakes through
+  `/api/inat-test` under load all succeeded, one at `heapIntBig8` 16 kB.
+
+Leading unproven suspect: a **401 storm** (`inat_score()` refreshes the JWT at
+entry; a flaky refresh fails every call until it takes — fits the duration and
+the abrupt clean recovery). `err:401` in the log settles it.
+
+**The 26 genuine misses are a framing problem, not a threshold problem.**
+Inspected the images: birds sit at the frame **edges** while the centre is full
+of seed; an edge-clipped bird reliably returns `Mammalia`. Median frame
+confidence 5% against a 25% threshold. Only 3 of 22 held an accepted in-region
+ID on a single frame (`Sitta europaea=65`, `Parus major=31`, `Pica pica=26`).
+**Do not lower `INAT_SOLO_ACCEPT_PCT` (75)** — it sits deliberately above the
+47–72% band where iNat flip-flops between look-alikes (settled v2.33/v2.34).
+
+## Queue behaviour (answered on real traffic)
+
+Peak **4 of 16**, ~148 s behind at the peak, **zero drops**. So the 16-deep
+buffer is comfortable at present load and the 15 s enqueue wait was
+deliberately left alone — counting first. Worth re-checking at a **dawn** peak,
+which is busier than the midday window that was sampled.
+
+`classify_submit_event()` waits 15 s for a slot then logs the event
+unclassified and returns — i.e. the box silently discards work, against the
+standing "never drop work" rule. `clsQDrops` now counts it.
+
+## VERIFIED on hardware today
+
+- `/api/event` returns a visit's true frame list, and **the same list whether
+  asked via the visit's first frame or a middle one** (the live view passes
+  `spFile`, usually mid-burst). Traversal input (`/etc/passwd`, `../`) rejected.
+- Served-page inline JS parses with esprima after every UI change (86 kB, one
+  block).
+- `err:<reason>` success path unchanged: `Sitta europaea=87;98;…`,
+  `Parus major=95;82;97`.
+- Queue counters move on real events; `clsQMax` 16.
+
+## NOT yet verified / still open
+
+- **`err:<reason>` has never fired in the field.** Nothing has failed since
+  0.84.0 was flashed, so the tag itself is unwitnessed. This is the gate on all
+  framing work (see TODO "Blocked on evidence").
+- **`.205` panicked spontaneously at 18:17:37**, ~3 h 45 min into an 0.89.2 boot
+  with HA enabled — not an OTA, not a settings save. `guardReboots:0`, so not
+  the heap guard. New data point on the open HA panic item.
+- The HA-enable panic is **intermittent**: 1 panic / 1 clean on deliberate
+  trials, so it is a *worse* reproducer than the OTA path (6/6), not a better
+  one. Do not build a bisect on it.
+- **15 "no bird" events today on weak evidence** — per-frame scores like
+  `Mollusca?=3`, `Animalia?=36`, i.e. iNat guessing non-Aves at 2–12%. Real
+  events filed as background. Part of the gated framing/threshold work.
+
+## What cost the most time, and why
+
+A "thumbnails do not appear" report took **four flashed releases** to diagnose.
+It was a browser serving a cached **0.85.0** page the whole time.
+
+1. Every curl test passed **raw slashes**; the browser sends `encodeURIComponent`
+   output. The one test that did encode was mangled by **Git Bash** into
+   `C%3a%2fProgram+Files%2fGit%2f…` (MSYS path conversion) — a false failure
+   that was briefly believed and acted on. Pass `%2F` explicitly.
+2. The staleness banner added in v3.22 **cannot fire on a page that predates
+   it** — dead code in exactly the case it was built for. "No banner" proves
+   nothing.
+3. **The symptoms named the cached build all along**: a visible QUEUE badge
+   (0.85.0) plus pre-0.86.0 click behaviour pins the version exactly.
+
+**Standing rule, now in the FSD changelog and memory: for any web-UI report,
+establish which build the browser is running before changing code.** The
+reliable remedy is a cache-busting URL — `http://<ip>/?v=2` — which is a
+guaranteed cache miss and needs no cooperation from the browser. Two of the four
+releases fixed real defects the user was never executing.
+
+Related: parsing the served page proves **syntax, not behaviour** — esprima
+happily accepted `getAttribute('href ')`.
+
+## Suggested next steps
+
+1. Read a day's `err:<reason>` tags; confirm or kill the 401-storm theory. This
+   unblocks the framing work.
+2. Then, and only then, discuss framing: the misses are edge-clipped birds, and
+   the detection zone is the user's call (never changed uninvited).
+3. Re-check the queue peak at dawn.
+4. Consider cutting a GitHub release — nothing has been released since v0.76.0
+   while the fleet has moved a long way past it.

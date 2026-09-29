@@ -320,6 +320,7 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 | `/api/sysinfo` | GET | Debug-card data (heap, heapMin+age, uptime, reconnects) |
 | `/api/events?date=&species=&page=` | GET | Paged visit log |
 | `/api/events/<id>` | PATCH / DELETE | Correct species label, favorite, delete |
+| `/api/event?f=<frame path>` | GET | Every frame of the visit that frame belongs to (any frame of it, not only the first) |
 | `/api/stats/daily`, `/api/stats/species`, `/api/stats/hourly` | GET | Chart data |
 | `/api/stats/reset` | POST | Delete all visit-log CSVs (clears stats/history; photos untouched) |
 | `/api/captures/delete` | POST | Bulk-delete photos: `date=` + `files=a.jpg,b.jpg` (multi-select) or `all=1` (whole day); add `stats=1` to also wipe that day's visit-log rows |
