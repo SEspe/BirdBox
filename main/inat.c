@@ -63,6 +63,7 @@ extern const char inat_roots_pem[] asm("_binary_inat_roots_pem_start");
                                    the top one, so the buffer holds more of them */
 
 static char     s_last_error[96] = "";
+static char     s_last_code[12]  = "";   /* short tag for the visit log (v3.17) */
 static int32_t  s_last_ms       = -1;
 static uint32_t s_calls         = 0;
 
@@ -86,20 +87,35 @@ int inat_cooldown_s(void)
     return s_cooldown_until_us > now ? (int) ((s_cooldown_until_us - now) / 1000000) + 1 : 0;
 }
 
+/* Every failure records TWO things: a human sentence for the Debug card, and a
+ * short stable tag that fits the visit log's per-frame column. The log used to
+ * store a bare "err" for all five distinct failures, which made an error storm
+ * indistinguishable from a rate-limit or an expired token after the fact — the
+ * reason was only ever on the serial console nobody was attached to (v3.17). */
+static void vfail(const char *code, const char *fmt, va_list ap)
+{
+    vsnprintf(s_last_error, sizeof(s_last_error), fmt, ap);
+    strlcpy(s_last_code, code, sizeof(s_last_code));
+    ESP_LOGW(TAG, "%s", s_last_error);
+}
+
 static void fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void fail(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(s_last_error, sizeof(s_last_error), fmt, ap);
-    va_end(ap);
-    ESP_LOGW(TAG, "%s", s_last_error);
+    va_list ap; va_start(ap, fmt); vfail("other", fmt, ap); va_end(ap);
+}
+
+static void fail_c(const char *code, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void fail_c(const char *code, const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt); vfail(code, fmt, ap); va_end(ap);
 }
 
 bool inat_have_token(void) { return g_settings.inat_key[0] != '\0'; }
 bool inat_cv_enabled(void) { return g_settings.inat_cv_enabled && inat_have_token(); }
 
 const char *inat_last_error(void)       { return s_last_error; }
+const char *inat_last_code(void)        { return s_last_code[0] ? s_last_code : "err"; }
 int32_t     inat_last_duration_ms(void) { return s_last_ms; }
 uint32_t    inat_call_count(void)       { return s_calls; }
 
@@ -109,6 +125,7 @@ void inat_token_changed(void)
 {
     s_cooldown_until_us = 0;
     s_last_error[0] = '\0';
+    s_last_code[0]  = '\0';
 }
 
 /* Multipart parts around the raw JPEG. When a geo hint is set, lat+lng parts are
@@ -162,9 +179,9 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
             inat_login(rb, sizeof(rb));
         s_jwt_stale = false;
     }
-    if (!inat_have_token()) { fail("no iNaturalist token"); return ESP_ERR_INVALID_STATE; }
+    if (!inat_have_token()) { fail_c("notok", "no iNaturalist token"); return ESP_ERR_INVALID_STATE; }
     if (!jpeg || len == 0 || len > INAT_MAX_SOURCE) {
-        fail("bad or oversized JPEG (%u B)", (unsigned) len);
+        fail_c("jpeg", "bad or oversized JPEG (%u B)", (unsigned) len);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -174,7 +191,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
      * paying for a decode + re-encode on a call we're not going to make. */
     int cd = inat_cooldown_s();
     if (cd > 0) {
-        fail("iNaturalist rate-limit cooldown — %d s left", cd);
+        fail_c("cooldn", "iNaturalist rate-limit cooldown — %d s left", cd);
         return ESP_ERR_INVALID_STATE;
     }
     /* Pace to the recommended ~1 req/s so a burst of events/manual identifies
@@ -192,7 +209,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     if (len > INAT_MAX_JPEG) {
         size_t fl = 0;
         if (cu_fit_jpeg(jpeg, len, INAT_MAX_JPEG, &fit, &fl) != ESP_OK) {
-            fail("cannot shrink JPEG to fit (%u B)", (unsigned) len);
+            fail_c("jpeg", "cannot shrink JPEG to fit (%u B)", (unsigned) len);
             return ESP_ERR_INVALID_SIZE;
         }
         jpeg = fit;
@@ -203,7 +220,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     char *auth = heap_caps_malloc(900, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp || !auth) {
         free(resp); free(auth); free(fit);
-        fail("out of memory"); return ESP_ERR_NO_MEM;
+        fail_c("mem", "out of memory"); return ESP_ERR_NO_MEM;
     }
     bearer(auth, 900);
 
@@ -235,7 +252,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         .buffer_size_tx    = 1024,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) { free(resp); free(auth); fail("http client init failed"); return ESP_FAIL; }
+    if (!c) { free(resp); free(auth); fail_c("init", "http client init failed"); return ESP_FAIL; }
     esp_http_client_set_header(c, "Content-Type", "multipart/form-data; boundary=" INAT_BOUNDARY);
     esp_http_client_set_header(c, "Authorization", auth);
     esp_http_client_set_header(c, "User-Agent", INAT_UA);
@@ -248,15 +265,16 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     if (err != ESP_OK) {
         char d[96];
         cu_tls_detail(c, d, sizeof(d));
-        fail("cannot reach iNaturalist (%s; %s)", esp_err_to_name(err), d);
+        fail_c(err == ESP_ERR_TIMEOUT ? "tmo" : "net",
+               "cannot reach iNaturalist (%s; %s)", esp_err_to_name(err), d);
         ret = (err == ESP_ERR_TIMEOUT) ? ESP_ERR_TIMEOUT : ESP_FAIL;
         goto done;
     }
-    if (!cu_write(c, pre, strlen(pre)))          { fail("upload failed (header)"); goto done; }
-    if (!cu_write(c, (const char *) jpeg, len))  { fail("upload failed (image)");  goto done; }
-    if (!cu_write(c, MP_POST, strlen(MP_POST)))  { fail("upload failed (trailer)"); goto done; }
+    if (!cu_write(c, pre, strlen(pre)))          { fail_c("up", "upload failed (header)"); goto done; }
+    if (!cu_write(c, (const char *) jpeg, len))  { fail_c("up", "upload failed (image)");  goto done; }
+    if (!cu_write(c, MP_POST, strlen(MP_POST)))  { fail_c("up", "upload failed (trailer)"); goto done; }
 
-    if (esp_http_client_fetch_headers(c) < 0) { fail("no reply from iNaturalist"); goto done; }
+    if (esp_http_client_fetch_headers(c) < 0) { fail_c("norep", "no reply from iNaturalist"); goto done; }
     int rd = 0, r;
     while (rd < INAT_RESP_MAX - 1 &&
            (r = esp_http_client_read(c, resp + rd, INAT_RESP_MAX - 1 - rd)) > 0)
@@ -268,7 +286,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         /* Too Many Requests — enter cooldown so subsequent events skip iNat
          * instead of piling onto the throttle (which only extends it). */
         s_cooldown_until_us = esp_timer_get_time() + INAT_COOLDOWN_US;
-        fail("iNaturalist rate limit (429) — cooling down 60 s (keep under ~60 req/min, 10k/day)");
+        fail_c("429", "iNaturalist rate limit (429) — cooling down 60 s (keep under ~60 req/min, 10k/day)");
         goto done;
     }
     if (status != 200) {
@@ -278,7 +296,8 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
         if (status == 401) s_jwt_stale = true;
         char msg[80] = "";
         cu_json_str(resp, "error", msg, sizeof(msg));
-        fail("iNat HTTP %d%s%s", status, msg[0] ? ": " : "", msg);
+        fail_c(status == 401 ? "401" : "http", "iNat HTTP %d%s%s", status,
+               msg[0] ? ": " : "", msg);
         goto done;
     }
 
@@ -362,6 +381,7 @@ esp_err_t inat_classify_jpeg(const uint8_t *jpeg, size_t len, classify_result_t 
     out->duration_ms = (int32_t) ((esp_timer_get_time() - t0) / 1000);
     s_last_ms = out->duration_ms;
     s_last_error[0] = '\0';
+    s_last_code[0]  = '\0';
     s_calls++;
     ESP_LOGI(TAG, "%s (%u%%, %ld ms, %u KB)", out->species, out->confidence_pct,
              (long) out->duration_ms, (unsigned) (len / 1024));

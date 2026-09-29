@@ -74,6 +74,12 @@ int inat_cooldown_s(void);
 
 /* Debug-card data (FSD §5). */
 const char *inat_last_error(void);       /* "" when the last call succeeded */
+
+/* Short stable tag for the last failure — what the visit log's per-frame column
+ * stores in place of the old bare "err", so an error storm can be told apart
+ * from a rate-limit or an expired token after the fact (v3.17). One of:
+ * net, tmo, up, norep, 401, http, 429, cooldn, jpeg, mem, init, notok, other. */
+const char *inat_last_code(void);
 int32_t     inat_last_duration_ms(void); /* -1 = no call yet */
 uint32_t    inat_call_count(void);       /* successful calls since boot */
 

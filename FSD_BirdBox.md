@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.16
+**Version:** 3.17
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -208,6 +208,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
 ### 3.4 History & statistics
 
 - Every visit event is appended to a visit log on SD (`/log/visits.csv`, append-only, one file per month): timestamp, species, confidence, frame count, file paths, user correction.
+- Each row also carries a **per-frame diagnostic column** — one entry per frame the online classifier scored: `<binomial>=<pct>` for an accepted species, `<binomial>?=<pct>` when the frame was scored but the species was not accepted, or `err:<reason>` when the call itself failed (`net`, `tmo`, `up`, `norep`, `401`, `http`, `429`, `cooldn`, `jpeg`, `mem`, `init`, `notok`). The reason is recorded, not just the fact of failure, because it is what makes an unclassified event self-explaining afterwards: an event the box never got an answer for and one the classifier genuinely was unsure about look identical in the log otherwise, and the two call for opposite remedies — fix the transport, or move the threshold.
 - **Gallery tab:** browse captures by day; each event's first frame is badged with its species + confidence (joined from the visit log by frame path, localized to the display language); view full-size frames, delete a single capture, multi-select + delete, delete a whole day (photos only), or **wipe a day** (photos + that day's statistics in one action). Favorites (pruning-exempt) and in-gallery label correction remain deferred.
 - **Statistics tab:**
   - visits per day/week/month (bar chart),

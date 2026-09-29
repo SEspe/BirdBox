@@ -368,7 +368,13 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
              * frames' scores after the slow ones. */
             if (pf && pfo + 48 < pf_len) {
                 if (e != ESP_OK) {
-                    pfo += snprintf(pf + pfo, pf_len - pfo, "%serr", pfo ? ";" : "");
+                    /* Record WHY, not just THAT (v3.17): "err:401" / "err:net" /
+                     * "err:429"… The bare "err" this used to write collapsed five
+                     * unrelated failures into one token, so a morning of dead
+                     * events could not be told apart from a throttle or a stale
+                     * JWT without a serial console attached at the time. */
+                    pfo += snprintf(pf + pfo, pf_len - pfo, "%serr:%s",
+                                    pfo ? ";" : "", inat_last_code());
                 } else {
                     char lat[48] = "";
                     if (r.latin[0]) {
