@@ -19,7 +19,8 @@ this file is the "where we stopped and what is still unproven" layer.
 
 Commits: `b771904` `72817e5` `eb4cb34` `68b99ef` `00bb28d` `3752dcf` `c12aaf7`
 `0c7c66e` `b199bd9` `292af63` `1e25cfe`. master == origin/master.
-**Nothing released on GitHub today** — 0.89.2 is committed and pushed only.
+**Released: v0.89.2** on GitHub (asset `BirdBox_esp32s3_v0.89.2.bin`,
+verified byte-identical after download). Previous release was v0.79.0.
 
 ## Unit state
 
@@ -137,5 +138,5 @@ happily accepted `getAttribute('href ')`.
 2. Then, and only then, discuss framing: the misses are edge-clipped birds, and
    the detection zone is the user's call (never changed uninvited).
 3. Re-check the queue peak at dawn.
-4. Consider cutting a GitHub release — nothing has been released since v0.76.0
-   while the fleet has moved a long way past it.
+4. Consider updating `.240` (still 0.80.0) from the new release when you are
+   ready — remember to disable HA first.

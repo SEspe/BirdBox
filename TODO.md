@@ -22,8 +22,10 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 - [ ] **Re-check the queue peak at dawn.** Measured 4 of 16 (~148 s behind, zero
       drops) at midday; dawn is the busier window and is what would actually
       exercise the 16-deep buffer and the 15 s enqueue wait.
-- [ ] **No GitHub release since v0.76.0** while the fleet has moved to 0.89.2
-      (`.205`) and 0.80.0 (`.240`). Worth cutting one.
+- [x] ~~**No GitHub release since v0.79.0**~~ — **DONE: v0.89.2 released
+      2026-09-29**, asset `BirdBox_esp32s3_v0.89.2.bin`, verified byte-identical
+      after download. `.240` is still on 0.80.0 and can take it from its own OTA
+      tab (disable HA first).
 
 ## Blocked on evidence (added 2026-09-29, 0.84.0)
 - [ ] **Do not touch `detect_zoom`, the detection zone or the framing until the

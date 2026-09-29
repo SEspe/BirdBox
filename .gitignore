@@ -58,3 +58,4 @@ sdkconfig.esp32trial
 build_tqio/
 sdkconfig.tqio
 sdkconfig.testqio
+dist/
