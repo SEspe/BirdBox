@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.22
+**Version:** 3.23
 **Author:** SEspe
 **Date:** 2026-09-22
 

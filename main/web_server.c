@@ -3498,6 +3498,13 @@ static esp_err_t h_event(httpd_req_t *req)
     char query[160] = {0}, f[128] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     httpd_query_key_value(query, "f", f, sizeof(f));
+    /* httpd_query_key_value does NOT percent-decode, and the caller builds
+     * this with encodeURIComponent, so every "/" arrives as %2F. Without
+     * this the "/captures/" check below fails on every real browser request
+     * while a hand-typed curl with raw slashes works perfectly — which is
+     * exactly how it shipped broken (v3.23). Same call every other handler
+     * in this file already makes. */
+    url_decode(f);
     httpd_resp_set_type(req, "application/json");
 
     /* Accept only "/captures/<date>/<name>" — this string reaches opendir(). */
