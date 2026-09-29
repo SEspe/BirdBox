@@ -1975,7 +1975,7 @@ ROT_OPTIONS
  * about which frames belong to one visit. Any failure falls back to the old
  * behaviour (raw image in a new tab) rather than leaving a dead click. */
 "function evA(a,ev){if(ev&&ev.preventDefault)ev.preventDefault();"
-"evOpen(a.getAttribute('href '));return false;}"
+"evOpen(a.getAttribute('href'));return false;}"
 "var g_ev=null,g_evi=0;"
 "function evClose(){var e=$g('evov');if(e)e.classList.remove('on');g_ev=null;}"
 "function evShow(i){if(!g_ev||!g_ev.files.length)return;"
