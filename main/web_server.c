@@ -449,6 +449,29 @@ static const char INDEX_HTML[] =
 "border-radius:4px}"
 ".qbadge.on{display:inline-flex}"
 ".qbadge.warn{background:rgba(138,109,63,.95);color:#fff3dc}"
+/* Visit viewer (v3.19): one event is a BURST of frames, and showing only the
+ * trigger frame hid the rest. The selected frame fills the space; the visit's
+ * other frames sit below as large thumbnails, big enough to judge a bird in. */
+".evov{position:fixed;inset:0;z-index:60;background:rgba(8,14,10,.95);display:none;"
+"flex-direction:column;align-items:center;padding:12px;box-sizing:border-box}"
+".evov.on{display:flex}"
+".evtop{width:100%;display:flex;align-items:center;gap:10px;color:#dce7f0;"
+"font-size:.82rem;flex:0 0 auto;padding-bottom:6px}"
+".evtop .evsp{font-weight:700}"
+".evtop .evcap{opacity:.55;font-size:.7rem}"
+".evx{margin-left:auto;background:rgba(0,0,0,.5);color:#eafaef;border:0;"
+"border-radius:4px;font-size:1.1rem;line-height:1;padding:5px 10px;cursor:pointer;"
+"font-family:inherit}"
+".evx:hover{background:rgba(0,0,0,.8)}"
+".evbigw{flex:1 1 auto;min-height:0;width:100%;display:flex;align-items:center;"
+"justify-content:center}"
+".evbig{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}"
+".evstrip{flex:0 0 auto;width:100%;display:flex;gap:8px;overflow-x:auto;padding:10px 0 2px}"
+".evth{flex:0 0 auto;width:160px;aspect-ratio:16/9;object-fit:cover;border-radius:5px;"
+"cursor:pointer;opacity:.5;border:2px solid transparent;transition:opacity .12s}"
+".evth:hover{opacity:.85}"
+".evth.cur{opacity:1;border-color:#7fc98b}"
+"@media(max-width:560px){.evth{width:108px}}"
 "button.act.off{background:#8a6d3f}"
 ".zone{position:absolute;inset:0;z-index:4;display:none;"
 "grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr)}"
@@ -1094,6 +1117,13 @@ ROT_OPTIONS
  * walks the body's text nodes once and does not re-walk anything JS inserts
  * later (the standing Phase 3 limitation), so a label built in JS would stay
  * English forever. Only the VALUES are filled in by spiRender. */
+"<div class='evov' id='evov' onclick='if(event.target===this)evClose()'>"
+"<div class='evtop'><span class='evsp' id='evsp'></span>"
+"<span class='evcap' id='evcap'></span>"
+"<button class='evx' onclick='evClose()' title='close'>&#10005;</button></div>"
+"<div class='evbigw'><img class='evbig' id='evbig' alt=''></div>"
+"<div class='evstrip' id='evstrip'></div>"
+"</div>"
 "<div class='spop' id='spop' onclick='if(event.target===this)spiClose()'>"
 "<div class='spbox'><span class='spx' onclick='spiClose()'>&#10005;</span>"
 "<h4 id='spiT'></h4>"
@@ -1423,7 +1453,7 @@ ROT_OPTIONS
  * the event's best image, not merely its first frame (v2.53). No spFile (e.g.
  * nothing identified since boot) falls back to plain text. */
 "if(spL){if(s.species){var hb='<span class=splbl>last id</span>'+esc(s.species)+(s.spConf?' <span class=spc>'+s.spConf+'%<\\/span>':'');"
-"var hl=s.spFile?'<a class=splink href=\"'+esc(s.spFile)+'\" target=_blank rel=noopener>'+hb+'<\\/a>':hb;"
+"var hl=s.spFile?'<a class=splink href=\"'+esc(s.spFile)+'\" target=_blank rel=noopener onclick=evA(this,event)>'+hb+'<\\/a>':hb;"
 "if(spL.dataset.v!==hl){spL.dataset.v=hl;spL.innerHTML=hl;}spL.classList.add('on');}"
 "else spL.classList.remove('on');}"
 /* The reference photo tracks the LAST ID badge, not the ephemeral CURRENT one:
@@ -1680,7 +1710,7 @@ ROT_OPTIONS
 "div.innerHTML=bdg+'<input type=\"checkbox\" class=\"gchk\" data-f=\"'+esc(o.f)+'\" "
 "title=\"shift-click to select the whole range\" "
 "onclick=\"gChkClick(event,this)\" onchange=\"gSelSync(this)\">"
-"<a href=\"'+p+'\" target=\"_blank\"><img loading=\"lazy\" src=\"'+p+'\"></a>"
+"<a href=\"'+p+'\" target=\"_blank\" onclick=evA(this,event)><img loading=\"lazy\" src=\"'+p+'\"></a>"
 "<div class=\"gmeta\"><span>'+o.f+'</span>"
 "<span><button class=\"gidbtn\" title=\"open full image (new tab)\" "
 "onclick=\"openFull(\\''+p+'\\')\">&#128065;</button>"
@@ -1940,6 +1970,41 @@ ROT_OPTIONS
  * the double-click = no-bird gesture clean (§3.4). window.open in a click
  * handler is a direct user gesture, so it isn't popup-blocked. */
 "function openFull(p){window.open(p,'_blank');}"
+/* Visit viewer (v3.19). The frame list comes from /api/event, which derives it
+ * from the visit log server-side, so the live view and the Gallery always agree
+ * about which frames belong to one visit. Any failure falls back to the old
+ * behaviour (raw image in a new tab) rather than leaving a dead click. */
+"function evA(a,ev){if(ev&&ev.preventDefault)ev.preventDefault();"
+"evOpen(a.getAttribute('href '));return false;}"
+"var g_ev=null,g_evi=0;"
+"function evClose(){var e=$g('evov');if(e)e.classList.remove('on');g_ev=null;}"
+"function evShow(i){if(!g_ev||!g_ev.files.length)return;"
+"if(i<0)i=0;if(i>=g_ev.files.length)i=g_ev.files.length-1;g_evi=i;"
+"var b=$g('evbig');if(b)b.src='/captures/'+g_ev.date+'/'+g_ev.files[i];"
+"var th=document.querySelectorAll('#evstrip .evth');"
+"for(var k=0;k<th.length;k++)th[k].classList.toggle('cur',k===i);"
+"if(th[i]&&th[i].scrollIntoView)th[i].scrollIntoView({block:'nearest',inline:'nearest'});"
+"var c=$g('evcap');if(c)c.textContent=(i+1)+' of '+g_ev.files.length+'  '+g_ev.files[i];}"
+"function evOpen(p){if(!p)return;"
+"fetch('/api/event?f='+encodeURIComponent(p)).then(r=>r.json()).then(function(j){"
+"if(!j||!j.files||!j.files.length){window.open(p,'_blank');return;}"
+"g_ev=j;var h='';"
+"for(var k=0;k<j.files.length;k++)"
+"h+='<img class=evth loading=lazy onclick=evShow('+k+') src=/captures/'+j.date+'/'+j.files[k]+'>';"
+"var s=$g('evstrip');if(s)s.innerHTML=h;"
+"var t=$g('evsp');"
+"if(t)t.textContent=(j.sp||'unclassified')+(j.pct?' '+j.pct+'%':'')+' - '+j.files.length+' frame'+(j.files.length===1?'':'s');"
+"var want=p.split('/').pop();var idx=j.files.indexOf(want);"
+"var o=$g('evov');if(o)o.classList.add('on');"
+"evShow(idx<0?0:idx);"
+"}).catch(function(){window.open(p,'_blank');});}"
+/* Own key handler: the species panel's is gated on #spop being visible, so the
+ * two never both act on one press. */
+"document.addEventListener('keydown',function(ev){"
+"var e=$g('evov');if(!e||!e.classList.contains('on'))return;"
+"if(ev.key==='Escape')evClose();"
+"else if(ev.key==='ArrowLeft'){ev.preventDefault();evShow(g_evi-1);}"
+"else if(ev.key==='ArrowRight'){ev.preventDefault();evShow(g_evi+1);}});"
 "function gRcStart(d,files){fetch('/api/recheck',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
 "body:'date='+encodeURIComponent(d)+(files?'&files='+files:'')}).then(r=>r.json())"
@@ -2035,7 +2100,7 @@ ROT_OPTIONS
 "if(!a.length){el.innerHTML='<span class=sts>No images for '+esc(nm)+'</span>';return;}"
 "el.innerHTML='<h3 class=sh>Last '+a.length+' image(s)'+(g_statScope==='day'?sDayLbl():'')+': '+esc(nm)+'</h3>'+"
 "'<div class=grid>'+a.map(o=>'<div class=gitem>"
-"<a href=\"'+o.f+'\" target=_blank><img loading=lazy src=\"'+o.f+'\"></a>"
+"<a href=\"'+o.f+'\" target=_blank onclick=evA(this,event)><img loading=lazy src=\"'+o.f+'\"></a>"
 "<div class=gmeta><span>'+esc((o.t||'').replace('T',' '))+'</span></div></div>').join('')+'</div>';"
 "}).catch(()=>{el.innerHTML='<span class=sts>Failed to load images</span>';});}"
 "function statsReset(){"
@@ -3361,6 +3426,132 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
     fclose(fp);
     t->n = count;
     return count;
+}
+
+/* GET /api/event?f=/captures/YYYY-MM-DD/NAME.jpg — every frame of the VISIT that
+ * one frame belongs to, so a viewer can show the whole burst instead of a single
+ * still (§3.4, v3.19).
+ *
+ * A motion event labels only its trigger frame in the visit log, so the log rows
+ * ARE the event boundaries: a visit runs from its own first frame up to the next
+ * logged first frame. That is derived here, ONCE, server-side, and both the live
+ * view and the Gallery call it. The Gallery's 15 s GPGAP propagation is a DISPLAY
+ * heuristic for badge text; deriving the frame list from that separately would let
+ * the two quietly disagree about which frames make up the same visit.
+ *
+ * `f` may be ANY frame of the visit, not just the first — the live view passes
+ * spFile, the event's peak-confidence frame, which is usually mid-burst. */
+#define EV_MAX_FRAMES 48
+#define EV_OBUF       4096  /* reply buffer; own constant - EVENTS_OBUF is declared below */    /* a burst is ~5-10; cap so one event can't flood the reply */
+static esp_err_t h_event(httpd_req_t *req)
+{
+    char query[160] = {0}, f[128] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    httpd_query_key_value(query, "f", f, sizeof(f));
+    httpd_resp_set_type(req, "application/json");
+
+    /* Accept only "/captures/<date>/<name>" — this string reaches opendir(). */
+    const char *pfx = "/captures/";
+    if (strncmp(f, pfx, strlen(pfx)) != 0 || strstr(f, "..")) {
+        httpd_resp_sendstr(req, "{\"files\":[]}");
+        return ESP_OK;
+    }
+    char date[36] = {0}, base[48] = {0};
+    const char *p = f + strlen(pfx);
+    const char *slash = strchr(p, '/');
+    if (!slash || (size_t)(slash - p) >= sizeof(date)) {
+        httpd_resp_sendstr(req, "{\"files\":[]}");
+        return ESP_OK;
+    }
+    memcpy(date, p, (size_t)(slash - p));
+    strlcpy(base, slash + 1, sizeof(base));
+    for (const char *c = date; *c; c++)
+        if (!isalnum((unsigned char) *c) && *c != '-') {
+            httpd_resp_sendstr(req, "{\"files\":[]}");
+            return ESP_OK;
+        }
+
+    char dir[112];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.36s", date);
+    DIR *d = (storage_sd_present() && date[0] && base[0]) ? opendir(dir) : NULL;
+    if (!d) { httpd_resp_sendstr(req, "{\"files\":[]}"); return ESP_OK; }
+
+    gal_tab_t *tab = heap_caps_calloc(1, sizeof(gal_tab_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int nlabels = tab ? gal_build_labels(date, tab) : 0;
+
+    /* Bracket the visit: `lo` = the latest event-start at or before this frame,
+     * `hi` = the earliest one after it. Capture names are timestamp-ordered, so
+     * lexicographic order IS chronological order and a plain strcmp suffices.
+     * No label at or before the frame (lo empty) means the frame precedes every
+     * logged event that day; the [lo, hi) window then starts at the day's first
+     * file, which is the honest answer rather than an empty reply. */
+    char lo[48] = "", hi[48] = "";
+    int  lo_i = -1;
+    for (int i = 0; i < nlabels; i++) {
+        const char *b = tab->l[i].base;
+        if (strcmp(b, base) <= 0) {
+            if (!lo[0] || strcmp(b, lo) > 0) { strlcpy(lo, b, sizeof(lo)); lo_i = i; }
+        } else {
+            if (!hi[0] || strcmp(b, hi) < 0) strlcpy(hi, b, sizeof(hi));
+        }
+    }
+
+    /* Collect the window's filenames, then sort — readdir order is arbitrary. */
+    /* NOT static: two browsers can sit in this handler at once and a shared
+     * buffer would interleave their frame lists. */
+    char (*names)[48] = heap_caps_calloc(EV_MAX_FRAMES, 48,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int n = 0;
+    struct dirent *e;
+    while (names && (e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
+        if (!strstr(e->d_name, ".jpg")) continue;
+        if (lo[0] && strcmp(e->d_name, lo) < 0) continue;
+        if (hi[0] && strcmp(e->d_name, hi) >= 0) continue;
+        if (n >= EV_MAX_FRAMES) continue;
+        strlcpy(names[n++], e->d_name, 48);
+    }
+    closedir(d);
+    for (int i = 1; i < n; i++) {                    /* insertion sort, n is tiny */
+        char tmp[48];
+        strlcpy(tmp, names[i], sizeof(tmp));
+        int j = i - 1;
+        while (j >= 0 && strcmp(names[j], tmp) > 0) { strlcpy(names[j + 1], names[j], 48); j--; }
+        strlcpy(names[j + 1], tmp, 48);
+    }
+
+    char *obuf = malloc(EV_OBUF);
+    if (!obuf) {
+        free(tab); free(names);
+        httpd_resp_sendstr(req, "{\"files\":[]}");
+        return ESP_OK;
+    }
+    const char *sp = "";
+    int pct = 0, state = 0;
+    if (lo_i >= 0) {
+        if (tab->l[lo_i].spi != GAL_SPI_NONE) sp = tab->sp[tab->l[lo_i].spi];
+        pct   = tab->l[lo_i].pct;
+        state = tab->l[lo_i].state;
+    }
+    char spe[96];
+    json_escape(spe, sizeof(spe), sp);
+    size_t used = 0;
+    int w = snprintf(obuf, EV_OBUF,
+                     "{\"date\":\"%.36s\",\"first\":\"%.47s\",\"sp\":\"%s\","
+                     "\"pct\":%d,\"st\":%d,\"files\":[", date, lo, spe, pct, state);
+    used = (size_t) json_fit(__func__, w, EV_OBUF);
+    for (int i = 0; i < n; i++) {
+        w = snprintf(obuf + used, EV_OBUF - used, "%s\"%.47s\"",
+                     i ? "," : "", names[i]);
+        used += (size_t) json_fit(__func__, w, EV_OBUF - used);
+    }
+    w = snprintf(obuf + used, EV_OBUF - used, "]}");
+    used += (size_t) json_fit(__func__, w, EV_OBUF - used);
+
+    httpd_resp_send(req, obuf, used);
+    free(obuf); free(tab); free(names);
+    return ESP_OK;
 }
 
 /* GET /api/events?date=YYYY-MM-DD — files of one capture day, each annotated
@@ -6347,6 +6538,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },
         { .uri = "/api/events",  .method = HTTP_GET,  .handler = h_events     },
+        { .uri = "/api/event",   .method = HTTP_GET,  .handler = h_event      },
         { .uri = "/api/labels",  .method = HTTP_GET,  .handler = h_labels     },
         { .uri = "/api/labels/confirmed", .method = HTTP_GET, .handler = h_labels_confirmed },
         { .uri = "/api/relabel", .method = HTTP_POST, .handler = h_relabel    },
