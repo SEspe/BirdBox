@@ -4,6 +4,26 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Blocked on evidence (added 2026-09-29, 0.84.0)
+- [ ] **Do not touch `detect_zoom`, the detection zone or the framing until the
+      `err:<reason>` tags have been read.** Operator call, and the right one:
+      on 2026-09-29 **60% of unclassified events (39 of 65) were transport
+      failures, not classifier misses** — the box never got an answer. Framing
+      work aimed at the remaining 26 would be tuning against the smaller half
+      of the problem, and if the storm turns out to be routine, today’s 51%
+      identified is not the baseline any change should be measured against.
+      **Gate:** wait for a day that logs `err:<reason>` (0.84.0 shipped the
+      tag; nothing had failed yet when it was deployed), then split the losses
+      transport-vs-classifier before proposing anything.
+      Leading suspect to confirm or kill first: a **401 storm** —
+      `inat_score()` refreshes the JWT at entry, and a flaky refresh fails
+      every call until it takes, which fits both the ~50 min duration and the
+      abrupt clean recovery. `err:401` in the log settles it either way.
+      Context for when this unblocks: the genuine misses are **edge-clipped /
+      peripheral birds against a seed-filled frame centre**, not a threshold
+      problem, and `INAT_SOLO_ACCEPT_PCT` (75) should stay — see
+      FSD changelog v2.33/v2.34 and v3.17.
+
 ## Do next (2026-08-01)
 - [x] ~~**Switch the S3 target to QIO flash**~~ — **DONE, shipped 0.74.46 / FSD v2.80.**
       `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` in `sdkconfig.defaults.esp32s3`.
