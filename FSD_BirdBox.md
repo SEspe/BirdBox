@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.26
+**Version:** 3.30
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -209,6 +209,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
 
 - Every visit event is appended to a visit log on SD (`/log/visits.csv`, append-only, one file per month): timestamp, species, confidence, frame count, file paths, user correction.
 - Each row also carries a **per-frame diagnostic column** — one entry per frame the online classifier scored: `<binomial>=<pct>` for an accepted species, `<binomial>?=<pct>` when the frame was scored but the species was not accepted, or `err:<reason>` when the call itself failed (`net`, `tmo`, `up`, `norep`, `401`, `http`, `429`, `cooldn`, `jpeg`, `mem`, `init`, `notok`). The reason is recorded, not just the fact of failure, because it is what makes an unclassified event self-explaining afterwards: an event the box never got an answer for and one the classifier genuinely was unsure about look identical in the log otherwise, and the two call for opposite remedies — fix the transport, or move the threshold.
+- **Scoring stops as soon as the verdict is decided.** An event’s frames are scored one at a time and uploading stops the moment the acceptance rule is satisfied — two frames agreeing, or a single frame clearing the much higher solo bar. A lone frame must be far more certain precisely because nothing corroborates it. Frames that could not have changed the outcome are never sent, because each upload is radio and processor time taken from watching the feeder.
 - **“Last identified” is one record.** The species name, its binomial, the confidence and the frame they came from are updated together and only when a real species was identified. A “no bird” or “unidentified” verdict is logged and drives the live view’s *current* state, but never becomes the last identification — so the last-ID display can never name one thing while linking to another.
 - **Visit viewer.** A motion event is a burst of frames, so clicking a capture opens the whole visit rather than one still: the chosen frame large, the visit’s other frames below it as clickable thumbnails that swap into the large view (arrow keys navigate, Escape closes). Reachable from the live view’s last-identified badge, a Gallery tile, and a Stats species image. The frame list is derived once on the device from the visit log — an event runs from its own logged first frame up to the next one — so every view agrees on which frames make up a visit. If the request fails the click falls back to opening the raw image, and the underlying link still works without JavaScript.
 - **Gallery tab:** browse captures by day; each event's first frame is badged with its species + confidence (joined from the visit log by frame path, localized to the display language); view full-size frames, delete a single capture, multi-select + delete, delete a whole day (photos only), or **wipe a day** (photos + that day's statistics in one action). Favorites (pruning-exempt) and in-gallery label correction remain deferred.
@@ -217,6 +218,8 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
   - species leaderboard (distinct species, visit counts, first/last seen),
   - activity-by-hour-of-day profile,
   - "new species" flag when a species appears for the first time.
+- **The work the detector does inline is timed too.** Capturing an event — grabbing each frame of the burst and writing it to storage — and handing the event to the classifier both run inside the detection task, so both are time the box is not watching. Each is reported separately, with its worst case since boot.
+- **iNaturalist’s own response time is reported separately from the event’s total.** One round trip and one whole classification are different questions: an event’s total rises both when the remote service slows and when more frames are sent, so the two are published side by side and neither is left to be inferred from the other. Both are omitted until something has actually been classified rather than reported as a sentinel value.
 - **The fast-burst gap and the last classification’s duration are published to Home Assistant.** Both matter as trends rather than readings: the burst exists to catch a bird that stops for under a second, so a gap that drifts upward means short visits are being missed with nothing else to show it; and the classification duration is what decides whether the queue keeps up, so it is graphed beside the queue depth it explains. The duration is omitted until something has been classified rather than published as a sentinel value.
 - **A slow detect frame says which half was slow.** Each frame separately reports the time spent waiting for the camera and the time spent decoding it, with the worst of each since boot, in `/api/motion`, the Debug tab and Home Assistant. The detect cadence is a duty cycle rather than a fixed rate — it degrades when the box is busy — so it is published as a trend, and split in two so the trend distinguishes frames failing to arrive from the processor being taken elsewhere.
 - **The detector reports itself.** Every compared frame publishes how many frames have been processed, the measured gap between them, how much of the zone changed, the dominant cluster’s share and cell count, the threshold it had to beat, whether a global light step suppressed it, and a count of failed decodes — in `/api/motion` and the Debug tab. The trigger-derived counters are last-trigger snapshots and read zero whether the detector is seeing nothing, rejecting everything, or not running, so they cannot answer “is detection working?”; these can, without attaching a serial console.
@@ -314,6 +317,8 @@ All settings persist in NVS and apply without reflashing; settings that require 
 ---
 
 ## 6. REST API
+
+> Every diagnostic field — what it measures, a healthy value, and what a bad one indicates — is documented in [`docs/TELEMETRY.md`](docs/TELEMETRY.md). Several of these fields are snapshots rather than live values, and reading one as the other has caused wrong conclusions; the reference is explicit about which is which.
 
 All UI data flows through JSON endpoints, so the device is scriptable/integrable (Home Assistant etc.) without scraping:
 

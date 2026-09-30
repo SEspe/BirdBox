@@ -24,6 +24,7 @@
 #include "capture.h"
 #include "classify.h"
 #include "motion.h"
+#include "inat.h"
 #include "storage.h"
 #include "species_i18n.h"
 #include "web_server.h"
@@ -168,6 +169,16 @@ static const ha_entity_t ENTITIES[] = {
      * it next to cls_queue/cls_queue_peak shows cause beside effect. */
     { "fast_gap_ms",  "Fast-burst gap",        NULL,             "ms", "measurement",  true,  false },
     { "classify_ms",  "Last classification",   "duration",       "ms", "measurement",  true,  false },
+    /* The per-CALL figure, which classify_ms alone cannot give you (v3.30).
+     * classify_ms is the whole event: SD reads + one iNat round trip PER FRAME
+     * SCORED + any crop decode + any cloud fallback. So it rises both when
+     * iNaturalist slows down and when more frames were sent, and a graph of it
+     * cannot say which. inat_ms is one HTTP round trip, so the pair separates
+     * "the remote service is slow today" (inat_ms, outside our control) from
+     * "this event cost a lot" (classify_ms ~= inat_ms x frames + overhead).
+     * Measured the same day: 1478 ms and 57865 ms for whole events, while the
+     * per-call figure is what actually moved. */
+    { "inat_ms",      "iNaturalist response",  "duration",       "ms", "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -491,6 +502,9 @@ static void publish_state(void)
      * returns -1 before the first event, and publishing that would draw a
      * spurious point on the duration graph. Same reasoning as temp above —
      * HA renders a missing value as "unknown", which is what it is. */
+    int32_t ims = inat_last_duration_ms();
+    if (ims >= 0) n = jcat(buf, sizeof(buf), n, ",\"inat_ms\":%ld", (long) ims);
+
     int32_t cms = classify_last_duration_ms();
     if (cms >= 0) n = jcat(buf, sizeof(buf), n, ",\"classify_ms\":%ld", (long) cms);
 

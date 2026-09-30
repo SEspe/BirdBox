@@ -365,6 +365,19 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
      * slow frames can be scored first and the fast-burst backup only added on
      * fallback (v2.56); with fast_count 0 (recheck) this scores every frame in
      * one pass, unchanged. */
+    /* Defined BEFORE score_range so the scoring loop can consult it and stop
+     * once the answer is already decided (v3.29). */
+    auto pick_winner = [&]() -> int {
+        int w = -1;
+        for (int k = 0; k < ncand; k++)
+            if (cand[k].votes >= 2 && (w < 0 || cand[k].peak > cand[w].peak)) w = k;
+        if (w < 0)
+            for (int k = 0; k < ncand; k++)
+                if (cand[k].peak >= INAT_SOLO_ACCEPT_PCT &&
+                    (w < 0 || cand[k].peak > cand[w].peak)) w = k;
+        return w;
+    };
+
     auto score_range = [&](int lo, int hi) {
         for (int i = lo; i < hi; i++) {
             char full[128];
@@ -433,6 +446,27 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
                 cand[slot].roi  = job->rois[i];
                 strlcpy(cand[slot].best, job->paths[i], sizeof(cand[slot].best));
             }
+
+            /* STOP AS SOON AS THE ANSWER IS DECIDED (v3.29). Every frame of an
+             * event used to be uploaded before the winner was chosen, which on
+             * a clear bird meant 5-8 iNat round trips of up to 300 kB each to
+             * confirm what the first two frames already agreed on. The exit
+             * test is the acceptance rule itself, so the verdict for these
+             * events is unchanged -- only the uploads that could not have
+             * altered it are skipped. That is also the operator's point: one
+             * frame must clear the much higher solo bar (75%) precisely because
+             * it stands alone, while two agreeing frames need only 25%.
+             *
+             * The trade is explicit: a later frame might have scored the same
+             * species higher, or surfaced a better one. Best-of-N is given up
+             * for far less radio time, because the uploads are what starve the
+             * detector -- and a corroborated or 75%-solo verdict is already the
+             * bar this design trusts. */
+            if (pick_winner() >= 0) {
+                ESP_LOGI(TAG, "decided after %d of %d frame(s) - skipping the rest",
+                         i - lo + 1, hi - lo);
+                break;
+            }
         }
     };
 
@@ -440,16 +474,6 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
      * only if VERY confident (>= INAT_SOLO_ACCEPT_PCT, v2.33) so an obvious bird
      * that didn't linger isn't dropped, while a weak lone hit still needs a
      * second frame (the false-positive guard). */
-    auto pick_winner = [&]() -> int {
-        int w = -1;
-        for (int k = 0; k < ncand; k++)
-            if (cand[k].votes >= 2 && (w < 0 || cand[k].peak > cand[w].peak)) w = k;
-        if (w < 0)
-            for (int k = 0; k < ncand; k++)
-                if (cand[k].peak >= INAT_SOLO_ACCEPT_PCT &&
-                    (w < 0 || cand[k].peak > cand[w].peak)) w = k;
-        return w;
-    };
 
     /* Slow frames first. The fast-burst backup ([0, fast_count)) is scored — and
      * uploaded to iNat — ONLY if the slow frames yield no winner (v2.56), so the

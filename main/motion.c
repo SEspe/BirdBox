@@ -176,6 +176,7 @@ static volatile bool     s_live_gstep   = false; /* suppressed by a light step *
  * starved of PSRAM bandwidth, or the driver's buffers held), while a decode that
  * blocks means CPU or PSRAM contention with the classifier's own decode. Max
  * values are kept because the stall is intermittent and a poll will miss it. */
+static volatile int32_t  s_cap_ms    = 0, s_cap_max   = 0;  /* capture_event(), inline */
 static volatile int32_t  s_grab_ms   = 0, s_grab_max  = 0;
 static volatile int32_t  s_dec_ms    = 0, s_dec_max   = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
@@ -673,7 +674,15 @@ static void motion_task(void *arg)
         if (detect_once()) {
             s_motion_active = true;
             s_trigger_count++;
+            /* capture_event() runs INLINE in this task: every frame of the
+             * burst is grabbed and written to SD here, and the classifier
+             * handoff happens at the end. For all of it the detector is blind.
+             * Measured rather than assumed (v3.27) — grab and decode were both
+             * ruled out, so this is where the missing duty cycle must be. */
+            int64_t cap0 = esp_timer_get_time();
             capture_event(s_roi);   /* snapshot the trigger ROI for species ID */
+            s_cap_ms = (int32_t) ((esp_timer_get_time() - cap0) / 1000);
+            if (s_cap_ms > s_cap_max) s_cap_max = s_cap_ms;
             s_motion_active = false;
             /* Publish the cool-down end so the live view can show a countdown
              * (v2.57); the delay itself is unchanged. */
@@ -701,7 +710,26 @@ esp_err_t motion_start(void)
         ESP_LOGE(TAG, "no memory for detection buffers");
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreate(motion_task, "motion", 8192, NULL, 4, NULL) != pdPASS)
+    /* PINNED TO CORE 0, away from classify_task on core 1 (v3.28).
+     *
+     * Measured: the detect loop FREEZES while clsBusy is true - frames stops
+     * advancing for up to 27 s, with loopMs reaching 7060 - yet the last
+     * completed frame's own timings are normal (grab 1 ms, decode 419 ms). So
+     * the task is not running slowly, it is not being SCHEDULED.
+     *
+     * classify_task cannot be the direct cause: it is priority 3 against this
+     * task's 4. What it does is push up to 300 kB of JPEG per frame over TLS,
+     * and the lwIP/WiFi tasks that service that upload run at priority 18-23 -
+     * far above this one. Those tasks are NO_AFFINITY, and so was this task, so
+     * it could be scheduled onto whichever core was busy with them and be
+     * preempted for seconds at a time.
+     *
+     * Pinning here is the cheap half of the fix: it keeps detection off the
+     * core doing the classifier's own work. It cannot stop an unpinned TCP/IP
+     * task landing on core 0 too, so if this only partly helps, the next lever
+     * is the upload size or the network task affinity - measure before
+     * reaching for either. */
+    if (xTaskCreatePinnedToCore(motion_task, "motion", 8192, NULL, 4, NULL, 0) != pdPASS)
         return ESP_FAIL;
     ESP_LOGI(TAG, "motion detection running (sensitivity %u, cooldown %u s)",
              g_settings.motion_sensitivity, g_settings.cooldown_s);
@@ -720,6 +748,8 @@ int      motion_live_cluster(void)  { return s_live_cluster; }
 int      motion_live_cells(void)    { return s_live_cells; }
 int      motion_live_thr(void)      { return s_live_thr; }
 bool     motion_live_gstep(void)    { return s_live_gstep; }
+int32_t  motion_capture_ms(void)    { return s_cap_ms; }
+int32_t  motion_capture_max_ms(void){ return s_cap_max; }
 int32_t  motion_grab_ms(void)       { return s_grab_ms; }
 int32_t  motion_grab_max_ms(void)   { return s_grab_max; }
 int32_t  motion_decode_ms(void)     { return s_dec_ms; }

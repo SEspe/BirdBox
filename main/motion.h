@@ -78,6 +78,10 @@ bool     motion_live_gstep(void);    /* last frame suppressed by a light step */
 
 /* Which half of a detect frame is slow (v3.25): the camera grab, or the JPEG
  * decode. Max values persist since boot because the stall is intermittent. */
+/* Time the detect task spent inside capture_event() — frames grabbed, written
+ * to SD and handed to the classifier, all inline, all of it detection downtime. */
+int32_t  motion_capture_ms(void);
+int32_t  motion_capture_max_ms(void);
 int32_t  motion_grab_ms(void);
 int32_t  motion_grab_max_ms(void);
 int32_t  motion_decode_ms(void);

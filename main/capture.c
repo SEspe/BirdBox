@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "capture";
 
@@ -22,6 +23,7 @@ static int      s_last_fast    = 0;
  * multi-frame species ID (FSD §3.2). Only the motion task touches these. */
 static char  s_frame_paths[CLASSIFY_BEST_OF_N][96];
 static roi_t s_frame_rois[CLASSIFY_BEST_OF_N];   /* per-frame zoom regions */
+static volatile int32_t s_submit_ms = 0, s_submit_max = 0;  /* classifier handoff (v3.27) */
 static int   s_frame_n = 0;
 
 esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
@@ -88,10 +90,18 @@ void capture_event_finish(int frames, int fast_count, const char *first_path)
      * writes the visit-log row when done (§3.2 — asynchronous, capture never
      * waits). On any failure fall back to the pre-§3.2 direct "unclassified"
      * row so no event is ever unlogged. */
+    /* classify_submit_event() waits up to 15 s for a queue slot, and it runs in
+     * the MOTION task — so that wait is time the box is not watching for birds.
+     * Timed separately from the rest of the event because "the handoff blocked"
+     * and "writing the frames took a while" are different faults with different
+     * fixes (v3.27). */
     bool queued = false;
+    int64_t sub0 = esp_timer_get_time();
     if (s_frame_n > 0)
         queued = classify_submit_event(s_frame_paths, s_frame_rois, s_frame_n,
                                        fast_count, ts, frames, first_path);
+    s_submit_ms = (int32_t) ((esp_timer_get_time() - sub0) / 1000);
+    if (s_submit_ms > s_submit_max) s_submit_max = s_submit_ms;
     if (!queued) {
         char line[200];
         snprintf(line, sizeof(line), "%s,unclassified,0,%d,%s,,,,", ts, frames, first_path);
@@ -104,6 +114,9 @@ void capture_event_finish(int frames, int fast_count, const char *first_path)
              (unsigned long) s_event_count, frames, first_path,
              queued ? " (classifying)" : "");
 }
+
+int32_t capture_submit_ms(void)     { return s_submit_ms; }
+int32_t capture_submit_max_ms(void) { return s_submit_max; }
 
 const char *capture_last_event_path(void) { return s_last_event; }
 uint32_t    capture_event_count(void)     { return s_event_count; }
