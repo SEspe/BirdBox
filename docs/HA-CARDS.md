@@ -29,6 +29,7 @@ slugified. The device id is the last three bytes of the MAC —
 | `capture_ms` | `sensor.birdbox_capture_time` |
 | `sd_read_ms` | `sensor.birdbox_frame_read_from_card` |
 | `cls_uploads` | `sensor.birdbox_frames_uploaded` |
+| `cls_calls` | `sensor.birdbox_inaturalist_calls` |
 | `contrast` | `sensor.birdbox_scene_contrast` |
 
 **On a second box these differ.** Home Assistant appends `_2` when a name is
@@ -330,39 +331,58 @@ apex_config:
 interesting event is the outlier - 1814 ms has been seen once. Averaging would
 erase precisely the spike that says the card is degrading.
 
-## 8. Frames uploaded per event
+## 8. Frames and iNaturalist calls per event
 
-How many frames an event actually sent. Since scoring stops at the verdict this
-is normally far below the number saved - 1 of 8 on a clear bird.
+Both are plain counts, so one chart is legitimate — and **the gap between the
+two lines is the cost of the motion-area crop**.
+
+A frame is identified whole first. If that yields nothing and `detect_zoom` is
+on, the crop is decoded and sent as a *second* request. So a hard event makes up
+to twice the calls it sent frames, and calls — not frames — is what explains its
+time. A 5-frame event reading "5" was really ten round trips; that is where 56
+unaccounted seconds went on 2026-09-30.
 
 ```yaml
 type: custom:apexcharts-card
 header:
   show: true
-  title: Frames uploaded per event
+  title: Frames and iNaturalist calls per event
   show_states: true
 graph_span: 12h
 yaxis:
   - min: 0
     apex_config:
-      title: { text: frames sent }
+      title: { text: per event }
 series:
   - entity: sensor.birdbox_frames_uploaded
-    name: Uploaded
+    name: Frames sent
     color: '#199e70'
     type: column
     group_by: { func: max, duration: 15min }
+  - entity: sensor.birdbox_inaturalist_calls
+    name: iNaturalist calls
+    color: '#d95926'
+    type: line
+    stroke_width: 2
+    group_by: { func: max, duration: 15min }
 apex_config:
-  chart: { height: 180 }
-  legend: { show: false }
+  chart: { height: 200 }
+  legend: { show: true, position: bottom }
   grid: { borderColor: 'rgba(255,255,255,0.08)' }
-  plotOptions: { bar: { borderRadius: 4, columnWidth: '60%' } }
-  tooltip: { x: { format: 'HH:mm' } }
+  plotOptions: { bar: { borderRadius: 4, columnWidth: '55%' } }
+  tooltip: { shared: true, x: { format: 'HH:mm' } }
+  markers: { size: 0, hover: { size: 5 } }
 ```
 
-**Place this directly below card 1.** The two are read together: few frames with
-a high identification time means the remote service is slow; many frames means
-the bird was ambiguous and scoring never settled early.
+Bars and a line rather than two bar series: they are different kinds of thing —
+one is work sent, the other is requests made to get it identified — and the line
+riding above the bars reads as a multiplier, which is what it is.
+
+**Place this directly below card 1.** Read together: few calls with a high
+identification time means the remote service is slow; calls at double the frames
+means the whole image is rarely identifying anything by itself, so the birds are
+small or off-centre in frame. That is exactly what the crop exists for, and
+exactly what it costs.
 
 ## Reporting interval
 

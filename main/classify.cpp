@@ -118,7 +118,16 @@ static volatile int32_t s_sd_ms = 0, s_sd_max = 0;
  * should settle it, and the operator was right to ask why it read five. */
 static volatile int32_t s_last_uploads = 0;
 
+/* iNat CALLS for the last event, which is not the same as frames (v3.39).
+ * score_frame_best() scores the whole frame, and when that identifies nothing
+ * AND detect_zoom is on it decodes a crop and calls AGAIN - so a hard event can
+ * make twice the calls it uploaded frames. Frames alone therefore understates
+ * the cost badly: a 5-frame event reading "5" was really ten round trips, and
+ * the 56 s that did not add up came from the five it did not mention. */
+static volatile int32_t s_last_calls = 0;
+
 int32_t classify_last_uploads(void) { return s_last_uploads; }
+int32_t classify_last_calls(void)   { return s_last_calls; }
 
 int32_t classify_sd_read_ms(void)     { return s_sd_ms; }
 int32_t classify_sd_read_max_ms(void) { return s_sd_max; }
@@ -317,12 +326,14 @@ static esp_err_t score_frame_best(const char *full, roi_t roi, classify_result_t
     uint8_t *buf = load_file_psram(full, &len);
     if (!buf) return ESP_FAIL;
 
+    s_last_calls = s_last_calls + 1;
     esp_err_t e = inat_classify_jpeg(buf, len, r);
     if (e == ESP_OK && r->latin[0] == '\0' &&
         g_settings.detect_zoom && !roi_is_empty(roi)) {
         uint8_t *cj = NULL; size_t cl = 0;
         if (classify_crop_jpeg(buf, len, roi, &cj, &cl) == ESP_OK && cj) {
             classify_result_t rc;
+            s_last_calls = s_last_calls + 1;
             if (inat_classify_jpeg(cj, cl, &rc) == ESP_OK && result_better(&rc, r)) {
                 ESP_LOGI(TAG, "crop beat whole: %s %u%% > %s %u%%",
                          rc.species, rc.confidence_pct, r->species, r->confidence_pct);
@@ -357,6 +368,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
 {
     if (!inat_cv_enabled()) return false;
     s_last_uploads = 0;
+    s_last_calls   = 0;
     if (pf && pf_len) pf[0] = '\0';       /* per-frame scores for the visit log (v2.29) */
     size_t pfo = 0;
 

@@ -198,6 +198,9 @@ static const ha_entity_t ENTITIES[] = {
     { "capture_ms",   "Capture time",          "duration",       "ms", "measurement",  true,  false },
     { "sd_read_ms",   "Frame read from card",  "duration",       "ms", "measurement",  true,  false },
     { "cls_uploads",  "Frames uploaded",       NULL,             NULL, "measurement",  true,  false },
+    /* Calls, not frames. The gap between the two IS the crop path's cost, and
+     * it is the number that explains an event's time (v3.39). */
+    { "cls_calls",    "iNaturalist calls",     NULL,             NULL, "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -480,7 +483,7 @@ static void publish_state(void)
         "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu,"
         "\"detect_ms\":%ld,\"detect_grab_ms\":%ld,\"detect_decode_ms\":%ld,"
         "\"fast_gap_ms\":%lu,\"capture_ms\":%ld,\"sd_read_ms\":%ld,"
-        "\"cls_uploads\":%ld",
+        "\"cls_uploads\":%ld,\"cls_calls\":%ld",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -514,7 +517,7 @@ static void publish_state(void)
         (long) motion_loop_ms(), (long) motion_grab_ms(), (long) motion_decode_ms(),
         (unsigned long) motion_fast_last_ms(),
         (long) motion_capture_ms(), (long) classify_sd_read_ms(),
-        (long) classify_last_uploads());
+        (long) classify_last_uploads(), (long) classify_last_calls());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

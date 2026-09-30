@@ -117,6 +117,12 @@ void classify_recheck_status(bool *busy, int *done, int *total,
  * is the honest denominator for the classification time. */
 int32_t     classify_last_uploads(void);
 
+/* iNat calls for the last event. NOT the same as frames: a frame the whole
+ * image cannot identify costs a second call for its crop when detect_zoom is
+ * on, so this can be up to twice classify_last_uploads(). This is the number
+ * that explains the time. */
+int32_t     classify_last_calls(void);
+
 int32_t     classify_sd_read_ms(void);
 int32_t     classify_sd_read_max_ms(void);
 
