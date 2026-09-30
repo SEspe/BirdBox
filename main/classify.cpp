@@ -110,6 +110,16 @@ static volatile uint32_t s_q_drops = 0;   /* events lost to a full queue        
  * the last read, `s_sd_max` the worst since boot. */
 static volatile int32_t s_sd_ms = 0, s_sd_max = 0;
 
+/* Frames actually UPLOADED for the last event, which since the early exit
+ * (v3.29) is usually far fewer than the frames saved. Nothing reported it:
+ * `scored_out` carries the winning species vote count, not an upload count, so
+ * the Debug row was pairing the classification time with the SAVED frame count
+ * and implying every one of them had been sent. On a clear bird two uploads
+ * should settle it, and the operator was right to ask why it read five. */
+static volatile int32_t s_last_uploads = 0;
+
+int32_t classify_last_uploads(void) { return s_last_uploads; }
+
 int32_t classify_sd_read_ms(void)     { return s_sd_ms; }
 int32_t classify_sd_read_max_ms(void) { return s_sd_max; }
 
@@ -346,6 +356,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
                        size_t best_len = 0)
 {
     if (!inat_cv_enabled()) return false;
+    s_last_uploads = 0;
     if (pf && pf_len) pf[0] = '\0';       /* per-frame scores for the visit log (v2.29) */
     size_t pfo = 0;
 
@@ -392,6 +403,7 @@ static bool inat_event(const cls_job_t *job, classify_result_t *out, roi_t *win,
 
     auto score_range = [&](int lo, int hi) {
         for (int i = lo; i < hi; i++) {
+            s_last_uploads = s_last_uploads + 1;   /* ++ on volatile: C++26 */
             char full[128];
             snprintf(full, sizeof(full), STORAGE_MOUNT_POINT "%s", job->paths[i]);
             classify_result_t r;

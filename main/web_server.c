@@ -2381,6 +2381,16 @@ ROT_OPTIONS
 "$g('ipDef').innerHTML=g[p+'def']||i[2];$g('ipAlt').innerHTML=g[p+'alt']||i[3];"
 "$g('ipop').style.display='flex';}"
 "function ipClose(){$g('ipop').style.display='none';}"
+/* An (i) inside a <label> was TOGGLING THE CHECKBOX it sits next to: clicking
+ * anywhere in a label activates its control, and the badge is inside the label
+ * so the popup opened and the setting flipped (v3.34). Cancel the default
+ * action for any .inf click. This listens on the document in the BUBBLE phase,
+ * so each badge inline onclick has already run and still opens its popup;
+ * preventDefault only suppresses the label activation, which happens after
+ * propagation finishes. One listener covers every badge, Settings and Debug,
+ * including ones added later. */
+"document.addEventListener('click',function(ev){var t=ev.target;"
+"if(t&&t.classList&&t.classList.contains('inf'))ev.preventDefault();});"
 /* The Debug tab reuses the Settings info popup, but its two footer rows mean
  * something different there: a diagnostic field has no "default", it has a
  * healthy range and a meaning when it is wrong (v3.32). */
@@ -2389,7 +2399,7 @@ ROT_OPTIONS
 "var DINFO={"
 "'Detector':['Detector','How often the detector compares a frame, and whether it is running at all. The frame count is the field to trust: while it climbs the detector is alive, whatever else reads zero. The cadence is what is actually achieved, not what the loop asks for.','about 590 ms per frame at HD, frames always climbing','Frames frozen means detection has stopped and birds are being missed. A rising cadence means something else is taking the processor - a higher camera resolution does this, and so does a busy classifier.'],"
 "'Last frame':['Last frame','What the detector saw on its most recent comparison. The cluster is the largest moving blob as a share of the detection zone, and it must beat the threshold to fire. The zone figure is how much of the zone changed overall.','cluster near zero on an empty feeder, above the threshold when a bird lands','Cluster sitting just under the threshold means sensitivity is marginally low. Cluster high with no trigger means the blob was rejected as too large - raise the mount distance rather than the sensitivity.'],"
-"'Classification time':['Classification time','Wall time of the last complete event: reading each frame from the card, one call to the identification service per frame scored, plus any crop or cloud step. It rises both when the service slows and when more frames are sent.','a few seconds per event','High with a normal per-call figure means many frames were sent. High with a high per-call figure means the remote service is slow, which the box cannot fix.'],"
+"'Classification time':['Classification time','Wall time of the last complete event: reading each frame from the card, one call to the identification service per frame UPLOADED, plus any crop or cloud step. Uploading stops as soon as the verdict is decided, so a clear bird should need only two frames and the uploaded count will be well below the number saved. Both are shown for exactly that reason.','a few seconds per event','High with a normal per-call figure means many frames were sent. High with a high per-call figure means the remote service is slow, which the box cannot fix.'],"
 "'iNaturalist response':['iNaturalist response','One round trip to the identification service: upload, match, reply. This is the remote service on its own, with none of our own work mixed in.','1 to 3 seconds','Tens of seconds means the service is having a slow spell. Nothing here will fix it; events simply take longer and the queue grows. Swings of more than tenfold within one day have been measured.'],"
 "'Frame read from card':['Frame read from card','How long it took to read one saved frame back off the memory card so it could be identified. Every frame scored pays this, and it is charged to the classification time even though the identification service has nothing to do with it.',"
 "'under a few hundred ms for a 110 kB frame',"
@@ -2742,7 +2752,7 @@ ROT_OPTIONS
 "+drow('Detector',(m==null?'n/a':(m.frames+' frames, '+m.loopMs+' ms/frame'+(m.decErr?', '+m.decErr+' decode errors':''))),"
 "(m&&m.decErr>0)?'bad':'')"
 "+drow('Last frame',(m==null?'n/a':(m.liveClust+'% cluster ('+m.liveCells+' cells) vs '+m.thr+'% needed, zone '+m.livePct+'%'+(m.gstep?', light step':''))),'')"
-"+drow('Classification time',(d.lastInferenceMs==null||d.lastInferenceMs<0?'no event yet':(d.lastInferenceMs+' ms'+(s&&s.lastFrames?' over '+s.lastFrames+' frame(s)':''))),'')"
+"+drow('Classification time',(d.lastInferenceMs==null||d.lastInferenceMs<0?'no event yet':(d.lastInferenceMs+' ms'+(d.clsUploads?' over '+d.clsUploads+' uploaded'+(s&&s.lastFrames?' of '+s.lastFrames+' saved':''):''))),'')"
 "+drow('iNaturalist response',(d.inatMs==null||d.inatMs<0?'no call yet':(d.inatMs+' ms')),(d.inatMs>10000)?'bad':'')"
 "+drow('Frame read from card',(d.sdReadMs==null?'n/a':(d.sdReadMs+' ms, worst '+d.sdReadMax+' ms')),(d.sdReadMax>1500)?'bad':'')"
 "+drow('Capture time',(m==null?'n/a':(m.capMs+' ms, worst '+m.capMax+' ms')),(m&&m.capMax>10000)?'bad':'')"
@@ -5417,7 +5427,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"camFaultClears\":%lu,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
-        "\"lastInferenceMs\":%ld,\"inatMs\":%ld,\"sdReadMs\":%ld,\"sdReadMax\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
+        "\"lastInferenceMs\":%ld,\"inatMs\":%ld,\"sdReadMs\":%ld,\"sdReadMax\":%ld,\"clsUploads\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
         "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
         "\"clsQ\":%u,\"clsQMax\":%u,\"clsQPeak\":%u,\"clsQDrops\":%lu,"
         /* heapIntBig8 = the guard's EXACT metric (INTERNAL|8BIT), which heapIntBig
@@ -5458,6 +5468,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         soc_temp_c(), (unsigned long) motion_trigger_count(),
         (long) classify_last_duration_ms(), (long) inat_last_duration_ms(),
         (long) classify_sd_read_ms(), (long) classify_sd_read_max_ms(),
+        (long) classify_last_uploads(),
         /* clsRegion = the real "Norway only" allowlist size (species_i18n.c's
          * NO_NAMES via species_in_region) — NOT target_species.h; clsLabels is
          * that 31-entry relabel/cloud vocabulary (v2.71). */
