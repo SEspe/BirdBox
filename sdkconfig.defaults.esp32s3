@@ -27,3 +27,17 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # nothing at runtime — camera.c only downloads it to the sensor when
 # focus_mode != FOCUS_OFF, so an OV2640 box never pays the ~1 s init.
 CONFIG_CAMERA_AF_SUPPORT=y
+
+# Pin the TCP/IP task to core 1, with the classifier (v3.31).
+#
+# The detect task is pinned to core 0 and runs at priority 4. classify_task is
+# on core 1 at priority 3 and cannot preempt it - but the lwIP task doing the
+# actual work for its TLS uploads runs at ~18 and, with the IDF default of
+# NO_AFFINITY, is free to land on core 0 and stall detection for seconds.
+# Pinning motion to core 0 alone did nothing for exactly this reason.
+#
+# Cost: network and detection can no longer run truly in parallel on separate
+# cores, so throughput to iNaturalist may drop. That trade is deliberate - a
+# feeder camera that misses birds while uploading is worse than one that
+# uploads slightly slower.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
