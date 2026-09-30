@@ -165,6 +165,19 @@ static volatile int      s_live_cluster = 0;  /* dominant cluster %, last frame*
 static volatile int      s_live_cells   = 0;  /* cells in that cluster         */
 static volatile int      s_live_thr     = 0;  /* % it had to beat              */
 static volatile bool     s_live_gstep   = false; /* suppressed by a light step */
+
+/* Where a slow detect frame actually goes (v3.25). `loopMs` showed the loop
+ * running at ~1250 ms against the 400 ms it manages when idle, and stalling
+ * completely for 15+ s while the classifier worked — but a single figure cannot
+ * say WHICH half is blocked, and priorities/locks look fine on paper (motion is
+ * prio 4, classify prio 3 pinned to core 1; camera_grab holds no lock across
+ * esp_camera_fb_get). Splitting the frame into its two waits is the cheapest
+ * way to find out: a grab that blocks means frames are not arriving (camera DMA
+ * starved of PSRAM bandwidth, or the driver's buffers held), while a decode that
+ * blocks means CPU or PSRAM contention with the classifier's own decode. Max
+ * values are kept because the stall is intermittent and a poll will miss it. */
+static volatile int32_t  s_grab_ms   = 0, s_grab_max  = 0;
+static volatile int32_t  s_dec_ms    = 0, s_dec_max   = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
 /* Night sleep (FSD §14) pauses detection through its OWN flag rather than
  * s_detect_enabled. Two independent reasons to be paused must not clobber one
@@ -211,7 +224,11 @@ static int cluster_cap(void)
  * measurement taken any other way would not be comparable to them. */
 static int decode_gray(void)
 {
+    int64_t t_g0 = esp_timer_get_time();
     camera_fb_t *fb = camera_grab();
+    int64_t t_g1 = esp_timer_get_time();
+    s_grab_ms = (int32_t) ((t_g1 - t_g0) / 1000);
+    if (s_grab_ms > s_grab_max) s_grab_max = s_grab_ms;
     if (!fb) return -1;
 
     esp_jpeg_image_cfg_t jcfg = {
@@ -223,7 +240,10 @@ static int decode_gray(void)
         .out_scale   = JPEG_IMAGE_SCALE_1_8,
     };
     esp_jpeg_image_output_t out = {0};
+    int64_t t_d0 = esp_timer_get_time();
     esp_err_t err = esp_jpeg_decode(&jcfg, &out);
+    s_dec_ms = (int32_t) ((esp_timer_get_time() - t_d0) / 1000);
+    if (s_dec_ms > s_dec_max) s_dec_max = s_dec_ms;
     camera_return(fb);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "detect decode failed: %s", esp_err_to_name(err));
@@ -700,6 +720,10 @@ int      motion_live_cluster(void)  { return s_live_cluster; }
 int      motion_live_cells(void)    { return s_live_cells; }
 int      motion_live_thr(void)      { return s_live_thr; }
 bool     motion_live_gstep(void)    { return s_live_gstep; }
+int32_t  motion_grab_ms(void)       { return s_grab_ms; }
+int32_t  motion_grab_max_ms(void)   { return s_grab_max; }
+int32_t  motion_decode_ms(void)     { return s_dec_ms; }
+int32_t  motion_decode_max_ms(void) { return s_dec_max; }
 
 uint16_t motion_quarantine_remaining_s(void)
 {

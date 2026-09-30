@@ -144,6 +144,16 @@ static const ha_entity_t ENTITIES[] = {
     { "cls_queue",    "Classification queue",  NULL,             NULL,  "measurement",  true,  false },
     { "cls_queue_peak","Classification queue peak", NULL,        NULL,  "measurement",  true,  false },
     { "cls_drops",    "Classification drops",  NULL,             NULL,  "total_increasing", true, false },
+    /* Detect-loop timing (v3.25). The loop asks for DETECT_PERIOD_MS and gets
+     * far less when the box is busy: ~400 ms idle, ~1250 ms average over a day,
+     * and complete stalls of 15+ s while the classifier runs. A single reading
+     * cannot show that — it is a duty-cycle problem that only a TREND reveals,
+     * which is what HA is for. `detect_ms` is the cadence actually achieved;
+     * `detect_grab_ms` and `detect_decode_ms` split it into the two waits, so
+     * the graph says whether frames stopped arriving or the CPU was taken. */
+    { "detect_ms",       "Detect cadence",       NULL,             "ms", "measurement",  true,  false },
+    { "detect_grab_ms",  "Detect frame grab",    NULL,             "ms", "measurement",  true,  false },
+    { "detect_decode_ms","Detect frame decode",  NULL,             "ms", "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -423,7 +433,8 @@ static void publish_state(void)
         "\"cam_fault\":\"%s\",\"cam_recoveries\":%lu,"
         "\"contrast\":%d,\"cluster_cells\":%d,\"cluster_cap\":%d,"
         "\"rejected\":%lu,\"rejected_max\":%d,"
-        "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu",
+        "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu,"
+        "\"detect_ms\":%ld,\"detect_grab_ms\":%ld,\"detect_decode_ms\":%ld",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -453,7 +464,8 @@ static void publish_state(void)
         motion_cluster_cells(), motion_cluster_cap(),
         (unsigned long) motion_reject_count(), motion_reject_cells(),
         (unsigned) classify_queue_depth(), (unsigned) classify_queue_peak(),
-        (unsigned long) classify_queue_drops());
+        (unsigned long) classify_queue_drops(),
+        (long) motion_loop_ms(), (long) motion_grab_ms(), (long) motion_decode_ms());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

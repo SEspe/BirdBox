@@ -75,4 +75,11 @@ int      motion_live_cluster(void);  /* dominant cluster %, last frame        */
 int      motion_live_cells(void);    /* cells in that cluster                 */
 int      motion_live_thr(void);      /* % the cluster must beat to trigger    */
 bool     motion_live_gstep(void);    /* last frame suppressed by a light step */
+
+/* Which half of a detect frame is slow (v3.25): the camera grab, or the JPEG
+ * decode. Max values persist since boot because the stall is intermittent. */
+int32_t  motion_grab_ms(void);
+int32_t  motion_grab_max_ms(void);
+int32_t  motion_decode_ms(void);
+int32_t  motion_decode_max_ms(void);
 int motion_ambient_peak(void);
