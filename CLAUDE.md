@@ -86,10 +86,13 @@ curl -s -X POST -H "Content-Type: application/octet-stream" \
 
 **Two rules around every OTA, both learned the hard way:**
 
-- **Set `haen=0` before `POST /ota/upload`, then `haen=1` after.** The upload
-  panics the box while Home Assistant is enabled (6/6 with it on, 2/2 clean with
-  it off), sometimes mid-upload. The panic also fires on a settings save and
-  spontaneously at runtime with HA up, so it is not specific to the flash write.
+- ~~Set `haen=0` before `POST /ota/upload`~~ — **no longer needed as of 0.99.0.**
+  The panic was `MQTT_EVENT_CONNECTED` calling `publish_discovery()` and
+  `publish_state()` inside the esp-mqtt callback, i.e. on esp-mqtt's own 6 kB
+  task, with ~2.9 kB of buffers. Fixed by announcing from `ha_task` instead
+  (FSD v3.36). Re-verified **2/2 clean OTAs with `haen=1`**, `resetReason`
+  `software` both times, against 6/6 panics before. If an OTA ever panics with
+  HA enabled again, suspect a stack, not the flash write.
 - **After flashing, open `http://<ip>/?v=<n>` — not a plain reload.** The whole
   UI is one page carrying its own script, so a cached copy runs the OLD
   release's JavaScript while `/api/status` truthfully reports the new version: a

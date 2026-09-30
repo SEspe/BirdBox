@@ -137,8 +137,16 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       left to the operator.
 
 
-## Found 2026-09-28, NOT fixed — OTA panics while Home Assistant is enabled
-- [ ] **`POST /ota/upload` panics the box whenever `haen=1`.** Reproducible A/B:
+## FIXED 2026-09-30 (0.99.0) — was: OTA panics while Home Assistant is enabled
+- [x] ~~**`POST /ota/upload` panics the box whenever `haen=1`.**~~ **FIXED in
+      0.99.0 / FSD v3.36.** Root cause: `MQTT_EVENT_CONNECTED` called
+      `publish_discovery()` + `publish_state()` inside the esp-mqtt callback —
+      on esp-mqtt’s own 6 kB task — with ~2.9 kB of buffers. Announcing now
+      happens on `ha_task` (stack 6144→8192). **Re-verified 2/2 clean OTAs
+      with `haen=1`**, `resetReason` `software` both times. The boot loop, the
+      settings-save panic and the spontaneous one are all explained by the same
+      marginal stack. Original report kept below for the reasoning.
+- [x] ~~Reproducible A/B:~~
       **6/6 panics with HA enabled, 2/2 clean (`resetReason:"software"`) with
       `haen=0`.** Timing varies — usually after the image is written and the
       boot partition set (so the new firmware still boots), but at least once

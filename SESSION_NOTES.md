@@ -19,6 +19,8 @@ The 2026-09-29 session is in git history (commit `511e90e`).
 | 0.97.0 | v3.33 | Pacing 1100→400 ms; card read timed |
 | 0.97.2 | v3.34 | Report frames **uploaded** not saved; (i) no longer toggles checkboxes |
 | 0.98.0 | v3.35 | `detect_zoom` default 0→1; stale "zoom hurts" advice retired |
+| **0.99.0** | **v3.36** | **HA panic family fixed** — never publish from the MQTT task |
+| 0.99.2 | v3.37 | OTA with `haen=1` confirmed clean, 2/2 |
 
 PR #1 merged (squashed, linear history kept). `.205` on **0.98.0**, `.240`
 untouched on 0.80.0.
@@ -63,12 +65,15 @@ deleted.
   Note it calls `detect_once()` itself to know when the visitor leaves, so
   "detection stops during capture" is **less true than it was stated** — it is
   detecting, just not free to start a new event.
-- **HA must stay OFF on `.205`.** 0.94.0 turned the HA panic into a **boot
-  loop** (`haen=1` is in NVS, so every boot started HA, panicked, rebooted).
-  Recovery needed hammering `haen=0` into a ~6 s window; a failure there would
-  have meant a serial cable. Six new HA entities landed in that release and are
-  the obvious suspect. **The merged telemetry is therefore unusable until this
-  is understood.**
+- ~~HA must stay OFF on `.205`~~ — **FIXED in 0.99.0, HA is back on.** The
+  cause was `MQTT_EVENT_CONNECTED` calling `publish_discovery()` +
+  `publish_state()` **inside the esp-mqtt callback**, i.e. on esp-mqtt's own
+  6 kB task, with ~2.9 kB of buffers on it. Announcing now happens on `ha_task`
+  (stack 6144→8192). **That one bug explains the whole family**: the OTA
+  panic (6/6), the settings-save panic, the spontaneous one 3h45m into a boot,
+  and the 0.94.0 boot loop — all moments of extra memory pressure against a
+  stack that was already marginal. Verified **2/2 clean OTAs with `haen=1`**,
+  `resetReason` `software` both times. The `haen=0` workaround is retired.
 - SD card is slow and inconsistent (852 → 1814 ms). Worth trying another card.
 - Run-time stats are **not** enabled (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`),
   so per-core/per-task CPU still cannot be measured. That is the instrument
@@ -94,6 +99,17 @@ deleted.
 **The pattern: the changelog is authoritative, memory is a hint.** Check the
 former before acting on the latter.
 
+## Also shipped late in the day
+
+- **The HA reporting interval is a setting** (`ha_interval_s`, 30–600 s,
+  default 120, was a fixed 60) after the operator noticed it was not exposed.
+  There is no single right value and the (i) says so: nothing published moves
+  meaningfully inside a minute, and the peak/cumulative fields carry their own
+  extremes — so 30–60 s while diagnosing, 300–600 s for monitoring.
+- **`detect_zoom` defaults ON** (v3.35). The old default and the Settings advice
+  both described pre-v2.31 behaviour where the crop *replaced* the whole frame.
+  It has been a fallback since v2.31 and can never score below whole-only.
+
 ## Process changes that stuck
 
 - **`tools/check-ui-js.py`** parses the inline script out of `build/BirdBox.bin`
@@ -108,9 +124,7 @@ former before acting on the latter.
 
 ## Suggested next steps
 
-1. **Find the HA boot-loop regression** — it blocks the merged telemetry and
-   nearly bricked the box. Start with the six entities added in 0.94.0.
-2. **`capMax`** — the last big unexplained cost.
+1. **`capMax` 17–27 s** — now the last big unexplained cost.
 3. Consider enabling run-time stats temporarily to settle per-core load.
 4. Re-measure detect cadence when iNaturalist is fast again; some of today's
    pain was theirs (4.4–6.3 s/call against a 1–3 s norm).
