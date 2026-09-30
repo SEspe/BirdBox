@@ -26,6 +26,9 @@ slugified. The device id is the last three bytes of the MAC —
 | `detect_grab_ms` | `sensor.birdbox_detect_frame_grab` |
 | `detect_decode_ms` | `sensor.birdbox_detect_frame_decode` |
 | `fast_gap_ms` | `sensor.birdbox_fast_burst_gap` |
+| `capture_ms` | `sensor.birdbox_capture_time` |
+| `sd_read_ms` | `sensor.birdbox_frame_read_from_card` |
+| `cls_uploads` | `sensor.birdbox_frames_uploaded` |
 | `contrast` | `sensor.birdbox_scene_contrast` |
 
 **On a second box these differ.** Home Assistant appends `_2` when a name is
@@ -244,6 +247,123 @@ Cadence climbing well above the decode time means the detector is being starved
 by something else, not by its own work — which is how the lwIP task landing on
 the detection core was found.
 
+## 6. Capture time
+
+The dominant cost of an event, and the one still unexplained. Saving an event
+runs **inside** the detection task, so for all of this time no new visit can
+start. Measured 17-27 s.
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Capture time
+  show_states: true
+  colorize_states: true
+graph_span: 6h
+yaxis:
+  - min: 0
+    apex_config:
+      title: { text: ms }
+series:
+  - entity: sensor.birdbox_capture_time
+    name: Detector blocked saving the event
+    color: '#d95926'
+    stroke_width: 2
+    type: line
+    extend_to: now
+apex_config:
+  chart: { height: 200 }
+  legend: { show: false }
+  grid: { borderColor: 'rgba(255,255,255,0.08)' }
+  annotations:
+    yaxis:
+      - y: 10000
+        borderColor: '#eda100'
+        strokeDashArray: 4
+        label: { text: '10 s', style: { background: '#eda100', color: '#000' } }
+  tooltip: { x: { format: 'HH:mm' } }
+```
+
+Own card because it is roughly twenty times the other per-frame costs; sharing a
+chart with them would flatten those to the baseline even though the unit is the
+same.
+
+## 7. Frame read from card
+
+What reading one saved frame back off the card costs. Charged to the
+classification time even though identification has no part in it.
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Frame read from card
+  show_states: true
+graph_span: 12h
+yaxis:
+  - min: 0
+    apex_config:
+      title: { text: ms }
+series:
+  - entity: sensor.birdbox_frame_read_from_card
+    name: One ~110 kB frame
+    color: '#3987e5'
+    stroke_width: 2
+    type: line
+    extend_to: now
+    group_by: { func: max, duration: 5min }
+apex_config:
+  chart: { height: 200 }
+  legend: { show: false }
+  grid: { borderColor: 'rgba(255,255,255,0.08)' }
+  annotations:
+    yaxis:
+      - y: 1500
+        borderColor: '#eda100'
+        strokeDashArray: 4
+        label: { text: 'slow card', style: { background: '#eda100', color: '#000' } }
+  tooltip: { x: { format: 'HH:mm' } }
+```
+
+**`func: max`, not `avg`, on purpose.** The baseline is ~850 ms and the
+interesting event is the outlier - 1814 ms has been seen once. Averaging would
+erase precisely the spike that says the card is degrading.
+
+## 8. Frames uploaded per event
+
+How many frames an event actually sent. Since scoring stops at the verdict this
+is normally far below the number saved - 1 of 8 on a clear bird.
+
+```yaml
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Frames uploaded per event
+  show_states: true
+graph_span: 12h
+yaxis:
+  - min: 0
+    apex_config:
+      title: { text: frames sent }
+series:
+  - entity: sensor.birdbox_frames_uploaded
+    name: Uploaded
+    color: '#199e70'
+    type: column
+    group_by: { func: max, duration: 15min }
+apex_config:
+  chart: { height: 180 }
+  legend: { show: false }
+  grid: { borderColor: 'rgba(255,255,255,0.08)' }
+  plotOptions: { bar: { borderRadius: 4, columnWidth: '60%' } }
+  tooltip: { x: { format: 'HH:mm' } }
+```
+
+**Place this directly below card 1.** The two are read together: few frames with
+a high identification time means the remote service is slow; many frames means
+the bird was ambiguous and scoring never settled early.
+
 ## Reporting interval
 
 These trends are only as fine as the publish rate, set in **Settings → System →
@@ -253,3 +373,9 @@ and cumulative readings carry their own extremes, so they lose nothing to a
 slower rate. Use 30–60 s while actively diagnosing so short spikes are not
 missed between samples, and 300–600 s for unattended monitoring, where the trend
 matters and the database does not need a point every minute.
+
+**Match the smoothing to the interval.** The `group_by` durations above assume
+the 120 s default. At 30 s, reduce the 5-minute averaging on cards 1 and 7 to
+`1min`, or the finer sampling you just paid for is averaged straight back out.
+Cards using `func: max` suffer less - a max over a window keeps the spike
+whatever the window is - which is part of why the card-read chart uses it.

@@ -182,6 +182,22 @@ static const ha_entity_t ENTITIES[] = {
      * Measured the same day: 1478 ms and 57865 ms for whole events, while the
      * per-call figure is what actually moved. */
     { "inat_ms",      "iNaturalist response",  "duration",       "ms", "measurement",  true,  false },
+    /* The three costs that are OURS, not the remote service's (v3.38). They
+     * were measurable over HTTP from v3.27/v3.33/v3.34 and shown on the Debug
+     * tab, but never published - so the one place they could be watched as a
+     * trend did not have them, which is exactly where a duty-cycle problem
+     * shows itself.
+     *
+     * capture_ms is the big one: saving an event runs INSIDE the detection
+     * task, so for all of it no new visit can start. sd_read_ms is what reading
+     * one frame back off the card costs, charged to the classification even
+     * though identification has no part in it. cls_uploads is how many frames
+     * an event actually sent, which since the early exit is normally far below
+     * the number saved - without it, "20 s over 5 frames" reads as five uploads
+     * when it may have been one. */
+    { "capture_ms",   "Capture time",          "duration",       "ms", "measurement",  true,  false },
+    { "sd_read_ms",   "Frame read from card",  "duration",       "ms", "measurement",  true,  false },
+    { "cls_uploads",  "Frames uploaded",       NULL,             NULL, "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -463,7 +479,8 @@ static void publish_state(void)
         "\"rejected\":%lu,\"rejected_max\":%d,"
         "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu,"
         "\"detect_ms\":%ld,\"detect_grab_ms\":%ld,\"detect_decode_ms\":%ld,"
-        "\"fast_gap_ms\":%lu",
+        "\"fast_gap_ms\":%lu,\"capture_ms\":%ld,\"sd_read_ms\":%ld,"
+        "\"cls_uploads\":%ld",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -495,7 +512,9 @@ static void publish_state(void)
         (unsigned) classify_queue_depth(), (unsigned) classify_queue_peak(),
         (unsigned long) classify_queue_drops(),
         (long) motion_loop_ms(), (long) motion_grab_ms(), (long) motion_decode_ms(),
-        (unsigned long) motion_fast_last_ms());
+        (unsigned long) motion_fast_last_ms(),
+        (long) motion_capture_ms(), (long) classify_sd_read_ms(),
+        (long) classify_last_uploads());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */

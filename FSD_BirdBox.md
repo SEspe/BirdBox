@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.37
+**Version:** 3.38
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -220,6 +220,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
   - species leaderboard (distinct species, visit counts, first/last seen),
   - activity-by-hour-of-day profile,
   - "new species" flag when a species appears for the first time.
+- **The costs that are ours are reported to Home Assistant, not only over HTTP.** How long saving an event blocked the detector, what reading one frame back off storage costs, and how many frames an event actually sent are published alongside the remote service’s own latency — because a duty cycle is only visible as a trend, and a figure that can only be polled by hand is not watched.
 - **The work the detector does inline is timed too.** Capturing an event — grabbing each frame of the burst and writing it to storage — and handing the event to the classifier both run inside the detection task, so both are time the box is not watching. Each is reported separately, with its worst case since boot.
 - **iNaturalist’s own response time is reported separately from the event’s total.** One round trip and one whole classification are different questions: an event’s total rises both when the remote service slows and when more frames are sent, so the two are published side by side and neither is left to be inferred from the other. Both are omitted until something has actually been classified rather than reported as a sentinel value.
 - **The fast-burst gap and the last classification’s duration are published to Home Assistant.** Both matter as trends rather than readings: the burst exists to catch a bird that stops for under a second, so a gap that drifts upward means short visits are being missed with nothing else to show it; and the classification duration is what decides whether the queue keeps up, so it is graphed beside the queue depth it explains. The duration is omitted until something has been classified rather than published as a sentinel value.
