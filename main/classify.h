@@ -110,6 +110,11 @@ void classify_recheck_status(bool *busy, int *done, int *total,
                              char *date, size_t date_len);
 
 /* Debug-card data (FSD §5) */
+/* How long reading one saved frame back off the card took, and the worst since
+ * boot. Part of the classification time that is ours, not the remote service. */
+int32_t     classify_sd_read_ms(void);
+int32_t     classify_sd_read_max_ms(void);
+
 int32_t     classify_last_duration_ms(void);   /* wall ms of the last event's
                                                   whole tier cascade (v2.71);
                                                   -1 = none yet */

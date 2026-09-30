@@ -74,7 +74,18 @@ static uint32_t s_calls         = 0;
  * INAT_COOLDOWN so we don't hammer a throttled endpoint (that just extends the
  * ban), and a min gap keeps the steady rate under the recommended target. */
 #define INAT_COOLDOWN_US   (60 * 1000000LL)     /* rest 60 s after a 429       */
-#define INAT_MIN_GAP_US    (1100 * 1000LL)      /* ~1 req/s (recommended pace) */
+/* Measured 2026-09-30: an 8-frame event spent 8.8 s of its 60 s sitting in
+ * THIS gap - 15% of the whole classification, waiting on our own politeness
+ * rather than on iNaturalist. The old 1100 ms held the box to the recommended
+ * ~60 req/min as an instantaneous rate, but that figure is a per-minute
+ * average and the real load is nowhere near it: measured ~15 req/min, against
+ * a documented hard limit of 100/min.
+ *
+ * An event is a short burst followed by a long idle. 400 ms lets a burst run
+ * at ~2.5 req/s while the per-minute average stays far under the limit, and
+ * the 429 cooldown below remains the backstop if that judgement is ever wrong.
+ * Raise it again if `inatCooldown` starts appearing. */
+#define INAT_MIN_GAP_US    (400 * 1000LL)       /* burst pace; see above */
 static int64_t  s_cooldown_until_us = 0;        /* skip iNat until this time   */
 static int64_t  s_last_req_us       = 0;        /* pacing: previous request    */
 static bool     s_jwt_stale         = false;    /* a 401 flags the JWT expired →

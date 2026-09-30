@@ -104,8 +104,18 @@ static volatile uint16_t s_q_peak  = 0;   /* deepest the queue has ever been    
 static volatile uint32_t s_q_drops = 0;   /* events lost to a full queue        */
 
 /* ── Model / label loading ──────────────────────────────────────────────── */
+/* Reading each frame back off the card is charged to the classification time,
+ * and an 8-frame event left ~16 s unaccounted for after iNaturalist and the
+ * pacing gap were subtracted. Timed rather than assumed (v3.33): `s_sd_ms` is
+ * the last read, `s_sd_max` the worst since boot. */
+static volatile int32_t s_sd_ms = 0, s_sd_max = 0;
+
+int32_t classify_sd_read_ms(void)     { return s_sd_ms; }
+int32_t classify_sd_read_max_ms(void) { return s_sd_max; }
+
 static uint8_t *load_file_psram(const char *path, size_t *out_len)
 {
+    int64_t sd_t0 = esp_timer_get_time();
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     struct stat st;
@@ -118,6 +128,8 @@ static uint8_t *load_file_psram(const char *path, size_t *out_len)
     if (got != (size_t) st.st_size) { free(buf); return NULL; }
     buf[got] = '\0';
     *out_len = got;
+    s_sd_ms = (int32_t) ((esp_timer_get_time() - sd_t0) / 1000);
+    if (s_sd_ms > s_sd_max) s_sd_max = s_sd_ms;
     return buf;
 }
 
