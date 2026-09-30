@@ -185,6 +185,8 @@ stale page can never be mistaken for a broken feature.
 
 Everything is also available as JSON under `/api/…` — see FSD §6.
 
+Diagnostics are also published to Home Assistant over MQTT. Every field is documented in [`docs/TELEMETRY.md`](docs/TELEMETRY.md), and ready-made dashboard cards for the ones worth graphing are in [`docs/HA-CARDS.md`](docs/HA-CARDS.md).
+
 ## Privacy & security posture
 
 No cloud, no accounts, no telemetry. The device is LAN-only by design; for

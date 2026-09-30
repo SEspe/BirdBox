@@ -102,6 +102,8 @@ frames. If both climb together, the remote service is having a slow day.
 
 ## Home Assistant sensors (MQTT)
 
+> Ready-to-paste dashboard cards for these are in [`HA-CARDS.md`](HA-CARDS.md).
+
 One state message every 60 s; every entity reads a field out of it. These are
 the ones worth graphing — a duty cycle or a slow drift is invisible in a
 single reading.
