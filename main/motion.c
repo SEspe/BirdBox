@@ -176,6 +176,7 @@ static volatile bool     s_live_gstep   = false; /* suppressed by a light step *
  * starved of PSRAM bandwidth, or the driver's buffers held), while a decode that
  * blocks means CPU or PSRAM contention with the classifier's own decode. Max
  * values are kept because the stall is intermittent and a poll will miss it. */
+static volatile int32_t  s_cap_ms    = 0, s_cap_max   = 0;  /* capture_event(), inline */
 static volatile int32_t  s_grab_ms   = 0, s_grab_max  = 0;
 static volatile int32_t  s_dec_ms    = 0, s_dec_max   = 0;
 static volatile bool     s_detect_enabled = true;   /* default on at boot (FSD §5) */
@@ -673,7 +674,15 @@ static void motion_task(void *arg)
         if (detect_once()) {
             s_motion_active = true;
             s_trigger_count++;
+            /* capture_event() runs INLINE in this task: every frame of the
+             * burst is grabbed and written to SD here, and the classifier
+             * handoff happens at the end. For all of it the detector is blind.
+             * Measured rather than assumed (v3.27) — grab and decode were both
+             * ruled out, so this is where the missing duty cycle must be. */
+            int64_t cap0 = esp_timer_get_time();
             capture_event(s_roi);   /* snapshot the trigger ROI for species ID */
+            s_cap_ms = (int32_t) ((esp_timer_get_time() - cap0) / 1000);
+            if (s_cap_ms > s_cap_max) s_cap_max = s_cap_ms;
             s_motion_active = false;
             /* Publish the cool-down end so the live view can show a countdown
              * (v2.57); the delay itself is unchanged. */
@@ -720,6 +729,8 @@ int      motion_live_cluster(void)  { return s_live_cluster; }
 int      motion_live_cells(void)    { return s_live_cells; }
 int      motion_live_thr(void)      { return s_live_thr; }
 bool     motion_live_gstep(void)    { return s_live_gstep; }
+int32_t  motion_capture_ms(void)    { return s_cap_ms; }
+int32_t  motion_capture_max_ms(void){ return s_cap_max; }
 int32_t  motion_grab_ms(void)       { return s_grab_ms; }
 int32_t  motion_grab_max_ms(void)   { return s_grab_max; }
 int32_t  motion_decode_ms(void)     { return s_dec_ms; }

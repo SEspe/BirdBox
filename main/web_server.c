@@ -5133,14 +5133,14 @@ static esp_err_t h_motion(httpd_req_t *req)
     char cbuf[65];
     for (int c = 0; c < 64; c++) cbuf[c] = (cells >> c) & 1ULL ? '1' : '0';
     cbuf[64] = '\0';
-    char buf[480];   /* mask + cluster/reject + live telemetry + grab/decode (v3.25) */
+    char buf[560];   /* mask + cluster/reject + live + grab/decode/capture (v3.27) */
     snprintf(buf, sizeof(buf),
              "{\"n\":%lu,\"a\":%s,\"q\":%u,\"c\":\"%s\","
              "\"cap\":%d,\"cells\":%d,\"rej\":%d,\"rejN\":%lu,"
              "\"frames\":%lu,\"loopMs\":%ld,\"decErr\":%lu,"
              "\"livePct\":%d,\"liveClust\":%d,\"liveCells\":%d,"
              "\"thr\":%d,\"gstep\":%s,"
-             "\"grabMs\":%ld,\"grabMax\":%ld,\"decMs\":%ld,\"decMax\":%ld}",
+             "\"grabMs\":%ld,\"grabMax\":%ld,\"decMs\":%ld,\"decMax\":%ld,\"capMs\":%ld,\"capMax\":%ld,\"subMs\":%ld,\"subMax\":%ld}",
              (unsigned long) motion_trigger_count(),
              motion_active() ? "true" : "false",
              (unsigned) motion_quarantine_remaining_s(), cbuf,
@@ -5151,7 +5151,9 @@ static esp_err_t h_motion(httpd_req_t *req)
              motion_live_pct(), motion_live_cluster(), motion_live_cells(),
              motion_live_thr(), motion_live_gstep() ? "true" : "false",
              (long) motion_grab_ms(), (long) motion_grab_max_ms(),
-             (long) motion_decode_ms(), (long) motion_decode_max_ms());
+             (long) motion_decode_ms(), (long) motion_decode_max_ms(),
+             (long) motion_capture_ms(), (long) motion_capture_max_ms(),
+             (long) capture_submit_ms(), (long) capture_submit_max_ms());
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

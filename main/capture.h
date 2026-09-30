@@ -19,6 +19,12 @@ esp_err_t capture_event_frame(const uint8_t *jpeg, size_t len, roi_t roi,
  * classifier (best-of-N) and updates last-event state. No-op when frames == 0. */
 void capture_event_finish(int frames, int fast_count, const char *first_path);
 
+/* How long the classifier handoff blocked the motion task on the last event,
+ * and the worst since boot. classify_submit_event() waits up to 15 s for a
+ * queue slot and runs in the motion task, so this is detection downtime. */
+int32_t     capture_submit_ms(void);
+int32_t     capture_submit_max_ms(void);
+
 const char *capture_last_event_path(void);   /* "" until the first event */
 uint32_t    capture_event_count(void);
 int         capture_last_frames(void);        /* total frames saved for the most recent event */
