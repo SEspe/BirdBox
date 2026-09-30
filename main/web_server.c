@@ -5344,7 +5344,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         "\"camRecoveries\":%lu,\"camRecoveryAgo\":%d,\"camFault\":%s,"
         "\"camFaultClears\":%lu,"
         "\"socTempC\":%.1f,\"motionTriggers\":%lu,"
-        "\"lastInferenceMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
+        "\"lastInferenceMs\":%ld,\"inatMs\":%ld,\"clsModel\":\"%s\",\"clsLabels\":%d,\"clsRegion\":%d,\"clsRfilt\":%u,"
         "\"httpdSock\":%d,\"httpdSockMax\":%d,\"inatCooldown\":%d,"
         "\"clsQ\":%u,\"clsQMax\":%u,\"clsQPeak\":%u,\"clsQDrops\":%lu,"
         /* heapIntBig8 = the guard's EXACT metric (INTERNAL|8BIT), which heapIntBig
@@ -5383,7 +5383,7 @@ static esp_err_t h_sysinfo(httpd_req_t *req)
         camera_fault() ? "true" : "false",
         (unsigned long) camera_fault_clears(),
         soc_temp_c(), (unsigned long) motion_trigger_count(),
-        (long) classify_last_duration_ms(),
+        (long) classify_last_duration_ms(), (long) inat_last_duration_ms(),
         /* clsRegion = the real "Norway only" allowlist size (species_i18n.c's
          * NO_NAMES via species_in_region) — NOT target_species.h; clsLabels is
          * that 31-entry relabel/cloud vocabulary (v2.71). */
