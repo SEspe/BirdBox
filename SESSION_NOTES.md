@@ -1,200 +1,117 @@
-# Session notes — 2026-09-29
+# Session notes — 2026-09-30
 
 Working notes for resuming. The durable record is `FSD_BirdBox_CHANGELOG.md`;
 this file is the "where we stopped and what is still unproven" layer.
+The 2026-09-29 session is in git history (commit `511e90e`).
 
 ## Shipped today
 
 | Version | FSD | What |
 |---|---|---|
-| 0.84.0 | v3.17 | Visit log records **why** an iNat frame failed (`err:<reason>`) |
-| 0.85.0 | v3.18 | Classification **backlog is visible** (depth, peak, drops) |
-| 0.86.0 | v3.19 | **Visit viewer** — a click opens the whole burst, not one frame |
-| 0.86.1 | — | Fix: `getAttribute('href ')`, a stray space, made the click a no-op |
-| 0.87.0 | v3.20 | UI page served `Cache-Control: no-cache, must-revalidate` |
-| 0.88.0 | v3.21 | Fix: "last identified" named one bird while linking to another |
-| 0.89.0 | v3.22 | Page reports when it is older than the firmware (banner) |
-| 0.89.1 | — | Fix: visit thumbnails never loaded (hidden container + `loading=lazy`) |
-| 0.89.2 | v3.23 | `/api/event` decodes its parameter; diagnosis post-mortem recorded |
-| 0.90.0 | v3.24 | **The detector reports itself** — live per-frame telemetry |
+| 0.91.0 | v3.25 | Detect frame split into its two waits (grab vs decode) |
+| 0.91.1 | v3.27 | Time the work the detect task does inline (capture, handoff) |
+| 0.92.0 | v3.28 | Pin detect task to core 0 — **did NOT help**, recorded as a negative |
+| 0.93.0 | v3.29 | **Stop uploading frames once the verdict is decided** (operator's idea) |
+| 0.94.0 | v3.30 | iNaturalist's own latency (`inatMs`), + `docs/TELEMETRY.md` |
+| **0.95.0** | **v3.31** | **Pin TCP/IP to core 1 — the one change that worked, +31%** |
+| 0.96.0 | v3.32 | Debug rows get (i) buttons; **`tools/check-ui-js.py`** pre-flash gate |
+| 0.96.1 | — | All 45 Debug rows documented, not just the new ones |
+| 0.97.0 | v3.33 | Pacing 1100→400 ms; card read timed |
+| 0.97.2 | v3.34 | Report frames **uploaded** not saved; (i) no longer toggles checkboxes |
+| 0.98.0 | v3.35 | `detect_zoom` default 0→1; stale "zoom hurts" advice retired |
 
-Commits: `b771904` `72817e5` `eb4cb34` `68b99ef` `00bb28d` `3752dcf` `c12aaf7`
-`0c7c66e` `b199bd9` `292af63` `1e25cfe` `511e90e` `2c198ab` `63a24a6`.
-master == origin/master.
-**Released: v0.89.2** on GitHub (asset `BirdBox_esp32s3_v0.89.2.bin`,
-verified byte-identical after download). Previous release was v0.79.0.
+PR #1 merged (squashed, linear history kept). `.205` on **0.98.0**, `.240`
+untouched on 0.80.0.
 
-## Unit state
-
-| | `.205` test | `.240` production |
-|---|---|---|
-| Firmware | **0.90.0** | **0.80.0** (deliberately untouched) |
-| Camera | OV5640 | OV2640 @ HD |
-| Home Assistant | enabled | not configured |
-| Uptime at write | 227 s (**just panicked**, see below) | 293 055 s (3.4 days), 617 events |
-
-`.240` was left alone all session at the user's instruction. Only `GET
-/api/status` was ever called against it.
-
-## The classification numbers (the day's real finding)
-
-133 events, **68 named (51%)**, 65 unclassified. The 65 are **two unrelated
-problems** that the log could not previously tell apart:
-
-| Cause | n | share |
-|---|---|---|
-| Every frame errored — the box never got an answer | 34 | 52% |
-| Mostly errored | 5 | 8% |
-| Answered, every frame under the 25% threshold | 16 | 25% |
-| Cleared 25% on one frame only (no 2-frame corroboration) | 9 | 14% |
-| Cleared 25% on ≥2 frames but species disagreed | 1 | 2% |
-
-**60% were transport failures, not classifier misses.** Ceiling if those were
-answered: ~80% identified. Errors were a **burst**: 7 in hour 07, **32 in hour
-08**, 0 in hour 09.
-
-**Ruled out live, not by inference:**
-- *Not* the rate limiter — `inatCooldown` was 0 across 55 samples; error runs
-  outlast the 60 s cooldown (08:44:17→08:46:33, four dead events); real rate is
-  ~15 req/min against a 100/min limit.
-- *Not* memory or TLS — iNat buffers are all PSRAM; 12 real handshakes through
-  `/api/inat-test` under load all succeeded, one at `heapIntBig8` 16 kB.
-
-Leading unproven suspect: a **401 storm** (`inat_score()` refreshes the JWT at
-entry; a flaky refresh fails every call until it takes — fits the duration and
-the abrupt clean recovery). `err:401` in the log settles it.
-
-**The 26 genuine misses are a framing problem, not a threshold problem.**
-Inspected the images: birds sit at the frame **edges** while the centre is full
-of seed; an edge-clipped bird reliably returns `Mammalia`. Median frame
-confidence 5% against a 25% threshold. Only 3 of 22 held an accepted in-region
-ID on a single frame (`Sitta europaea=65`, `Parus major=31`, `Pica pica=26`).
-**Do not lower `INAT_SOLO_ACCEPT_PCT` (75)** — it sits deliberately above the
-47–72% band where iNat flip-flops between look-alikes (settled v2.33/v2.34).
-
-## Queue behaviour (answered on real traffic)
-
-Peak **4 of 16**, ~148 s behind at the peak, **zero drops**. So the 16-deep
-buffer is comfortable at present load and the 15 s enqueue wait was
-deliberately left alone — counting first. Worth re-checking at a **dawn** peak,
-which is busier than the midday window that was sampled.
-
-`classify_submit_event()` waits 15 s for a slot then logs the event
-unclassified and returns — i.e. the box silently discards work, against the
-standing "never drop work" rule. `clsQDrops` now counts it.
-
-## VERIFIED on hardware today
-
-- `/api/event` returns a visit's true frame list, and **the same list whether
-  asked via the visit's first frame or a middle one** (the live view passes
-  `spFile`, usually mid-burst). Traversal input (`/etc/passwd`, `../`) rejected.
-- Served-page inline JS parses with esprima after every UI change (86 kB, one
-  block).
-- `err:<reason>` success path unchanged: `Sitta europaea=87;98;…`,
-  `Parus major=95;82;97`.
-- Queue counters move on real events; `clsQMax` 16.
-
-## NOT yet verified / still open
-
-- **`err:<reason>` has never fired in the field.** Nothing has failed since
-  0.84.0 was flashed, so the tag itself is unwitnessed. This is the gate on all
-  framing work (see TODO "Blocked on evidence").
-- **`.205` panicked spontaneously at 18:17:37**, ~3 h 45 min into an 0.89.2 boot
-  with HA enabled — not an OTA, not a settings save. `guardReboots:0`, so not
-  the heap guard. New data point on the open HA panic item.
-- The HA-enable panic is **intermittent**: 1 panic / 1 clean on deliberate
-  trials, so it is a *worse* reproducer than the OTA path (6/6), not a better
-  one. Do not build a bisect on it.
-- **15 "no bird" events today on weak evidence** — per-frame scores like
-  `Mollusca?=3`, `Animalia?=36`, i.e. iNat guessing non-Aves at 2–12%. Real
-  events filed as background. Part of the gated framing/threshold work.
-
-## What cost the most time, and why
-
-A "thumbnails do not appear" report took **four flashed releases** to diagnose.
-It was a browser serving a cached **0.85.0** page the whole time.
-
-1. Every curl test passed **raw slashes**; the browser sends `encodeURIComponent`
-   output. The one test that did encode was mangled by **Git Bash** into
-   `C%3a%2fProgram+Files%2fGit%2f…` (MSYS path conversion) — a false failure
-   that was briefly believed and acted on. Pass `%2F` explicitly.
-2. The staleness banner added in v3.22 **cannot fire on a page that predates
-   it** — dead code in exactly the case it was built for. "No banner" proves
-   nothing.
-3. **The symptoms named the cached build all along**: a visible QUEUE badge
-   (0.85.0) plus pre-0.86.0 click behaviour pins the version exactly.
-
-**Standing rule, now in the FSD changelog and memory: for any web-UI report,
-establish which build the browser is running before changing code.** The
-reliable remedy is a cache-busting URL — `http://<ip>/?v=2` — which is a
-guaranteed cache miss and needs no cooperation from the browser. Two of the four
-releases fixed real defects the user was never executing.
-
-Related: parsing the served page proves **syntax, not behaviour** — esprima
-happily accepted `getAttribute('href ')`.
-
-## Evening: the resolution episode, and the instrument it forced
-
-The user raised `.205` to **QSXGA 2560x1920**, saw a visit, and got no
-detection. Investigation, in order:
-
-- Ruled out the detect buffer (`DETECT_MAX` is 320x240, sized exactly for
-  QSXGA's 1/8 decode), the decode itself (`/api/night` showed live
-  `contrast:51 peak:252`, from the same `decode_gray()`), the camera
-  (`POST /api/capture` returned a 581 KB frame, 6 MB PSRAM free), the zone
-  (59 of 64 cells) and sensitivity (88 -> a cell needs 2%).
-- **Then got it wrong twice.** First read `/api/motion` `cells:0 rej:0` as
-  "the detector is producing nothing" — they are **last-trigger snapshots**
-  (motion.c:498) and prove only that nothing fired. Then offered
-  `POST /api/capture` timings (~2.6-3.2 s at QSXGA) as evidence the loop had
-  slowed — but HD measures ~2.57 s with a 5x smaller JPEG, so that number is
-  SD write and HTTP, not frame cost.
-- Set resolution back to **HD (index 3)**. The settings save panicked the box
-  (HA enabled), but the setting persisted and a resolution change needs the
-  reboot anyway.
-- A 30-minute watch at HD saw no triggers either — **but the window was dusk**,
-  so zero was the expected result either way. Inconclusive, not negative.
-
-**0.90.0 then made it answerable, and paid for itself in under a minute.** On
-the first frame after boot quarantine cleared:
+## The one real win: pin the network stack off the detection core
 
 ```
-frames:1 loopMs:400 livePct:3 liveClust:3 thr:2 liveCells:17  -> n:1 TRIGGERED
+before (no pin, HA off):  3676 ms/frame   16% of capable
+after  (TCP on core 1):   2551 ms/frame   23% of capable    +31%
 ```
 
-So **detection at HD is healthy**, and the real detect cadence is **~400 ms**
-against the 250 ms the loop asks for. The silence was dusk: `contrast` fell
-51 -> 32 -> 0, `dark:true`, `state:"sleeping"`.
+`classify_task` (priority 3) could never have starved `motion_task`
+(priority 4) — but **lwIP, at priority ~18, carries its TLS uploads**, and
+`CONFIG_LWIP_TCPIP_TASK_AFFINITY_NO_AFFINITY` let it follow the work onto
+core 0. Pinning *motion* alone (v3.28) did nothing for exactly that reason.
+Now `CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y`. Needs the generated `sdkconfig`
+deleted.
 
-**Released v0.89.2** on GitHub during the session (asset verified byte-identical
-after download). 0.90.0 is committed but not released.
+## Measured, and worth keeping
 
-## The HA panic: four data points today
-
-| when | trigger |
+| | |
 |---|---|
-| 0.84.0 flash | `haen` 0->1 after OTA |
-| deliberate trial at 0.85.0 | `haen` 0->1 — **clean** |
-| ~18:17 | **spontaneous**, ~3h45m into an 0.89.2 boot, nothing in flight |
-| resolution change | settings save with HA enabled |
+| card read, one ~110 kB frame | **852–854 ms**, once **1814 ms** (~130 kB/s — slow) |
+| iNat per call | 4.4–6.3 s today (1–3 s is normal) |
+| an 8-frame event | 60.3 s total, of which **8.8 s was our own pacing gap** |
+| frames uploaded per event | **1 of 8 saved** after the early exit — working better than expected |
+| detect cadence, idle | ~590 ms/frame at HD |
+| `capMax` | 17–27 s — **still the dominant unexplained cost** |
 
-So it is not specific to the flash write, and the runtime enable is
-**intermittent** (1 panic / 1 clean) — a worse reproducer than the OTA path
-(6/6), not a better one. `guardReboots:0` throughout, so never the heap guard.
-**Cheapest next measurement, no backtrace needed:** watch uptime/resetReason on
-`.205` for a day with `haen=1`, then a day with `haen=0`. `.240` — HA never
-configured, 3.4 days uptime, 617 events — is already the control.
+## Hypotheses KILLED (do not retry)
+
+- PSRAM bandwidth starving the camera DMA
+- decoder contention with `classify_crop_jpeg`
+- the classify queue wait (`subMs` is flat **0**)
+- motion on the wrong core (pinning it alone changed nothing)
+- **MQTT** — plain `mqtt://` on 1883 to a LAN broker, one payload a minute;
+  stalls persist unchanged with `haen=0` (worst `loopMs` 9712 with HA off)
+
+## Still open
+
+- **`capMax` 17–27 s.** `capture_event()` runs inline in the detect task.
+  Note it calls `detect_once()` itself to know when the visitor leaves, so
+  "detection stops during capture" is **less true than it was stated** — it is
+  detecting, just not free to start a new event.
+- **HA must stay OFF on `.205`.** 0.94.0 turned the HA panic into a **boot
+  loop** (`haen=1` is in NVS, so every boot started HA, panicked, rebooted).
+  Recovery needed hammering `haen=0` into a ~6 s window; a failure there would
+  have meant a serial cable. Six new HA entities landed in that release and are
+  the obvious suspect. **The merged telemetry is therefore unusable until this
+  is understood.**
+- SD card is slow and inconsistent (852 → 1814 ms). Worth trying another card.
+- Run-time stats are **not** enabled (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`),
+  so per-core/per-task CPU still cannot be measured. That is the instrument
+  that would have answered the whole duty-cycle question in one request.
+
+## What I got wrong today (five things)
+
+1. **"CPU-intensive classifier"** — wrong framing. Priority 3 cannot starve
+   priority 4; it was the *network stack* at 18.
+2. **"Detection stops during classification"** — overstated. `loopMs` reports
+   the last *completed* gap, so stalls show up in samples taken after they end.
+   Stalls also occurred with `clsBusy` false.
+3. **`/api/capture` timing as a per-frame cost proxy** — it is not; SD write and
+   HTTP dominate (HD ~2.57 s vs QSXGA ~2.6–3.2 s despite a 5× smaller JPEG).
+4. **My own arithmetic from the Debug screenshot** — treated `lastFrames` as
+   frames *scored* (it is frames *saved*) and `inatMs` as an *average* (it is the
+   *last* call). Overshot the next measured event by 84% — then I shipped the
+   same confusion into the UI, which is what the operator caught.
+5. **Flagged `dzoom` as harmful** from memory without reading the changelog.
+   v2.31 repurposed it: whole frame is always scored first, the crop is only a
+   fallback, so it **can never score below whole-only**. Default is now 1.
+
+**The pattern: the changelog is authoritative, memory is a hint.** Check the
+former before acting on the latter.
+
+## Process changes that stuck
+
+- **`tools/check-ui-js.py`** parses the inline script out of `build/BirdBox.bin`
+  *before* flashing. Added after a duplicated `drowi()` tail reached the device:
+  the esprima check had caught it, but only because it ran *after* the flash.
+  Now step 2 of the verification list in CLAUDE.md.
+- **`docs/TELEMETRY.md`** documents every field, and is explicit about which are
+  live and which are snapshots written only on success — the distinction behind
+  four separate wrong conclusions this week.
+- Every Debug row now carries an (i) with meaning, healthy range, and what a bad
+  value indicates.
 
 ## Suggested next steps
 
-1. Read a day's `err:<reason>` tags; confirm or kill the 401-storm theory. This
-   unblocks the framing work.
-2. Then, and only then, discuss framing: the misses are edge-clipped birds, and
-   the detection zone is the user's call (never changed uninvited).
-3. Re-check the queue peak at dawn, and confirm detection recovers in daylight
-   (`/api/motion` `n` and `frames` should both climb; night sleep wakes it).
-4. If a higher resolution is wanted again, it is now a one-request question:
-   raise it, read `loopMs` and `liveClust` vs `thr`, and see the cost at once
-   instead of waiting a day.
-4. Consider updating `.240` (still 0.80.0) from the new release when you are
-   ready — remember to disable HA first.
+1. **Find the HA boot-loop regression** — it blocks the merged telemetry and
+   nearly bricked the box. Start with the six entities added in 0.94.0.
+2. **`capMax`** — the last big unexplained cost.
+3. Consider enabling run-time stats temporarily to settle per-core load.
+4. Re-measure detect cadence when iNaturalist is fast again; some of today's
+   pain was theirs (4.4–6.3 s/call against a 1–3 s norm).
+5. `.240` is still on 0.80.0 and can take a release when convenient.

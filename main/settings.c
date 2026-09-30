@@ -40,9 +40,18 @@ settings_t g_settings = {
     .stats_reset_ts     = "",
     .lang               = LANG_NO,
     .detect_zone        = ~0ULL,   /* all 64 cells in the detection zone */
-    .detect_zoom        = 0,   /* off: cropping HURTS the v1 iNat model — tight
-                                * crops read as "no bird" (whole-frame wins). Keep
-                                * 0 until a Nordic-retrained model ships (§3.2.1). */
+    .detect_zoom        = 1,   /* ON since v3.35. The old default was 0 because the
+                                * crop REPLACED the whole frame and tight crops read
+                                * as "no bird". Since v2.31 it does not replace
+                                * anything: every frame is scored whole FIRST, and
+                                * the crop is tried only when whole identifies
+                                * nothing, keeping whichever is better. It therefore
+                                * can never score below whole-only, while the
+                                * measured upside is large on exactly this box's
+                                * failure mode — small, off-centre, edge-clipped
+                                * birds (Bokfink 17→34%, magpie 35→82%, v2.31).
+                                * Cost is one extra iNat call on a frame that had
+                                * already failed, i.e. time, not accuracy. */
     .mount              = MOUNT_MEDIUM, /* 20 cells was tuned for a distant
                                 * mount and silently discards a close bird as a
                                 * wind swath (§3.1); medium is the safer middle */
