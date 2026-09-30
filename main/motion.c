@@ -710,7 +710,26 @@ esp_err_t motion_start(void)
         ESP_LOGE(TAG, "no memory for detection buffers");
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreate(motion_task, "motion", 8192, NULL, 4, NULL) != pdPASS)
+    /* PINNED TO CORE 0, away from classify_task on core 1 (v3.28).
+     *
+     * Measured: the detect loop FREEZES while clsBusy is true - frames stops
+     * advancing for up to 27 s, with loopMs reaching 7060 - yet the last
+     * completed frame's own timings are normal (grab 1 ms, decode 419 ms). So
+     * the task is not running slowly, it is not being SCHEDULED.
+     *
+     * classify_task cannot be the direct cause: it is priority 3 against this
+     * task's 4. What it does is push up to 300 kB of JPEG per frame over TLS,
+     * and the lwIP/WiFi tasks that service that upload run at priority 18-23 -
+     * far above this one. Those tasks are NO_AFFINITY, and so was this task, so
+     * it could be scheduled onto whichever core was busy with them and be
+     * preempted for seconds at a time.
+     *
+     * Pinning here is the cheap half of the fix: it keeps detection off the
+     * core doing the classifier's own work. It cannot stop an unpinned TCP/IP
+     * task landing on core 0 too, so if this only partly helps, the next lever
+     * is the upload size or the network task affinity - measure before
+     * reaching for either. */
+    if (xTaskCreatePinnedToCore(motion_task, "motion", 8192, NULL, 4, NULL, 0) != pdPASS)
         return ESP_FAIL;
     ESP_LOGI(TAG, "motion detection running (sensitivity %u, cooldown %u s)",
              g_settings.motion_sensitivity, g_settings.cooldown_s);
