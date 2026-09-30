@@ -114,10 +114,11 @@ There is **no first-party unit-test suite** (only vendored `managed_components`
 ship tests). Verification is empirical, on real hardware:
 
 1. **Build** — catches all C/C++ errors.
-2. **Flash** (OTA) and confirm `version` via `/api/status`.
-3. **Drive the changed flow live** — hit the relevant `/api/…` endpoint or
+2. **Gate the UI JavaScript BEFORE flashing** — `python tools/check-ui-js.py build/BirdBox.bin` parses the inline script straight out of the built image. A JS syntax error builds and flashes cleanly and then kills EVERY handler on the page. Do not skip this on any `web_server.c` change; it has caught a duplicated function tail that had already reached the device.
+3. **Flash** (OTA) and confirm `version` via `/api/status`.
+4. **Drive the changed flow live** — hit the relevant `/api/…` endpoint or
    exercise it in the web UI; `POST /api/capture` proves the camera path.
-4. **For any web-UI change, grep the *served* page** (`curl http://<ip>/`) for
+5. **For any web-UI change, grep the *served* page** (`curl http://<ip>/`) for
    the tokens you added — the compiler cannot verify the inline JS (see below).
 
 **Know what each check proves — several here proved less than they appeared to:**
