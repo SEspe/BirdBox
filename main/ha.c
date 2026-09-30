@@ -154,6 +154,20 @@ static const ha_entity_t ENTITIES[] = {
     { "detect_ms",       "Detect cadence",       NULL,             "ms", "measurement",  true,  false },
     { "detect_grab_ms",  "Detect frame grab",    NULL,             "ms", "measurement",  true,  false },
     { "detect_decode_ms","Detect frame decode",  NULL,             "ms", "measurement",  true,  false },
+    /* Two more timings that only mean anything as a trend (v3.26).
+     *
+     * `fast_gap_ms` is the fast-burst's achieved inter-frame gap. The burst
+     * exists to catch a bird that stops for under a second, so the gap IS the
+     * feature: if it drifts up, short visits start being missed and nothing
+     * else in the system would say so.
+     *
+     * `classify_ms` is the wall time of the last event's whole tier cascade,
+     * not one HTTP call. It is the number that decides whether the queue keeps
+     * up: at ~1.5 s per frame the box is comfortable, at ~37 s (measured on a
+     * slow iNat day) a busy feeder backs up and events start waiting. Graphing
+     * it next to cls_queue/cls_queue_peak shows cause beside effect. */
+    { "fast_gap_ms",  "Fast-burst gap",        NULL,             "ms", "measurement",  true,  false },
+    { "classify_ms",  "Last classification",   "duration",       "ms", "measurement",  true,  false },
 };
 #define ENTITY_COUNT (sizeof(ENTITIES) / sizeof(ENTITIES[0]))
 
@@ -434,7 +448,8 @@ static void publish_state(void)
         "\"contrast\":%d,\"cluster_cells\":%d,\"cluster_cap\":%d,"
         "\"rejected\":%lu,\"rejected_max\":%d,"
         "\"cls_queue\":%u,\"cls_queue_peak\":%u,\"cls_drops\":%lu,"
-        "\"detect_ms\":%ld,\"detect_grab_ms\":%ld,\"detect_decode_ms\":%ld",
+        "\"detect_ms\":%ld,\"detect_grab_ms\":%ld,\"detect_decode_ms\":%ld,"
+        "\"fast_gap_ms\":%lu",
         rssi,
         (unsigned long) esp_get_free_heap_size(),
         (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -465,11 +480,19 @@ static void publish_state(void)
         (unsigned long) motion_reject_count(), motion_reject_cells(),
         (unsigned) classify_queue_depth(), (unsigned) classify_queue_peak(),
         (unsigned long) classify_queue_drops(),
-        (long) motion_loop_ms(), (long) motion_grab_ms(), (long) motion_decode_ms());
+        (long) motion_loop_ms(), (long) motion_grab_ms(), (long) motion_decode_ms(),
+        (unsigned long) motion_fast_last_ms());
     /* An unavailable on-die sensor reports -1000; publishing that would draw a
      * cliff through the HA history graph. Omit the field instead — HA renders a
      * missing value as "unknown", which is what it is. */
     if (t > -100.0f) n = jcat(buf, sizeof(buf), n, ",\"temp\":%.1f", t);
+
+    /* Omitted until something has actually been classified: the accessor
+     * returns -1 before the first event, and publishing that would draw a
+     * spurious point on the duration graph. Same reasoning as temp above —
+     * HA renders a missing value as "unknown", which is what it is. */
+    int32_t cms = classify_last_duration_ms();
+    if (cms >= 0) n = jcat(buf, sizeof(buf), n, ",\"classify_ms\":%ld", (long) cms);
 
     /* Per-species visit counts and the confirmed false-positive total.
      * MUST come before the closing brace. Appended after it they are trailing

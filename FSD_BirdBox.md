@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.25
+**Version:** 3.26
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -217,6 +217,7 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
   - species leaderboard (distinct species, visit counts, first/last seen),
   - activity-by-hour-of-day profile,
   - "new species" flag when a species appears for the first time.
+- **The fast-burst gap and the last classification’s duration are published to Home Assistant.** Both matter as trends rather than readings: the burst exists to catch a bird that stops for under a second, so a gap that drifts upward means short visits are being missed with nothing else to show it; and the classification duration is what decides whether the queue keeps up, so it is graphed beside the queue depth it explains. The duration is omitted until something has been classified rather than published as a sentinel value.
 - **A slow detect frame says which half was slow.** Each frame separately reports the time spent waiting for the camera and the time spent decoding it, with the worst of each since boot, in `/api/motion`, the Debug tab and Home Assistant. The detect cadence is a duty cycle rather than a fixed rate — it degrades when the box is busy — so it is published as a trend, and split in two so the trend distinguishes frames failing to arrive from the processor being taken elsewhere.
 - **The detector reports itself.** Every compared frame publishes how many frames have been processed, the measured gap between them, how much of the zone changed, the dominant cluster’s share and cell count, the threshold it had to beat, whether a global light step suppressed it, and a count of failed decodes — in `/api/motion` and the Debug tab. The trigger-derived counters are last-trigger snapshots and read zero whether the detector is seeing nothing, rejecting everything, or not running, so they cannot answer “is detection working?”; these can, without attaching a serial console.
 - **Classification backlog is visible.** The event queue (16 deep) reports its live depth, its high-water mark since boot and a count of events dropped after the 15 s enqueue wait, in `/api/status`, `/api/sysinfo`, the Debug tab, Home Assistant, and as a badge on the live view that appears only while work is waiting. The peak is reported because a 60 s sample cannot see a burst that fills and drains between polls, and the drop count because an event discarded for want of a queue slot is work the box silently threw away — previously reaching nothing but the serial log.
