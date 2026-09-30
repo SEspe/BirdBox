@@ -21,9 +21,11 @@ The 2026-09-29 session is in git history (commit `511e90e`).
 | 0.98.0 | v3.35 | `detect_zoom` default 0→1; stale "zoom hurts" advice retired |
 | **0.99.0** | **v3.36** | **HA panic family fixed** — never publish from the MQTT task |
 | 0.99.2 | v3.37 | OTA with `haen=1` confirmed clean, 2/2 |
+| **1.0.0** | **v3.38** | Publish the three costs that are ours (capture, card read, uploads) |
+| 1.0.1 | v3.39 | Count iNat **calls**, not just frames — the crop path doubles them |
 
-PR #1 merged (squashed, linear history kept). `.205` on **0.98.0**, `.240`
-untouched on 0.80.0.
+PR #1 merged (squashed, linear history kept). **Released v0.99.2** on GitHub
+(asset verified byte-identical). `.205` on **1.0.1**, `.240` untouched on 0.80.0.
 
 ## The one real win: pin the network stack off the detection core
 
@@ -79,6 +81,27 @@ deleted.
   so per-core/per-task CPU still cannot be measured. That is the instrument
   that would have answered the whole duty-cycle question in one request.
 
+## Evening: the dashboard, and what it immediately revealed
+
+`docs/HA-CARDS.md` holds eight ApexCharts cards, verified against a live
+dashboard. Two rules they follow, both decided rather than defaulted: **one
+scale per card** (a dual axis invites comparing lines whose relative heights
+mean nothing) and **colours in fixed order from a CVD-validated palette**.
+
+The charts paid for themselves within minutes:
+
+- **A 77.7 s event against 4.3 s per call and 5 frames** left 56 s unexplained.
+  Cause: `score_frame_best` sends a **second** call for a crop whenever the
+  whole frame identifies nothing and `detect_zoom` is on — so a hard 5-frame
+  event is **10** round trips. `cls_calls` (1.0.1) now counts them. This is the
+  cost side of flipping the `dzoom` default the same afternoon, now visible
+  rather than inferred.
+- **The card is degrading**: 852 ms → 1409 ms, worst 2030 ms, per frame read
+  over one day. ~60 kB/s. Replace it.
+- **"Visits per hour" showed 1774-visit spikes** — reboot artifacts, not
+  birds. ApexCharts `group_by: diff` on a cumulative sensor reads the
+  unavailable gap across a restart as a jump. Use `statistics: type: change`.
+
 ## What I got wrong today (five things)
 
 1. **"CPU-intensive classifier"** — wrong framing. Priority 3 cannot starve
@@ -96,8 +119,18 @@ deleted.
    v2.31 repurposed it: whole frame is always scored first, the crop is only a
    fallback, so it **can never score below whole-only**. Default is now 1.
 
+6. **Claimed "everything is now measurable"** in the v3.37 release notes when
+   three of the measurements were only a Debug row and had never been published
+   to MQTT. A Debug row and a sensor are not the same thing; the sensor is the
+   one that gets watched. Caught by the operator asking whether the dashboard
+   covered them.
+7. **Named a counter for the wrong unit.** `cls_uploads` counts *frames*, but
+   what costs time is *calls* — and with the crop path they differ by 2x. "5"
+   read as reassuring when it was ten round trips.
+
 **The pattern: the changelog is authoritative, memory is a hint.** Check the
-former before acting on the latter.
+former before acting on the latter. Written up as
+`birdbox-changelog-over-memory` in memory.
 
 ## Also shipped late in the day
 
