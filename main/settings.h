@@ -230,6 +230,16 @@ typedef struct {
                                        every HA_PUBLISH_INTERVAL_S. default 0 */
     char     ha_host[64];           /* broker IP or hostname; "" = off however
                                        ha_enabled is set */
+    uint16_t ha_interval_s;         /* seconds between state publishes (v3.36).
+                                       Was a fixed 60. Nothing published here
+                                       moves meaningfully inside a minute, and
+                                       the peak/total fields (queue peak, worst
+                                       grab, cumulative visits) lose nothing at
+                                       all to a slower cadence because they
+                                       already carry their own extremes. So the
+                                       right value depends on the use: short
+                                       while actively debugging, long for
+                                       unattended monitoring. 30-600. */
     uint16_t ha_port;               /* broker port, default 1883 (plain MQTT —
                                        this is a LAN-local integration, same
                                        posture as the rest of the web UI) */

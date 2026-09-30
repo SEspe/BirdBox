@@ -53,6 +53,9 @@ extern uint32_t g_wifi_disconnect_count;   /* wifi.c, same source /api/status us
 static esp_mqtt_client_handle_t s_client;
 static bool     s_connected;
 static char     s_err[80];
+/* Set by the MQTT event callback, acted on by ha_task. See the CONNECTED case
+ * below for why the publishing cannot happen in the callback itself. */
+static volatile bool s_announce = false;
 static unsigned s_pubs;
 static TaskHandle_t s_task;
 static volatile bool s_stop_req;   /* ha_stop() asks; ha_task() exits and self-deletes */
@@ -541,16 +544,33 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_err[0] = '\0';
         ESP_LOGI(TAG, "connected to broker %s:%u",
                  g_settings.ha_host, (unsigned) g_settings.ha_port);
-        /* Order matters: availability first, then discovery. HA drops a state
-         * message for an entity it has not been told about yet, and marks an
-         * entity unavailable until the availability topic says otherwise. */
+        /* THIS RUNS ON esp-mqtt's OWN TASK, not ours, and that task gets the
+         * default 6 kB stack. publish_discovery() and publish_state() used to
+         * be called right here, putting payload[768] + topic[128] and then
+         * buf[2048] plus ~200 B of other locals on that stack, on top of the
+         * esp-mqtt dispatch frames and snprintf's own internals. It survived
+         * for a long time and then stopped: the entity table and the state
+         * message both grew, and 0.94.0 turned an occasional panic into a boot
+         * LOOP - haen=1 is stored in NVS, so every boot started the client,
+         * panicked here, and rebooted. Recovering the box meant catching a
+         * ~6 s window to POST haen=0 (v3.36).
+         *
+         * The callback now only raises a flag and publishes availability, which
+         * is a dozen bytes. ha_task does the real work on its own stack, which
+         * we size. Announcing one interval later is harmless; HA marks the box
+         * available immediately either way.
+         *
+         * Order still matters when it does happen: availability first, then
+         * discovery, then state. HA drops a state message for an entity it has
+         * not been told about, and shows an entity unavailable until the
+         * availability topic says otherwise. */
         esp_mqtt_client_publish(s_client, s_topic_avty, "online", 0, 1, 1);
-        publish_discovery();
-        publish_state();
+        s_announce = true;
         break;
     case MQTT_EVENT_DISCONNECTED:
         if (s_connected) ESP_LOGW(TAG, "disconnected from broker");
         s_connected = false;
+        s_announce = false;   /* re-announced by the next CONNECTED, not now */
         break;
     case MQTT_EVENT_ERROR:
         s_connected = false;
@@ -575,11 +595,23 @@ static void ha_task(void *arg)
 {
     (void) arg;
     for (;;) {
+        /* Announce on OUR stack, not the MQTT client's (see MQTT_EVENT_CONNECTED).
+         * Done before the sleep so a fresh connection is announced at once. */
+        if (s_announce && s_client && s_connected && !s_stop_req) {
+            s_announce = false;
+            publish_discovery();
+            if (!s_stop_req) publish_state();
+        }
         /* Sleep in 1 s slices rather than one long delay, so a stop request is
-         * honoured within a second instead of up to a full publish interval. */
-        for (int i = 0; i < HA_PUBLISH_INTERVAL_S && !s_stop_req; i++)
+         * honoured within a second instead of up to a full publish interval.
+         * Also wake early to announce a reconnection that happened mid-sleep. */
+        int iv = g_settings.ha_interval_s;
+        if (iv < HA_INTERVAL_MIN_S) iv = HA_INTERVAL_MIN_S;
+        if (iv > HA_INTERVAL_MAX_S) iv = HA_INTERVAL_MAX_S;
+        for (int i = 0; i < iv && !s_stop_req && !s_announce; i++)
             vTaskDelay(pdMS_TO_TICKS(1000));
         if (s_stop_req) break;
+        if (s_announce) continue;   /* reconnected: announce first, then resume */
         /* Slow, SD-bound: re-read the visit log on its own cadence, never with
          * every state message. Also picks up Gallery relabels, which a live
          * counter would miss entirely.
@@ -690,8 +722,11 @@ esp_err_t ha_start(void)
         ha_stop();
         return err;
     }
-    xTaskCreate(ha_task, "ha", 6144, NULL, 2, &s_task);   /* stats_collect below it */
-    ESP_LOGI(TAG, "Home Assistant reporting to %s every %d s", uri, HA_PUBLISH_INTERVAL_S);
+    /* 8 kB, not 6: this task now owns publish_discovery() + publish_state(),
+     * which together put ~2.4 kB of buffers on it. */
+    xTaskCreate(ha_task, "ha", 8192, NULL, 2, &s_task);   /* stats_collect below it */
+    ESP_LOGI(TAG, "Home Assistant reporting to %s every %u s", uri,
+             (unsigned) g_settings.ha_interval_s);
     return ESP_OK;
 }
 

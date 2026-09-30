@@ -15,7 +15,13 @@
  * task is spawned and no socket is opened, so a box with no HA pays nothing
  * for this existing. */
 
-#define HA_PUBLISH_INTERVAL_S 60
+/* The publish cadence is g_settings.ha_interval_s (30-600 s, default 120).
+ * It was a fixed 60 s; nothing published here moves meaningfully inside a
+ * minute, and the peak and cumulative fields lose nothing to a slower rate
+ * because they carry their own extremes. This bound only keeps the 1 s sleep
+ * slices honest. */
+#define HA_INTERVAL_MIN_S 30
+#define HA_INTERVAL_MAX_S 600
 
 /* Starts the MQTT client + publish task when HA is enabled and a broker host
  * is set; a no-op otherwise. Safe to call when WiFi is not up yet — esp-mqtt

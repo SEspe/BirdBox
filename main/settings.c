@@ -72,6 +72,8 @@ settings_t g_settings = {
                                 * operator enables it and names a broker */
     .ha_host            = "",
     .ha_port            = 1883,
+    .ha_interval_s      = 120,  /* two minutes: halves the steady work of the
+                                 * old 60 s and costs nothing a trend notices */
     .ha_user            = "",
     .ha_pass            = "",
     .sleep_mode         = 0,    /* opt-in: a box that sleeps when nobody asked
@@ -162,6 +164,8 @@ esp_err_t settings_load(void)
     l = sizeof(g_settings.ha_host);
     nvs_get_str(h, "s_hahost", g_settings.ha_host, &l);
     if (nvs_get_u16(h, "s_haport", &u16) == ESP_OK && u16 > 0) g_settings.ha_port = u16;
+    if (nvs_get_u16(h, "s_haiv", &u16)   == ESP_OK && u16 >= 30 && u16 <= 600)
+        g_settings.ha_interval_s = u16;
     l = sizeof(g_settings.ha_user);
     nvs_get_str(h, "s_hauser", g_settings.ha_user, &l);
     l = sizeof(g_settings.ha_pass);
@@ -228,6 +232,7 @@ esp_err_t settings_save(void)
     nvs_set_u8 (h, "s_haen",   g_settings.ha_enabled);
     nvs_set_str(h, "s_hahost", g_settings.ha_host);
     nvs_set_u16(h, "s_haport", g_settings.ha_port);
+    nvs_set_u16(h, "s_haiv",   g_settings.ha_interval_s);
     nvs_set_str(h, "s_hauser", g_settings.ha_user);
     nvs_set_str(h, "s_hapass", g_settings.ha_pass);
     nvs_set_u8 (h, "s_slpmode", g_settings.sleep_mode);

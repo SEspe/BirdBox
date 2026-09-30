@@ -956,6 +956,8 @@ ROT_OPTIONS
 "<input class='wi' id='stHaHost' placeholder='192.168.10.50'>"
 "<label class='wl'>Port</label>"
 "<input class='wi' type='number' min='1' max='65535' id='stHaPort'>"
+"<label class='wl'>Reporting interval (s)<span class='inf' onclick='sInfo(\"haiv\")'>i</span></label>"
+"<input class='wi' type='number' min='30' max='600' id='stHaIv'>"
 "<label class='wl'>Username<span class='inf' onclick='sInfo(\"hacred\")'>i</span></label>"
 "<input class='wi' id='stHaUser' placeholder='(blank for an anonymous broker)'>"
 "<label class='wl'>Password</label>"
@@ -2350,6 +2352,18 @@ ROT_OPTIONS
 " add-on) reachable on the LAN. Nothing is sent anywhere else and nothing leaves your network.',"
 "'Off','On. Publishing stops the moment this is turned off, and Home Assistant marks the box"
 " unavailable once it stops answering the broker.'],"
+"haiv:['Reporting interval','How often the box sends its diagnostics to Home Assistant."
+" <b>There is no single right value &mdash; it depends what you use it for.</b> Nothing"
+" published here changes meaningfully inside a minute, and the peak and running-total"
+" readings (queue high-water, worst frame time, cumulative visits) carry their own extremes,"
+" so they lose nothing at all to a slower rate. What a shorter interval buys is finer detail"
+" on the values that do move quickly &mdash; the detector cadence and the classification"
+" queue. What it costs is a state message every time, and a larger history database in Home"
+" Assistant.',"
+"'120 s &mdash; fine for watching the box day to day',"
+"'30&ndash;600 s. Use 30&ndash;60 while actively diagnosing something, so short spikes are"
+" not missed between samples; 300&ndash;600 for long-term monitoring, where the trend matters"
+" and the database does not need a point every minute.'],"
 "hacred:['Broker credentials','The username and password of the MQTT BROKER &mdash; not your Home"
 " Assistant login. Leave both blank for a broker that allows anonymous access. The password is"
 " stored in plain text in NVS, like the other stored secrets here: a flash dump reveals it."
@@ -2489,7 +2503,7 @@ ROT_OPTIONS
  * as the cloud/iNat secrets: never sent back, blank means "keep stored". */
 "$g('stHaEn').checked=c.haen==1;"
 "$g('stHaHost').value=c.hahost||'';"
-"$g('stHaPort').value=c.haport||1883;"
+"$g('stHaPort').value=c.haport||1883;$g('stHaIv').value=c.haiv||120;"
 "$g('stHaUser').value=c.hauser||'';"
 "$g('stHaPass').value='';"
 "$g('stHaPass').placeholder=c.hapass_set?'\\u2022\\u2022\\u2022\\u2022\\u2022 saved \\u2013 leave blank to keep':'(not set)';"
@@ -2629,7 +2643,7 @@ ROT_OPTIONS
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
 "+'&haen='+($g('stHaEn').checked?1:0)"
 "+'&hahost='+encodeURIComponent($g('stHaHost').value.trim())"
-"+'&haport='+$g('stHaPort').value"
+"+'&haport='+$g('stHaPort').value+'&haiv='+$g('stHaIv').value"
 "+'&hauser='+encodeURIComponent($g('stHaUser').value)"
 "+($g('stHaPass').value?'&hapass='+encodeURIComponent($g('stHaPass').value):'')"
 "+'&night='+$g('stNight').value"
@@ -4615,7 +4629,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\","
         /* System Monitoring (§13). hapass_set, never the password — same posture
          * as every other secret in this reply. */
-        "\"haen\":%u,\"hahost\":\"%s\",\"haport\":%u,\"hauser\":\"%s\","
+        "\"haen\":%u,\"hahost\":\"%s\",\"haport\":%u,\"haiv\":%u,\"hauser\":\"%s\","
         "\"hapass_set\":%s,"
         /* Night sleep (§14). */
         "\"night\":%u,\"nprobe\":%u}",
@@ -4665,6 +4679,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         (unsigned) g_settings.ha_enabled,
         g_settings.ha_host,     /* quote/backslash/space rejected on save — JSON-safe */
         (unsigned) g_settings.ha_port,
+        (unsigned) g_settings.ha_interval_s,
         g_settings.ha_user,     /* same validation as ha_host */
         g_settings.ha_pass[0] ? "true" : "false",
         (unsigned) g_settings.sleep_mode, (unsigned) g_settings.sleep_probe_min);
@@ -4939,6 +4954,8 @@ static esp_err_t h_settings_post(httpd_req_t *req)
      * restoring an export, which carries no password) cannot wipe it. */
     g_settings.ha_enabled = field_num(body, "haen=", 0, 1, g_settings.ha_enabled);
     g_settings.ha_port    = field_num(body, "haport=", 1, 65535, g_settings.ha_port);
+    g_settings.ha_interval_s = field_num(body, "haiv=", HA_INTERVAL_MIN_S,
+                                         HA_INTERVAL_MAX_S, g_settings.ha_interval_s);
     if (has_field(body, "hahost=")) {
         char h[64];
         form_field(body, "hahost=", h, sizeof(h));
