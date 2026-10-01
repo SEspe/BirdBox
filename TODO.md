@@ -21,11 +21,21 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       First post-change event read 7994 ms against 9641 / peak 18467 before, but
       that is one 5-frame event, not a day.
 - [ ] **`append_visit_line()` still stats before appending** (storage.c). Same
-      bug class as v3.40: a `stat()` on the path to decide whether to write the
-      CSV header, which scans `/log` (~365 entries, ~57 ms) once per event,
-      inside the detect task. Fix is `fseek(f, 0, SEEK_END); ftell(f) == 0`
-      after opening in append mode. Small; left out of 1.1.0 to keep that
-      release to one idea.
+      SHAPE as the v3.40 bug - `stat(path)` to decide whether to write the CSV
+      header, then `fopen(path, "a")`, i.e. two path walks where one would do -
+      but **nothing like the same size, and an earlier note here saying "~365
+      entries, ~57 ms" was a guess and is wrong.** Measured context: `/log` holds
+      one `visits-<date>.csv` and one `frameroi-<date>.csv` per day and there are
+      15 days, so ~30 entries, i.e. ~5 ms for a FULL walk at the measured
+      0.155 ms/entry - and the visits file normally exists, so the scan
+      terminates early rather than running to the end. Call it 2-5 ms per event,
+      ~390 events/day: a second or two a day. **Not worth a release of its own.**
+      Fix when that file is next open: drop the `stat` and use
+      `fseek(f, 0, SEEK_END); ftell(f) == 0` on the already-open append handle,
+      which is cheaper and also immune to the stat/open race the current code
+      has (harmless today only because the caller holds the write mutex).
+      For contrast, `storage_log_frame_roi()` runs once per FRAME (~2647/day)
+      and is already clean - a bare `fopen(..., "a")` with no stat.
 - [ ] **The per-day bucket mask is single-entry.** Alternating between two days
       rebuilds it each time (measured: a bucketed read went 0.43 -> 1.33 s while
       interleaving two days). Real use is day-at-a-time so this has not bitten,
