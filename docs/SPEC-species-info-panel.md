@@ -1,8 +1,10 @@
 # SPEC — click-to-expand species info panel
 
-**Status:** proposed, not implemented. **Author:** drafted 2026-08-06.
+**Status:** proposed, **still not implemented as of 2026-10-01**. **Author:** drafted 2026-08-06.
 **Builds on:** FSD v2.92 / firmware 0.74.58 (the live-view iNaturalist reference card).
-**Target:** one release, firmware 0.74.59 / FSD v2.93.
+**Target when drafted:** firmware 0.74.59 / FSD v2.93 — **those numbers are long
+overtaken** (the FSD is at v3.41, firmware 1.1.0). Re-derive the target version
+from `main/version.h` if this is ever picked up; the design below is unaffected.
 
 Nothing in here is in the FSD changelog yet — the FSD records what shipped. Move a
 condensed version of §13 there when this lands.
@@ -257,7 +259,7 @@ attribution. Splitting the name block out into a `<button onclick='spInfo()'>` m
 - Keep the `if(b.dataset.v!==h)` diff guard. `tick()` runs every 2 s; re-assigning
   `innerHTML` on every poll would kill an open `:hover`/focus and re-trigger the image
   load. This guard is already there — do not lose it in the rewrite.
-- **Grep the served page after editing** (`curl http://192.168.1.111/`) for `spInfo` and
+- **Grep the served page after editing** (`curl http://birdbox.local/`) for `spInfo` and
   the new class names. The whole UI is one inline `<script>` assembled from C string
   literals; a single JS syntax error kills every handler while the live `<img>` keeps
   working — the classic tell, and the C compiler cannot catch it. Run the served JS

@@ -198,6 +198,10 @@ Delete all photos	Slett alle bilder
 Wipe day (photos+stats)	Fjern dag (bilder+statistikk)
 removes every image for the day but leaves the statistics/visit log intact.	fjerner alle bilder for dagen, men beholder statistikk/besøkslogg.
 Wipe day	Fjern dag
+SD card test	SD-korttest
+Run SD card test	Kjør SD-korttest
+Writes 1 MB to the card, reads it back and checks every byte, then deletes it. Reports speed in each direction — a figure that does not depend on how many photos the day’s folder holds, unlike the Debug tab’s “Frame read from card”, which times the folder lookup too.	Skriver 1 MB til kortet, leser det tilbake og kontrollerer hver byte, og sletter det så. Rapporterer hastighet i begge retninger — et tall som ikke avhenger av hvor mange bilder dagens mappe inneholder, i motsetning til «Bildelesing fra kort» i Feilsøk, som også måler mappeoppslaget.
+Run it when you suspect the card, and again now and then so you have something to compare against — one reading on its own cannot tell you whether this card is slow or just slower than it was. Every run appends a row to /log/sdhealth.csv. It is refused while an event is being saved or identified, and takes a second or two.	Kjør den når du mistenker kortet, og av og til ellers så du har noe å sammenligne med — én enkelt måling kan ikke si om kortet er tregt eller bare tregere enn før. Hver kjøring legger til en rad i /log/sdhealth.csv. Den avvises mens en hendelse lagres eller identifiseres, og tar et sekund eller to.
 Factory reset	Fabrikkinnstillinger
 Restore factory settings	Gjenopprett fabrikkinnstillinger
 Erases every stored setting, the saved WiFi network, and the stored iNaturalist login and cloud API keys, then reboots.	Sletter alle lagrede innstillinger, det lagrede WiFi-nettverket og den lagrede iNaturalist-innloggingen og sky-API-nøklene, og starter så på nytt.

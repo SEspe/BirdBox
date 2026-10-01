@@ -1,5 +1,25 @@
 # Nordic species retrain — local training-data archive
 
+> **STATUS (2026-10-01): the device-side half of this pipeline NO LONGER EXISTS.**
+> On-device TFLite-Micro classification was removed in **firmware 0.74.0 / FSD
+> v2.37** — the iNat-only pivot. `esp-tflite-micro` is gone, there is no
+> `/sd/model`, and **`POST /model/upload` and `POST /model/delete` were deleted
+> from the firmware** (only a comment in `web_server.c` marks where they were).
+> Species ID is now online-only via `inat.c`, with `cloud.c` as the fallback
+> tier, and the relabel vocabulary comes from `main/target_species.h` rather
+> than model labels.
+>
+> **What in here is still live:** the confirmed-label export
+> (`export-labels.ps1` → `GET /api/labels/confirmed` → `dataset/<class>/`),
+> which still works and is still how ground truth leaves the box. The capture
+> puller and the GBIF image fetcher are unaffected too.
+>
+> **What is dead:** everything from "train a model" onward — `train.py`'s output
+> cannot be installed on the box, and the upload/model-select steps below will
+> 404. `tools/convert_model_int8.py` is kept but obsolete. Treat the training
+> sections as an archive of how it was done, useful if an on-device model is
+> ever revisited, not as instructions that currently work.
+
 Not part of the firmware (gitignored). Source material for the retrain
 scoped in `FSD_BirdBox.md` §3.2.1.
 
@@ -46,7 +66,7 @@ scoped in `FSD_BirdBox.md` §3.2.1.
 
 ## How it grows
 
-A scheduled routine periodically checks the device (`192.168.1.111`) for
+A scheduled routine periodically checks the device (`birdbox.local`) for
 capture files not yet in `manifest.txt`, downloads new ones into
 `lavskrike/review/`, and does a first-pass visual sort. Files that are
 clearly the same species as the existing `candidate/` set move there
@@ -63,7 +83,7 @@ the domain gap (real blur/crop/color) that stock photography can't.
 The complete closed loop, from a bird at the feeder to a smarter model on the
 device. Four stages: **A** collect & label on the BirdBox (human, in the web
 UI), **B** export the labels to the PC, **C** train, **D** deploy. Stages A–B
-run against the device (`192.168.1.111`); C runs on your PC or a Colab GPU (CPU
+run against the device (`birdbox.local`); C runs on your PC or a Colab GPU (CPU
 is fine for a small class set — a few minutes); D uploads back to the device.
 
 `train.py` produces two device-ready files:
@@ -87,7 +107,7 @@ model auto-classifies each one where it can. Lavskrike it *can't* identify (not
 in the current model), so those land as "Unidentified" — that's expected, and
 exactly why you label them by hand.
 
-**A2. Open the Gallery.** Browse to `http://192.168.1.111`, open the **Gallery**
+**A2. Open the Gallery.** Browse to `http://birdbox.local`, open the **Gallery**
 tab, pick a **day**. Each tile is one capture with the model's guess (if any).
 
 **A3. Know the five states and the Show filter.** Every image is one of:
@@ -189,8 +209,8 @@ python train.py --verify-only nordic-v1.tflite
 commands with your names filled in:
 
 ```powershell
-curl -X POST --data-binary "@nordic-v1.tflite" "http://192.168.1.111/model/upload?name=nordic-v1.tflite"
-curl -X POST --data-binary "@nordic-v1.txt"    "http://192.168.1.111/model/upload?name=nordic-v1.txt"
+curl -X POST --data-binary "@nordic-v1.tflite" "http://birdbox.local/model/upload?name=nordic-v1.tflite"
+curl -X POST --data-binary "@nordic-v1.txt"    "http://birdbox.local/model/upload?name=nordic-v1.txt"
 ```
 
 **D2. Activate it.** On the device, **Settings → Region / species model** →

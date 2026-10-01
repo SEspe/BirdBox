@@ -9,8 +9,8 @@ they are what they are, read `FSD_BirdBox_CHANGELOG.md`. This file is about
 
 BirdBox — an ESP32-S3 WiFi bird-box/feeder camera built on **ESP-IDF v6.x**
 (no Arduino, no cloud). Motion-triggered capture to microSD, on-device TFLite-
-Micro species ID, and a seven-tab LAN web UI (Live, Gallery, Stats, Settings,
-Debug, WiFi, OTA) served from the device itself. C for the firmware, one C++
+Micro species ID, and an eight-tab LAN web UI (Live, Gallery, Stats, Settings,
+Maintenance, Debug, WiFi, OTA) served from the device itself. C for the firmware, one C++
 file for the classifier, PowerShell + Python for the off-device retrain tools.
 
 ## The release contract (do this for every functional change)
@@ -69,7 +69,7 @@ try `http://birdbox.local/`, else sweep the /24.
 | | address | role |
 |---|---|---|
 | test | `192.168.10.205` | OV5640. Where everything is tried first. |
-| production | `192.168.10.240` | OV2640 @ HD. **Do not touch without being asked** — it is the untouched control for any A/B. |
+| production | `192.168.10.240` | OV2640 @ HD, outdoors. **Do not touch without being asked.** It was the untouched 0.80.0 control for A/B work until 2026-10-01, when it was brought to 1.1.0 at the operator's request — so there is no longer a stale-firmware control. If you need one, say so before updating anything. |
 
 (Earlier addresses, for grep: `192.168.1.111`, `192.168.10.236`.)
 
@@ -80,7 +80,7 @@ image fails to boot. Use `curl --data-binary` (via the Bash tool) — PowerShell
 
 ```sh
 curl -s -X POST -H "Content-Type: application/octet-stream" \
-  --data-binary @build/BirdBox.bin http://192.168.1.111/ota/upload
+  --data-binary @build/BirdBox.bin http://192.168.10.205/ota/upload
 # 200 "OK" -> device reboots; poll /api/status until version flips.
 ```
 
@@ -90,9 +90,10 @@ curl -s -X POST -H "Content-Type: application/octet-stream" \
   The panic was `MQTT_EVENT_CONNECTED` calling `publish_discovery()` and
   `publish_state()` inside the esp-mqtt callback, i.e. on esp-mqtt's own 6 kB
   task, with ~2.9 kB of buffers. Fixed by announcing from `ha_task` instead
-  (FSD v3.36). Re-verified **2/2 clean OTAs with `haen=1`**, `resetReason`
-  `software` both times, against 6/6 panics before. If an OTA ever panics with
-  HA enabled again, suspect a stack, not the flash write.
+  (FSD v3.36). Re-verified **5/5 clean OTAs with `haen=1`** (2 on 0.99.2, 3 more
+  through 1.1.0), `resetReason` `software` every time, against 6/6 panics
+  before. If an OTA ever panics with HA enabled again, suspect a stack, not the
+  flash write.
 - **After flashing, open `http://<ip>/?v=<n>` — not a plain reload.** The whole
   UI is one page carrying its own script, so a cached copy runs the OLD
   release's JavaScript while `/api/status` truthfully reports the new version: a

@@ -4,6 +4,21 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-10-01 (1.1.1, the SD self-test)
+- [ ] **`/log/sdhealth.csv` cannot be read without pulling the card.** The SD
+      self-test appends a row per run precisely so a single reading becomes a
+      trend, but there is no route serving `/log/*` - only `/captures/*` - so the
+      history the feature writes is invisible from the UI. Either serve the last
+      N rows from the test endpoint, or show them under the button. Until then
+      the trend only exists for someone with a card reader, which is most of the
+      value lost.
+- [ ] **The busy-refusal path is UNTESTED.** `h_sdtest` refuses while
+      `motion_active() || classify_busy()`, but the attempt to race it against a
+      `POST /api/capture` did not land inside the window and the guard returned a
+      normal result. The logic is three lines and obviously right by inspection,
+      which is exactly the kind of confidence this project has been burned by.
+      Exercise it properly: start a real event, then fire the test.
+
 ## Added 2026-10-01 (1.0.2-1.1.0, the directory-scan work)
 - [x] ~~**VERIFY: a bucketed read on a clean day folder.**~~ **DONE 2026-10-01
       on `.240`**, which after its power cycle had a fresh day folder (17 files,
@@ -120,8 +135,9 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       exercise the 16-deep buffer and the 15 s enqueue wait.
 - [x] ~~**No GitHub release since v0.79.0**~~ — **DONE: v0.89.2 released
       2026-09-29**, asset `BirdBox_esp32s3_v0.89.2.bin`, verified byte-identical
-      after download. `.240` is still on 0.80.0 and can take it from its own OTA
-      tab (disable HA first).
+      after download. `.240` ran 0.80.0 until 2026-10-01 and is now on
+      **1.1.0** (OTA'd from the dev PC). The "disable HA first" advice there is
+      retired — that panic was fixed in 0.99.0 / v3.36.
 
 ## Blocked on evidence (added 2026-09-29, 0.84.0)
 - [ ] **Do not touch `detect_zoom`, the detection zone or the framing until the

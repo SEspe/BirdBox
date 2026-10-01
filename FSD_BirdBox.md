@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.41
+**Version:** 3.42
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -80,6 +80,7 @@ The mode primarily tunes motion-detection sensitivity, capture cadence and stati
 - Each event is written to microSD as `/captures/YYYY-MM-DD/HHMMSS_<seq>.jpg` plus one row in the visit log (§3.4).
 - Retention: configurable cap on SD usage (default 80 %); oldest day-folders are pruned first. Events whose species ID is flagged "favorite" by the user are exempt from pruning.
 - **Capture files are opened at most once per operation.** FATFS resolves a filename by scanning its directory linearly, so every avoidable path lookup costs time proportional to the number of files already in that day's folder — measured at **0.155 ms per entry** on the reference unit, against folders that reach ~2600 files on a busy day. Saving a frame therefore does not probe for a name collision (uniqueness comes from the millisecond-resolution filename, checked in RAM against the last name issued), and reading one uses `fstat()` on the open handle rather than a second `stat()` on the path.
+- **The Maintenance tab carries an operator-triggered SD self-test.** It writes a fixed 1 MB pattern, reads it back, verifies it byte for byte and deletes it, reporting MB/s in each direction. The point is that the figure is **independent of directory size**, which no other number here is: `sdReadMs` times path resolution as well as the read, so it tracks how full the day's folder is rather than how healthy the card is. The test is **manual, never periodic** — the failure mode actually seen in the field was binary (the card stopped being detected at all), and a binary fault wants an alarm rather than a benchmark. It is refused while an event is being captured or classified, since it holds the single-writer lock for its duration. Each run appends a row to `/log/sdhealth.csv`, so repeated manual runs build the comparison that makes a single reading interpretable. `sdRemounts` in `/api/sysinfo` remains the other honest health signal: any value above `0` means the card errored and was silently recovered.
 - **Captures are stored in hour buckets, and the stored path never says so.** On the card a frame lives at `/captures/YYYY-MM-DD/HH/<name>.jpg`, which bounds any one directory at a single hour's captures and makes the lookup cost flat through the day instead of rising with it. Every path that leaves the device — the visit log's `first_frame` column, image URLs, API parameters, the retrain export — remains the **logical** `/captures/YYYY-MM-DD/<name>.jpg`. The bucket is derived from the filename, so the mapping needs no stored state; captures written before this layout stay where they are and are still found, because every lookup falls back to the flat location. Pre-SNTP `no-date` captures carry no hour and are never bucketed.
 
 ### 3.2 AI species identification
@@ -313,12 +314,13 @@ The unit runs an mDNS responder (`espressif/mdns`) once STA-connected, so the UI
 
 Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab bar following the RemoteStart standard:
 
-**Live | Gallery | Stats | Settings | Debug | WiFi | OTA Update**
+**Live | Gallery | Stats | Settings | Maintenance | Debug | WiFi | OTA Update**
 
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
 - **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected).
 - **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto), and a System Monitoring section carrying the Home Assistant / MQTT settings (§13), and a Night Sleep section (§14).
+- **Maintenance** — destructive whole-day operations, kept out of the Gallery so they cannot be hit by accident while labelling: pick a day, then delete its photos or wipe it (photos + visit-log rows). Also the confirm-gated factory reset, which erases settings, the saved WiFi network and the stored credentials but never touches the card.
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
 - **WiFi** — §4 step 5, plus a Reboot Now button.
 - **OTA Update** — §8.

@@ -1012,6 +1012,20 @@ ROT_OPTIONS
 "<p class='sts'><b>Delete all photos</b> removes every image for the day but leaves "
 "the statistics/visit log intact. <b>Wipe day</b> also removes that day&#8217;s rows "
 "from the statistics/visit log. To clear all statistics, use the Stats tab.</p>"
+"<h3 class='sh'>SD card test</h3>"
+"<p class='sts'>Writes 1 MB to the card, reads it back and checks every byte, then "
+"deletes it. Reports speed in each direction &mdash; a figure that does <b>not</b> "
+"depend on how many photos the day&#8217;s folder holds, unlike the Debug tab&#8217;s "
+"&#8220;Frame read from card&#8221;, which times the folder lookup too.</p>"
+"<p class='sts'>Run it when you suspect the card, and again now and then so you have "
+"something to compare against &mdash; one reading on its own cannot tell you whether "
+"this card is slow or just slower than it was. Every run appends a row to "
+"<code>/log/sdhealth.csv</code>. It is refused while an event is being saved or "
+"identified, and takes a second or two.</p>"
+"<div class='gbar'>"
+"<button class='act' style='margin:0' onclick='sdTest()'>&#128190; Run SD card test</button>"
+"<span class='sts' id='sdtSts' style='margin:0'></span></div>"
+"<div class='sts' id='sdtRes'></div>"
 "<h3 class='sh'>Factory reset</h3>"
 /* Deliberately three plain paragraphs rather than one with inline <b>: the i18n
  * walker matches whole text nodes, and bold tags would split this into nine
@@ -1175,6 +1189,17 @@ ROT_OPTIONS
 "if(!g_nbBound){var gg=$g('grid');if(gg){gg.addEventListener('dblclick',nbDbl);g_nbBound=true;}}}"
 "if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
+"function sdTest(){var b=$g('sdtSts'),r=$g('sdtRes');"
+"b.textContent='running…';r.textContent='';"
+"fetch('/api/sdtest',{method:'POST'}).then(x=>x.json()).then(j=>{"
+"b.textContent='';"
+"if(!j.ok&&j.err){r.innerHTML='<b style=\"color:#e88\">'+j.err+'</b>';return;}"
+"var w=(j.writeKbs/1024).toFixed(2),rd=(j.readKbs/1024).toFixed(2);"
+"var ok=j.verify?'<b style=\"color:#8e8\">verified byte for byte</b>'"
+":'<b style=\"color:#e88\">VERIFY FAILED at byte '+j.badAt+' — replace this card</b>';"
+"r.innerHTML='write <b>'+w+' MB/s</b> ('+j.writeMs+' ms) &middot; read <b>'+rd"
+"+' MB/s</b> ('+j.readMs+' ms) &middot; '+ok;"
+"}).catch(e=>{b.textContent='';r.textContent='request failed: '+e;});}"
 "if(id==='maintp')mtLoad();"
 "if(id==='dbgp')loadDebug();"
 "if(id==='wifip'){ipLoad();wfCfg();}"
@@ -6612,6 +6637,46 @@ static bool gpio_debug_reserved(int n)
  * shared illum.c driver instead, which sends a real bit-timed frame. Other
  * pins revert to input on the next reboot; the illuminator keeps whatever
  * state it was last set to (matches its normal auto-mode behaviour). */
+/* POST /api/sdtest — operator-triggered SD throughput + integrity check (§3.1).
+ * Manual only, by decision: the field failure was binary (the card vanished),
+ * and a binary fault wants an alarm, not a benchmark. It exists because nothing
+ * else here can answer "is the card healthy?" — `sdReadMs` times path resolution
+ * as well as the read, so it tracks the size of the day folder rather than the
+ * card, which is exactly how a healthy card was once condemned (v3.40).
+ *
+ * Refused while a capture or a classification is in flight: the test holds the
+ * single-writer lock for ~1 s, and taking it mid-burst would stall frames the
+ * detector is trying to save. */
+static esp_err_t h_sdtest(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    if (!storage_sd_present()) {
+        httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"no SD card\"}");
+        return ESP_OK;
+    }
+    if (motion_active() || classify_busy()) {
+        httpd_resp_sendstr(req,
+            "{\"ok\":false,\"err\":\"busy saving or identifying an event - try again in a moment\"}");
+        return ESP_OK;
+    }
+
+    sd_test_t r;
+    storage_sd_selftest(&r);
+
+    char errq[96];
+    json_escape(errq, sizeof(errq), r.err);
+    char buf[320];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"ok\":%s,\"bytes\":%u,\"writeKbs\":%u,\"readKbs\":%u,"
+        "\"writeMs\":%u,\"readMs\":%u,\"verify\":%s,\"badAt\":%u,\"err\":\"%s\"}",
+        r.ok ? "true" : "false", (unsigned) r.bytes,
+        (unsigned) r.write_kbs, (unsigned) r.read_kbs,
+        (unsigned) r.write_ms, (unsigned) r.read_ms,
+        r.verify_ok ? "true" : "false", (unsigned) r.bad_offset, errq);
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
+    return ESP_OK;
+}
+
 static esp_err_t h_debug_gpio(httpd_req_t *req)
 {
     char body[64] = {0};
@@ -6756,6 +6821,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/reboot",  .method = HTTP_POST, .handler = h_reboot     },
         { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = h_factory_reset },
         { .uri = "/api/debug/gpio", .method = HTTP_POST, .handler = h_debug_gpio },
+        { .uri = "/api/sdtest",     .method = HTTP_POST, .handler = h_sdtest     },
         { .uri = "/ota/upload",  .method = HTTP_POST, .handler = h_ota_upload },
         { .uri = "/ota/from-url", .method = HTTP_POST, .handler = h_ota_from_url },
         { .uri = "/ota/from-url", .method = HTTP_GET,  .handler = h_ota_from_url_status },

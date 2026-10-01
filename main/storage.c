@@ -1097,3 +1097,124 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
     ESP_LOGI(TAG, "relabel batch %s: %d image(s) -> '%s'", date, applied_n, c);
     return ESP_OK;
 }
+
+/* ── SD self-test (FSD §3.1, v3.42) ──────────────────────────────────────────
+ * See storage.h for why this exists and why it is manual rather than periodic. */
+#define SDT_BYTES   (1024u * 1024u)   /* 1 MB: ~0.5 s each way at ~2 MB/s      */
+#define SDT_CHUNK   (16u * 1024u)
+#define SDT_PATH    STORAGE_MOUNT_POINT "/log/sdtest.tmp"
+
+static sd_test_t s_sdt;
+static bool      s_sdt_valid;
+
+const sd_test_t *storage_sd_selftest_last(void) { return s_sdt_valid ? &s_sdt : NULL; }
+
+/* Pattern is position-dependent so a verify failure localises: a card that
+ * returns a stale or duplicated sector fails here, which a constant fill would
+ * not catch. */
+static inline uint8_t sdt_byte(uint32_t off) { return (uint8_t) (off * 31u + (off >> 8)); }
+
+esp_err_t storage_sd_selftest(sd_test_t *out)
+{
+    if (!s_sd_present) return ESP_ERR_INVALID_STATE;
+
+    uint8_t *buf = heap_caps_malloc(SDT_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return ESP_ERR_NO_MEM;
+
+    sd_test_t r = { 0 };
+    r.bytes = SDT_BYTES;
+
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+
+    /* ---- write ---- */
+    int64_t t0 = esp_timer_get_time();
+    FILE *f = fopen(SDT_PATH, "wb");
+    if (!f) {
+        strlcpy(r.err, "cannot create /log/sdtest.tmp", sizeof(r.err));
+        goto done;
+    }
+    for (uint32_t off = 0; off < SDT_BYTES; off += SDT_CHUNK) {
+        for (uint32_t i = 0; i < SDT_CHUNK; i++) buf[i] = sdt_byte(off + i);
+        if (fwrite(buf, 1, SDT_CHUNK, f) != SDT_CHUNK) {
+            strlcpy(r.err, "write failed (card full or faulty?)", sizeof(r.err));
+            fclose(f);
+            unlink(SDT_PATH);
+            goto done;
+        }
+    }
+    /* fflush+fsync before stopping the clock: without it the timer measures how
+     * fast bytes reach a buffer, not the card, and a dying card looks fast. */
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    r.write_ms = (uint32_t) ((esp_timer_get_time() - t0) / 1000);
+
+    /* ---- read back + verify ---- */
+    t0 = esp_timer_get_time();
+    f = fopen(SDT_PATH, "rb");
+    if (!f) {
+        strlcpy(r.err, "wrote the file but cannot reopen it", sizeof(r.err));
+        unlink(SDT_PATH);
+        goto done;
+    }
+    r.verify_ok = true;
+    for (uint32_t off = 0; off < SDT_BYTES; off += SDT_CHUNK) {
+        if (fread(buf, 1, SDT_CHUNK, f) != SDT_CHUNK) {
+            strlcpy(r.err, "read back short", sizeof(r.err));
+            r.verify_ok = false;
+            break;
+        }
+        for (uint32_t i = 0; i < SDT_CHUNK; i++)
+            if (buf[i] != sdt_byte(off + i)) {
+                r.verify_ok  = false;
+                r.bad_offset = off + i;
+                strlcpy(r.err, "data read back did not match", sizeof(r.err));
+                break;
+            }
+        if (!r.verify_ok) break;
+    }
+    fclose(f);
+    r.read_ms = (uint32_t) ((esp_timer_get_time() - t0) / 1000);
+    unlink(SDT_PATH);
+
+    if (r.write_ms) r.write_kbs = (uint32_t) ((uint64_t) SDT_BYTES / r.write_ms);
+    if (r.read_ms)  r.read_kbs  = (uint32_t) ((uint64_t) SDT_BYTES / r.read_ms);
+    r.ok = r.verify_ok;
+    if (r.ok) r.err[0] = '\0';
+
+done:
+    xSemaphoreGive(s_write_mtx);
+    free(buf);
+
+    /* One row per run, so repeated manual runs build a trend: a single figure
+     * cannot say whether 1900 kB/s is normal for this card or the start of its
+     * decline. Appended outside the lock-held section above would race the
+     * capture writer, so it goes through the usual helper. */
+    char line[160];
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    char ts[20];
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_now);
+    snprintf(line, sizeof(line), "%s,%u,%u,%u,%u,%s,%u",
+             ts, (unsigned) r.write_kbs, (unsigned) r.read_kbs,
+             (unsigned) r.write_ms, (unsigned) r.read_ms,
+             r.ok ? "ok" : (r.err[0] ? r.err : "failed"),
+             (unsigned) s_remount_count);
+    xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    FILE *h = fopen(STORAGE_MOUNT_POINT "/log/sdhealth.csv", "a");
+    if (h) {
+        if (ftell(h) == 0)
+            fputs("timestamp,write_kbs,read_kbs,write_ms,read_ms,result,remounts\n", h);
+        fprintf(h, "%s\n", line);
+        fclose(h);
+    }
+    xSemaphoreGive(s_write_mtx);
+
+    s_sdt = r;
+    s_sdt_valid = true;
+    if (out) *out = r;
+    ESP_LOGI(TAG, "sd selftest: write %u kB/s, read %u kB/s, %s",
+             (unsigned) r.write_kbs, (unsigned) r.read_kbs, r.ok ? "ok" : r.err);
+    return r.ok ? ESP_OK : ESP_FAIL;
+}

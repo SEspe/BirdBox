@@ -11,7 +11,8 @@ Earlier sessions are in git history (`c379b43` for 2026-09-30).
 | 1.0.2 | v3.40 | Removed the two **redundant** directory walks (read + write) |
 | **1.1.0** | **v3.41** | **Hour buckets on the card; logical paths unchanged** |
 
-`.205` on **1.1.0**, `.240` untouched on 0.80.0.
+Both units on **1.1.0** — `.240` was brought current the same evening (see below), so
+there is no longer a stale-firmware control.
 
 ## The finding: the SD card was never degrading
 
@@ -85,8 +86,14 @@ a stale mask costs a scan, never a 404.
 - `append_visit_line()` still does a `stat()` on `/log` before appending —
   same bug class, ~57 ms per event. Located, not fixed (see TODO).
 - Run-time stats still not enabled; per-core CPU still unmeasurable.
-- `.240` is on 0.80.0 and **lost its SD card** (`sdPresent:false`,
-  `sdRemounts:0`, last capture 2026-09-30 12:06). Untouched — operator's call.
+- **`.240`'s SD dropout — cause still unknown, card is fine.** It lost the card
+  mid-run on 2026-09-30 12:06 (box up, uptime never reset) and ~589 failed
+  writes, a soft reboot and a fresh boot on 1.1.0 all failed to recover it. The
+  operator then pulled the card, confirmed it reads on a PC, reseated it and
+  powered on: back healthy, **all 53 day-folders intact** back to 2026-07-08.
+  Because removal, reseating and power loss happened together, **nothing
+  isolates the cause** — contact/seating and a host latch both survive. If it
+  recurs: power-cycle FIRST without touching the card. See TODO.
 
 ## What I got wrong today
 

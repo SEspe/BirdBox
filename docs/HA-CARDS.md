@@ -323,13 +323,23 @@ apex_config:
       - y: 1500
         borderColor: '#eda100'
         strokeDashArray: 4
-        label: { text: 'slow card', style: { background: '#eda100', color: '#000' } }
+        label: { text: 'investigate', style: { background: '#eda100', color: '#000' } }
   tooltip: { x: { format: 'HH:mm' } }
 ```
 
-**`func: max`, not `avg`, on purpose.** The baseline is ~850 ms and the
-interesting event is the outlier - 1814 ms has been seen once. Averaging would
-erase precisely the spike that says the card is degrading.
+**`func: max`, not `avg`, on purpose.** The interesting event is the outlier,
+and averaging would erase it.
+
+> **Re-derive the numbers on this card before trusting them.** The ~850 ms
+> baseline and the 1500 ms line were measured when `sd_read_ms` was dominated by
+> a FATFS directory scan, not by the card — it times `fopen` as well as the read,
+> at ~0.155 ms per file already in the day folder, so it climbed all day and
+> reset at midnight. That pattern was read as a wearing-out card and **it was
+> not**; the card was healthy at ~2 MB/s. Firmware 1.0.2 and 1.1.0 (FSD v3.40,
+> v3.41) removed the redundant lookup and bucketed captures by hour, so the
+> baseline is far lower now. A rise here is still worth investigating — it just
+> no longer means "replace the card" on its own. For the card itself, use the
+> Maintenance tab's SD self-test (size-independent MB/s) and `sdRemounts`.
 
 ## 8. Frames and iNaturalist calls per event
 

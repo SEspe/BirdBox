@@ -14,8 +14,8 @@ gets an entry there.
 
 > **Status: v1 functionally complete.** WiFi provisioning, live streaming,
 > microSD storage + retention pruning, motion-triggered capture, online
-> species ID, and the full seven-tab web UI (Live, Gallery, Stats, Settings,
-> Debug, WiFi, OTA Update) are all implemented and verified live on the
+> species ID, and the full eight-tab web UI (Live, Gallery, Stats, Settings,
+> Maintenance, Debug, WiFi, OTA Update) are all implemented and verified live on the
 > reference hardware. See the [FSD changelog](FSD_BirdBox_CHANGELOG.md) for the
 > complete history.
 

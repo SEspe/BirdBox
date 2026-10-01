@@ -164,3 +164,36 @@ int storage_capture_foreach(const char *day,
 
 /* Remove a whole day: every bucket, every file, then the folders. */
 void storage_capture_remove_day(const char *day);
+
+/* ── SD self-test (FSD §3.1) ─────────────────────────────────────────────────
+ * Manual, operator-triggered throughput + integrity check. It exists because the
+ * numbers already on the Debug tab CANNOT answer "is the card healthy?":
+ * `sdReadMs` times path resolution as well as the read, so it rises with the
+ * number of files in a day folder and says nothing about the card (v3.40 — that
+ * confusion produced a wrong "replace the card" verdict). This writes a known
+ * pattern to a fixed-size temp file, reads it back, verifies it byte for byte
+ * and reports MB/s for each direction — a figure independent of directory size.
+ *
+ * Not periodic, by decision: the failure actually seen in the field was binary
+ * (the card vanished), and a binary fault wants an alarm, not a benchmark. Each
+ * run appends one row to /log/sdhealth.csv so repeated manual runs still build
+ * the trend that makes a single number interpretable. */
+typedef struct {
+    bool     ok;              /* test completed and verified                   */
+    uint32_t bytes;           /* size written/read                             */
+    uint32_t write_ms;        /* ms to write it                                */
+    uint32_t read_ms;         /* ms to read it back                            */
+    uint32_t write_kbs;       /* kB/s write                                    */
+    uint32_t read_kbs;        /* kB/s read                                     */
+    bool     verify_ok;       /* read-back matched the pattern byte for byte   */
+    uint32_t bad_offset;      /* first mismatching byte, when verify failed    */
+    char     err[48];         /* human-readable reason when ok == false        */
+} sd_test_t;
+
+/* Runs the test. Refuses (ESP_ERR_INVALID_STATE) when no card is mounted; the
+ * CALLER is responsible for refusing while a capture or classification is in
+ * flight, since this holds the single-writer lock for its duration. */
+esp_err_t storage_sd_selftest(sd_test_t *out);
+
+/* The last result this boot, or NULL if the test has not been run. */
+const sd_test_t *storage_sd_selftest_last(void);

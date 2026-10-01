@@ -67,6 +67,8 @@ bar (`liveClust` < `thr`), or it was rejected as too big (`rejN` climbing).
 | `inatCooldown` | seconds of 429 rate-limit cooldown left | `0` | **> 0 is the only place a 429 shows.** Check this before blaming the network |
 | **`lastInferenceMs`** | **the WHOLE event's classification time** | see below | **not** one iNat call — see the trap below |
 | **`inatMs`** | **one iNaturalist round trip** | 1–3 s | this is the remote service's responsiveness |
+| **`sdReadMs`** / `sdReadMax` | **time to open AND read one frame off the card** | ~100-150 ms | **not pure throughput** - see the trap below |
+| `clsUploads` / `clsCalls` | frames sent / iNat requests made, last event | calls >= uploads | calls exceed frames when the crop fallback runs |
 | `clsModel` | active classifier | `iNaturalist online` | — |
 | `clsQ` / `clsQMax` | classify queue depth / capacity | 0–4 of 16 | — |
 | `clsQPeak` | deepest since boot | < 8 | a 60 s poll cannot see a burst; this can |
@@ -97,6 +99,29 @@ Read it with two companions:
 
 If `lastInferenceMs` climbs while `inatMs` is flat, the box is sending more
 frames. If both climb together, the remote service is having a slow day.
+
+### The second trap: `sdReadMs` is not the card's speed
+
+It starts its clock **before `fopen`**, so it times *path resolution* as well as
+the read — and FATFS resolves a filename by scanning its directory linearly.
+Measured on the reference unit: **0.155 ms per preceding entry**, against day
+folders that reached 2647 files. So the figure rose through the day and reset at
+midnight, which reads exactly like a wearing-out card and **is not**. On
+2026-09-30 it produced a "replace the card" verdict that was wrong: the card was
+reading ~2 MB/s and was healthy.
+
+Two things changed in firmware 1.0.2 / 1.1.0 (FSD v3.40, v3.41): the redundant
+`stat()` was removed, and captures moved into hour buckets so a folder holds one
+hour, not one day. **The baseline therefore dropped and the old numbers do not
+apply** — the ~850 ms baseline and the 1500 ms "slow card" line in
+[`HA-CARDS.md`](HA-CARDS.md) were both measured when directory scanning
+dominated the metric, and need re-deriving from post-1.1.0 data before either is
+trusted as a threshold.
+
+To judge the **card** rather than the folder, use the Maintenance tab's SD
+self-test, which measures MB/s on a fixed-size file and is independent of
+directory size. `sdRemounts` (`/api/sysinfo`) is the other honest health signal:
+anything above `0` means the card errored and was silently recovered.
 
 ---
 
