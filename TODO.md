@@ -47,26 +47,31 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       rebuilds it each time (measured: a bucketed read went 0.43 -> 1.33 s while
       interleaving two days). Real use is day-at-a-time so this has not bitten,
       but a 4-entry table would remove it if gallery browsing ever feels slow.
-- [ ] **`.240`'s SD dropout is a LATCH that only a HARD POWER CYCLE clears.**
-      ~~Earlier entry said the card was gone at the hardware level and should be
-      replaced - WRONG, and corrected the same evening.~~ With the box on the
-      bench and power-cycled, the card came back **completely healthy**:
-      `sdCard:"BC2QT"`, 61039 MB total / 53317 MB free, and **every capture
-      intact** - 53 day-folders back to 2026-07-08, including 2026-09-30's 1335
-      files. Writes work (`POST /api/capture` 200). Nothing was lost.
-      What this means: the fault survived `sd_recover()` (~589 failed writes,
-      `sdRemounts` 0) AND a soft `/api/reboot` on 0.80.0 AND a fresh boot on
-      1.1.0, but did NOT survive removing power. That is the **same failure
-      class as the OV2640 camera latch** already in the notes - the peripheral
-      wedges in a way a soft reset cannot reach, because the device is never
-      actually de-powered. Treat "soft reboot did not fix it" as evidence FOR a
-      latch, not against the hardware being fine.
-      **OPEN QUESTION for the operator: was the card reseated, or only
-      power-cycled?** Power-cycle-only means a true host/card latch and the
-      remedy is firmware-visible (see the banner item below, plus a possible
-      auto power-cycle of the SD rail if the board allows it). Reseat means
-      mechanical contact and the remedy is physical. The two have different
-      fixes and the answer is not recoverable from the device.
+- [ ] **`.240`'s SD dropout: the CARD is good, the cause is still UNKNOWN.**
+      Two earlier verdicts here were wrong and are retracted: "card gone at the
+      hardware level, replace it" (wrong - it is fine) and "a latch only a hard
+      power cycle clears" (**not established** - see below).
+      **What is established.** The operator removed the card, verified it reads
+      on a PC, reseated it and powered on. It came back completely healthy:
+      `sdCard:"BC2QT"`, 61039 MB / 53317 MB free, **every capture intact** - 53
+      day-folders back to 2026-07-08, including 2026-09-30's 1335 files - and
+      writes work. So this was never card death or data loss.
+      **What is NOT established, and why.** Recovery involved THREE changes at
+      once: the card was removed, it was reseated, and the unit lost power. Any
+      one of them could be the fix. The surviving candidates are a **contact /
+      seating** problem (cleared by the reseat) and a **host-controller latch**
+      (cleared by the power loss). Nothing measured so far separates them, and
+      the earlier note that leaned toward the latch did so on a confounded
+      trial. Note the context mildly favours contact: `.240` is the OUTDOOR unit
+      and had 5.4 days of thermal and humidity cycling behind it.
+      **The experiment that would settle it, if it recurs:** power-cycle FIRST,
+      without touching the card. Recovery => latch. No recovery, then reseat and
+      recovery => contact. One variable at a time; it costs nothing to do in
+      that order and the answer is not otherwise recoverable.
+      Still true and still useful: the fault survived `sd_recover()` (~589 failed
+      writes, `sdRemounts` 0) and a soft `/api/reboot` on 0.80.0 and a fresh boot
+      on 1.1.0 - so whatever it is, nothing reachable from running firmware
+      cleared it.
       Note this says NOTHING about `.205`'s card - the "degradation" there was
       the directory scan (v3.40), and `.205` reads a healthy ~2 MB/s.
 - [ ] **The "SD WRITE FAILING" banner cannot fire when there is NO card** - and
