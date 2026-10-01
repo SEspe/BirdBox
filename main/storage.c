@@ -171,21 +171,228 @@ void storage_write_unlock(void) { xSemaphoreGive(s_write_mtx); }
  * still filling it. Favorites-exemption (FSD §3.1) arrives with §3.4's
  * favorite-flagging; no event carries a favorite flag yet, so there is
  * nothing to exempt. */
-static void remove_day_folder(const char *day)
+/* ── Capture file layout (FSD §3.1, v3.41) ───────────────────────────────────
+ * See the block comment in storage.h: logical path (what everything stores) is
+ * /captures/<day>/<name>.jpg; physical is /captures/<day>/<HH>/<name>.jpg. */
+
+/* "YYYY-MM-DD_HH-MM-SS-mmm.jpg" — the hour sits at a fixed offset. Anything that
+ * does not match that shape (a pre-SNTP "upNNNN" name) has no bucket and stays
+ * flat, which is also what makes the fallback in every lookup below correct for
+ * captures written before this layout existed. */
+static bool capture_hour(const char *name, char out[3])
 {
-    char dir[64];
-    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%s", day);
+    if (strlen(name) < 14 || name[10] != '_' || name[13] != '-') return false;
+    if (name[11] < '0' || name[11] > '9' || name[12] < '0' || name[12] > '9') return false;
+    out[0] = name[11]; out[1] = name[12]; out[2] = '\0';
+    return true;
+}
+
+void storage_capture_fs_path(const char *day, const char *name, bool bucket,
+                             char *out, size_t out_len)
+{
+    char hh[3];
+    if (bucket && capture_hour(name, hh))
+        snprintf(out, out_len, STORAGE_MOUNT_POINT "/captures/%s/%s/%s", day, hh, name);
+    else
+        snprintf(out, out_len, STORAGE_MOUNT_POINT "/captures/%s/%s", day, name);
+}
+
+/* Which hour buckets exist for one day, as a 24-bit mask, so a lookup can skip
+ * the bucket entirely when there is nothing there to find. Without this every
+ * capture written BEFORE v3.41 paid a failed bucket open — which on FATFS means
+ * a full scan of its day folder to prove the name absent — before falling back
+ * to the flat path, doubling the cost of browsing an old day: measured 0.23 s →
+ * 0.63 s on a 2654-file folder. One directory read answers it for every file in
+ * that day, and both the gallery and the classifier work a day at a time, so the
+ * single-entry memo below hits on essentially every lookup after the first.
+ *
+ * The mask is ADVISORY, never authoritative: it is read and written from several
+ * tasks without a lock, so both callers below try the other layout anyway if the
+ * one the mask pointed at comes up empty. A stale mask can therefore cost an
+ * extra scan but can never turn a file that exists into a 404. */
+static char     s_bk_day[40];
+static uint32_t s_bk_mask;
+static bool     s_bk_valid;
+
+static int capture_hour_num(const char *name)
+{
+    char hh[3];
+    if (!capture_hour(name, hh)) return -1;
+    int h = (hh[0] - '0') * 10 + (hh[1] - '0');
+    return (h >= 0 && h < 24) ? h : -1;
+}
+
+static uint32_t bucket_mask(const char *day)
+{
+    if (s_bk_valid && strcmp(s_bk_day, day) == 0) return s_bk_mask;
+    char dir[96];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.48s", day);
+    uint32_t m = 0;
     DIR *d = opendir(dir);
-    if (!d) return;
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_type != DT_DIR || strlen(e->d_name) != 2) continue;
+            if (e->d_name[0] < '0' || e->d_name[0] > '9' ||
+                e->d_name[1] < '0' || e->d_name[1] > '9') continue;
+            int h = (e->d_name[0] - '0') * 10 + (e->d_name[1] - '0');
+            if (h < 24) m |= 1u << h;
+        }
+        closedir(d);
+    }
+    strlcpy(s_bk_day, day, sizeof(s_bk_day));
+    s_bk_mask  = m;
+    s_bk_valid = true;
+    return m;
+}
+
+/* Called when a capture creates a bucket, so the memo does not go stale. */
+static void bucket_mask_note(const char *day, int hour)
+{
+    if (s_bk_valid && strcmp(s_bk_day, day) == 0) s_bk_mask |= 1u << hour;
+    else s_bk_valid = false;
+}
+
+FILE *storage_capture_fopen(const char *day, const char *name, const char *mode)
+{
+    char p[192];
+    int  h = capture_hour_num(name);
+    bool bucket_first = (h >= 0) && (bucket_mask(day) & (1u << h));
+
+    storage_capture_fs_path(day, name, bucket_first, p, sizeof(p));
+    FILE *f = fopen(p, mode);
+    if (f) return f;
+    if (h < 0) return NULL;             /* no-date name: only one place to look */
+    storage_capture_fs_path(day, name, !bucket_first, p, sizeof(p));
+    return fopen(p, mode);
+}
+
+/* Physical path of an EXISTING capture, for callers that must hand a path to
+ * another module rather than a FILE*. Costs one stat() on the bucket, which is a
+ * scan of at most one hour's files - these are user-initiated, one-off requests
+ * (the Gallery's identify button), not the capture path. */
+void storage_capture_resolve(const char *day, const char *name,
+                             char *out, size_t out_len)
+{
+    struct stat st;
+    int  h = capture_hour_num(name);
+    bool bucket_first = (h >= 0) && (bucket_mask(day) & (1u << h));
+    storage_capture_fs_path(day, name, bucket_first, out, out_len);
+    if (h < 0 || stat(out, &st) == 0) return;
+    storage_capture_fs_path(day, name, !bucket_first, out, out_len);
+}
+
+/* Split "/captures/<day>/<name>" (with or without the mount prefix). */
+bool storage_capture_split(const char *logical, char *day, size_t dsz,
+                           char *name, size_t nsz)
+{
+    const char *p = strstr(logical, "/captures/");
+    if (!p) return false;
+    p += strlen("/captures/");
+    const char *slash = strchr(p, '/');
+    if (!slash || (size_t) (slash - p) >= dsz) return false;
+    memcpy(day, p, (size_t) (slash - p));
+    day[slash - p] = '\0';
+    strlcpy(name, slash + 1, nsz);
+    /* A name with a slash in it is already a physical, bucketed path — the
+     * caller handed us something it got from the filesystem, not the log. */
+    return day[0] && name[0] && !strchr(name, '/');
+}
+
+FILE *storage_capture_fopen_logical(const char *logical, const char *mode)
+{
+    char day[40], name[64];
+    if (!storage_capture_split(logical, day, sizeof(day), name, sizeof(name))) return NULL;
+    return storage_capture_fopen(day, name, mode);
+}
+
+int storage_capture_unlink(const char *day, const char *name)
+{
+    char p[192];
+    int  h = capture_hour_num(name);
+    bool bucket_first = (h >= 0) && (bucket_mask(day) & (1u << h));
+    storage_capture_fs_path(day, name, bucket_first, p, sizeof(p));
+    if (unlink(p) == 0) return 0;
+    if (h < 0) return -1;
+    storage_capture_fs_path(day, name, !bucket_first, p, sizeof(p));
+    return unlink(p);
+}
+
+int storage_capture_foreach(const char *day,
+                            void (*cb)(const char *name, void *ctx), void *ctx)
+{
+    char dir[96];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.48s", day);
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int n = 0;
     struct dirent *e;
-    char file[128];
+    /* Collect bucket names first: readdir() while opening subdirectories off the
+     * same DIR* is asking for trouble on FATFS, so the two passes stay separate.
+     * 24 hours plus slack; a day cannot produce more. */
+    char buckets[32][4];
+    int nb = 0;
     while ((e = readdir(d)) != NULL) {
-        if (e->d_type != DT_REG) continue;
-        snprintf(file, sizeof(file), "%s/%.40s", dir, e->d_name);
-        unlink(file);
+        if (e->d_name[0] == '.') continue;
+        if (e->d_type == DT_DIR) {
+            if (nb < 32 && strlen(e->d_name) == 2) strlcpy(buckets[nb++], e->d_name, 4);
+        } else if (e->d_type == DT_REG) {
+            cb(e->d_name, ctx);          /* flat: pre-v3.41 or no-date */
+            n++;
+        }
     }
     closedir(d);
+    for (int i = 0; i < nb; i++) {
+        char sub[112];
+        snprintf(sub, sizeof(sub), "%s/%s", dir, buckets[i]);
+        DIR *d2 = opendir(sub);
+        if (!d2) continue;
+        struct dirent *e2;
+        while ((e2 = readdir(d2)) != NULL) {
+            if (e2->d_type != DT_REG || e2->d_name[0] == '.') continue;
+            cb(e2->d_name, ctx);
+            n++;
+        }
+        closedir(d2);
+    }
+    return n;
+}
+
+struct rm_ctx { const char *day; };
+static void rm_one(const char *name, void *ctx)
+{
+    storage_capture_unlink(((struct rm_ctx *) ctx)->day, name);
+}
+
+void storage_capture_remove_day(const char *day)
+{
+    struct rm_ctx c = { day };
+    storage_capture_foreach(day, rm_one, &c);
+    char dir[96];
+    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.48s", day);
+    /* Buckets are empty now; drop them, then the day itself. */
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        char subs[32][4];
+        int nb = 0;
+        while ((e = readdir(d)) != NULL)
+            if (e->d_type == DT_DIR && e->d_name[0] != '.' &&
+                strlen(e->d_name) == 2 && nb < 32)
+                strlcpy(subs[nb++], e->d_name, 4);
+        closedir(d);
+        for (int i = 0; i < nb; i++) {
+            char sub[112];
+            snprintf(sub, sizeof(sub), "%s/%s", dir, subs[i]);
+            rmdir(sub);
+        }
+    }
     rmdir(dir);
+}
+
+static void remove_day_folder(const char *day)
+{
+    storage_capture_remove_day(day);
 }
 
 static void prune_if_over_cap(void)
@@ -274,14 +481,41 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
 
     char dir[64], path[128];
     snprintf(dir,  sizeof(dir),  STORAGE_MOUNT_POINT "/captures/%s", day);
-    snprintf(path, sizeof(path), "%s/%s.jpg", dir, name);
-    /* Same second twice (manual snapshots) — add a suffix rather than overwrite */
-    struct stat st;
-    for (char c = 'b'; stat(path, &st) == 0 && c <= 'z'; c++)
-        snprintf(path, sizeof(path), "%s/%s%c.jpg", dir, name, c);
 
     xSemaphoreTake(s_write_mtx, portMAX_DELAY);
+    /* Uniqueness WITHOUT touching the card. This was a stat() probe per saved
+     * frame, and because the name it probes does not exist, FATFS had to scan
+     * the entire day-folder to prove it — a full O(N) walk, ~0.4 s once that
+     * folder holds ~2600 files, paid INSIDE the detect task on every frame of
+     * every burst (v3.40). The probe guarded against two saves in the same
+     * second, which the millisecond field in `name` has made impossible since
+     * v1.30; the only remaining collision is two saves in the same MILLISECOND
+     * (a burst frame racing a manual snapshot), and remembering the last name
+     * issued catches that in RAM. Both names are generated under this mutex,
+     * so the compare cannot race. */
+    static char     last[48];
+    static unsigned dup;
+    if (strcmp(name, last) == 0) {
+        size_t nl2 = strlen(name);
+        snprintf(name + nl2, sizeof(name) - nl2, "%c", (char) ('b' + dup++ % 25));
+    } else {
+        strlcpy(last, name, sizeof(last));
+    }
+    /* File name is final; now place it. The bytes go in the hour bucket, but the
+     * path handed back — and therefore the one the visit log stores and every URL
+     * uses — stays the flat LOGICAL form. Nothing outside storage.c learns that
+     * the bucket exists, which is what makes this change invisible to the visit
+     * log, the gallery, bookmarks and the retrain export (v3.41). */
+    char fname[48], bucket[72];
+    snprintf(fname, sizeof(fname), "%s.jpg", name);
     mkdir(dir, 0775);
+    storage_capture_fs_path(day, fname, true, path, sizeof(path));
+    char hh[3];
+    if (capture_hour(fname, hh)) {
+        snprintf(bucket, sizeof(bucket), "%s/%s", dir, hh);
+        mkdir(bucket, 0775);
+        bucket_mask_note(day, capture_hour_num(fname));
+    }
     FILE *f = fopen(path, "wb");
     size_t written = 0;
     if (f) {
@@ -292,6 +526,7 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
 #if SD_USE_SDMMC
     if (!ok && sd_recover()) {          /* transient write error → remount + retry once */
         mkdir(dir, 0775);
+        if (capture_hour(fname, hh)) mkdir(bucket, 0775);
         f = fopen(path, "wb");
         written = f ? fwrite(data, 1, len, f) : 0;
         if (f) fclose(f);
@@ -308,8 +543,8 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     }
 
     ESP_LOGI(TAG, "saved %s (%u bytes)", path, (unsigned) len);
-    if (path_out)
-        strlcpy(path_out, path + strlen(STORAGE_MOUNT_POINT), path_out_len);
+    if (path_out)                       /* LOGICAL path, never the bucketed one */
+        snprintf(path_out, path_out_len, "/captures/%s/%s", day, fname);
     prune_if_over_cap();
     return ESP_OK;
 }

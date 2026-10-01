@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.39
+**Version:** 3.41
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -79,6 +79,8 @@ The mode primarily tunes motion-detection sensitivity, capture cadence and stati
 - Debounce/cool-down (default 10 s, configurable) so one continuous visit produces one event, not dozens.
 - Each event is written to microSD as `/captures/YYYY-MM-DD/HHMMSS_<seq>.jpg` plus one row in the visit log (§3.4).
 - Retention: configurable cap on SD usage (default 80 %); oldest day-folders are pruned first. Events whose species ID is flagged "favorite" by the user are exempt from pruning.
+- **Capture files are opened at most once per operation.** FATFS resolves a filename by scanning its directory linearly, so every avoidable path lookup costs time proportional to the number of files already in that day's folder — measured at **0.155 ms per entry** on the reference unit, against folders that reach ~2600 files on a busy day. Saving a frame therefore does not probe for a name collision (uniqueness comes from the millisecond-resolution filename, checked in RAM against the last name issued), and reading one uses `fstat()` on the open handle rather than a second `stat()` on the path.
+- **Captures are stored in hour buckets, and the stored path never says so.** On the card a frame lives at `/captures/YYYY-MM-DD/HH/<name>.jpg`, which bounds any one directory at a single hour's captures and makes the lookup cost flat through the day instead of rising with it. Every path that leaves the device — the visit log's `first_frame` column, image URLs, API parameters, the retrain export — remains the **logical** `/captures/YYYY-MM-DD/<name>.jpg`. The bucket is derived from the filename, so the mapping needs no stored state; captures written before this layout stay where they are and are still found, because every lookup falls back to the flat location. Pre-SNTP `no-date` captures carry no hour and are never bucketed.
 
 ### 3.2 AI species identification
 

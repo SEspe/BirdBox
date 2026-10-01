@@ -109,3 +109,58 @@ esp_err_t storage_confirm(const char *date, const char *file);
  * (model upload) — capture/log writes take it internally. */
 void storage_write_lock(void);
 void storage_write_unlock(void);
+
+/* ── Capture file layout (FSD §3.1) ──────────────────────────────────────────
+ * Two paths exist for every capture and only these helpers know the difference.
+ *
+ *   LOGICAL   /captures/<day>/<name>.jpg
+ *     What the visit log stores, what every URL and API parameter carries, and
+ *     what the retrain export downloads. It has never changed and must not.
+ *
+ *   PHYSICAL  /captures/<day>/<HH>/<name>.jpg          (since v3.41)
+ *     Where the bytes actually are. FATFS resolves a filename by scanning its
+ *     directory linearly, so every open costs time proportional to the number of
+ *     files beside it — a flat day-folder reached 2647 entries on an ordinary
+ *     day and the walk measured 0.155 ms per entry, i.e. ~0.4 s per open by
+ *     evening, paid inside the detect task on every frame of every burst.
+ *     Bucketing by hour bounds a folder at one hour's captures and makes the
+ *     cost flat through the day instead of ramping.
+ *
+ * The bucket is derived from the name ("YYYY-MM-DD_HH-..."), so the mapping
+ * needs no stored state and no migration: captures written before v3.41 are flat
+ * and every lookup here falls back to the flat location, so old days, old visit
+ * log rows and old bookmarks keep working untouched. Pre-SNTP "no-date" captures
+ * carry no hour and stay flat by construction. */
+
+/* Build the physical path for `day`/`name`. `bucket` selects the hour folder
+ * (ignored when the name carries no hour). */
+void storage_capture_fs_path(const char *day, const char *name, bool bucket,
+                             char *out, size_t out_len);
+
+/* Split a logical capture path ("/captures/<day>/<name>", mount prefix optional)
+ * into its day folder and bare filename. */
+bool storage_capture_split(const char *logical, char *day, size_t dsz,
+                           char *name, size_t nsz);
+
+/* fopen() a capture: hour bucket first, flat second. Use for reads. */
+FILE *storage_capture_fopen(const char *day, const char *name, const char *mode);
+
+/* Same, from a logical path ("/captures/<day>/<name>.jpg", with or without the
+ * mount prefix). Returns NULL if the path is not a capture path. */
+FILE *storage_capture_fopen_logical(const char *logical, const char *mode);
+
+/* Physical path of an existing capture (bucket if present, else flat), for
+ * callers that must pass a path to another module. */
+void storage_capture_resolve(const char *day, const char *name,
+                             char *out, size_t out_len);
+
+/* unlink() a capture in either layout. Returns 0 on success. */
+int storage_capture_unlink(const char *day, const char *name);
+
+/* Visit every capture of `day` across BOTH layouts, newest-agnostic order (the
+ * caller sorts). `cb` gets the bare name. Returns how many were visited. */
+int storage_capture_foreach(const char *day,
+                            void (*cb)(const char *name, void *ctx), void *ctx);
+
+/* Remove a whole day: every bucket, every file, then the folders. */
+void storage_capture_remove_day(const char *day);

@@ -135,10 +135,21 @@ int32_t classify_sd_read_max_ms(void) { return s_sd_max; }
 static uint8_t *load_file_psram(const char *path, size_t *out_len)
 {
     int64_t sd_t0 = esp_timer_get_time();
-    FILE *f = fopen(path, "rb");
+    /* The visit log stores LOGICAL paths; the bytes live in an hour bucket since
+     * v3.41. storage_capture_fopen_logical() resolves either layout, so a path
+     * logged before the change still opens. Anything that is not a capture path
+     * falls through to a plain open. */
+    FILE *f = storage_capture_fopen_logical(path, "rb");
+    if (!f) f = fopen(path, "rb");
     if (!f) return NULL;
+    /* fstat() on the OPEN handle, never stat() on the path again: FATFS resolves
+     * a name by scanning the directory linearly, so a second stat(path) walks the
+     * whole day-folder a second time for a file we are already holding open. That
+     * folder reaches ~2600 entries by evening, and the walk measured 0.155 ms per
+     * entry — so the redundant call alone cost ~0.4 s per frame read, half of the
+     * "slow card" this timer was blamed on (v3.40). */
     struct stat st;
-    if (stat(path, &st) != 0 || st.st_size <= 0) { fclose(f); return NULL; }
+    if (fstat(fileno(f), &st) != 0 || st.st_size <= 0) { fclose(f); return NULL; }
     uint8_t *buf = (uint8_t *) heap_caps_malloc(st.st_size + 1,
                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) { fclose(f); return NULL; }
@@ -779,35 +790,35 @@ static int rc_event_frames(const recheck_row_t *row,
     const char *base = strrchr(row->path, '/');
     base = base ? base + 1 : row->path;
 
-    char dir[64];
-    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.10s", s_rc_date);
-    DIR *d = opendir(dir);
-    if (!d) return 1;
-
     /* keep the (want-1) smallest basenames strictly greater than first_frame,
-     * held sorted ascending (want-1 <= CLASSIFY_BEST_OF_N-1, tiny) */
-    char succ[CLASSIFY_BEST_OF_N - 1][40];
-    int  ns = 0, lim = want - 1;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_type != DT_REG) continue;
-        if (!strstr(e->d_name, ".jpg")) continue;
-        if (strcmp(e->d_name, base) <= 0) continue;          /* only later frames */
-        if (ns == lim && strcmp(e->d_name, succ[ns - 1]) >= 0) continue;
-        if (ns < lim) ns++;
-        strlcpy(succ[ns - 1], e->d_name, sizeof(succ[0]));   /* place in last slot */
-        for (int j = ns - 1; j > 0 && strcmp(succ[j], succ[j - 1]) < 0; j--) {
+     * held sorted ascending (want-1 <= CLASSIFY_BEST_OF_N-1, tiny). The walk goes
+     * through storage_capture_foreach so it sees both the hour buckets (v3.41)
+     * and any flat files from before that layout. */
+    struct succ_ctx {
+        char succ[CLASSIFY_BEST_OF_N - 1][40];
+        int ns, lim;
+        const char *base;
+    } c;
+    c.ns = 0; c.lim = want - 1; c.base = base;
+
+    storage_capture_foreach(s_rc_date, [](const char *nm, void *vctx) {
+        struct succ_ctx *x = (struct succ_ctx *) vctx;
+        if (!strstr(nm, ".jpg")) return;
+        if (strcmp(nm, x->base) <= 0) return;                 /* only later frames */
+        if (x->ns == x->lim && strcmp(nm, x->succ[x->ns - 1]) >= 0) return;
+        if (x->ns < x->lim) x->ns++;
+        strlcpy(x->succ[x->ns - 1], nm, sizeof(x->succ[0]));  /* place in last slot */
+        for (int j = x->ns - 1; j > 0 && strcmp(x->succ[j], x->succ[j - 1]) < 0; j--) {
             char tmp[40];
-            strlcpy(tmp,        succ[j],     sizeof(tmp));
-            strlcpy(succ[j],    succ[j - 1], sizeof(succ[0]));
-            strlcpy(succ[j - 1], tmp,        sizeof(succ[0]));
+            strlcpy(tmp,            x->succ[j],     sizeof(tmp));
+            strlcpy(x->succ[j],     x->succ[j - 1], sizeof(x->succ[0]));
+            strlcpy(x->succ[j - 1], tmp,            sizeof(x->succ[0]));
         }
-    }
-    closedir(d);
+    }, &c);
 
     int nf = 1;
-    for (int j = 0; j < ns; j++)
-        snprintf(paths[nf++], 96, "/captures/%.10s/%s", s_rc_date, succ[j]);
+    for (int j = 0; j < c.ns; j++)
+        snprintf(paths[nf++], 96, "/captures/%.10s/%s", s_rc_date, c.succ[j]);
     return nf;
 }
 

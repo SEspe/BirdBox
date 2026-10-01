@@ -3351,9 +3351,15 @@ static esp_err_t h_captures_file(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char path[160];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
-    FILE *f = fopen(path, "rb");
+    /* The URI is the LOGICAL path; the bytes live in an hour bucket since v3.41
+     * and this resolves either layout, so links saved before the change still
+     * open. Falls back to a literal open for anything outside /captures. */
+    char path[192];
+    FILE *f = storage_capture_fopen_logical(req->uri, "rb");
+    if (!f) {
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
+        f = fopen(path, "rb");
+    }
     if (!f) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
         return ESP_OK;
@@ -3392,6 +3398,11 @@ static esp_err_t h_i18n(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* storage_capture_foreach() returns the count itself, so counting needs no
+ * per-file work — this exists only to satisfy the callback signature. */
+static void gal_count_cb(const char *name, void *ctx) { (void) name; (void) ctx; }
+
+
 /* GET /api/days — capture day-folders with file counts (Gallery tab).
  * Chunked JSON so a card full of days never needs one big buffer. */
 static esp_err_t h_days(httpd_req_t *req)
@@ -3407,16 +3418,9 @@ static esp_err_t h_days(httpd_req_t *req)
     bool first = true;
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_DIR || e->d_name[0] == '.') continue;
-        char sub[112];
-        snprintf(sub, sizeof(sub), STORAGE_MOUNT_POINT "/captures/%.64s", e->d_name);
-        int n = 0;
-        DIR *d2 = opendir(sub);
-        if (d2) {
-            struct dirent *e2;
-            while ((e2 = readdir(d2)) != NULL)
-                if (e2->d_type == DT_REG) n++;
-            closedir(d2);
-        }
+        /* Counts both layouts: flat files from before v3.41 and the hour
+         * buckets written since. */
+        int n = storage_capture_foreach(e->d_name, gal_count_cb, NULL);
         char item[112];
         int len = snprintf(item, sizeof(item), "%s{\"d\":\"%.64s\",\"n\":%d}",
                            first ? "" : ",", e->d_name, n);
@@ -3597,6 +3601,17 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
  * `f` may be ANY frame of the visit, not just the first — the live view passes
  * spFile, the event's peak-confidence frame, which is usually mid-burst. */
 #define EV_MAX_FRAMES 48
+/* Collector for the frame walk below: keeps the names falling inside [lo, hi). */
+typedef struct { char (*names)[48]; int n; const char *lo; const char *hi; } ev_pick_t;
+static void ev_pick_cb(const char *nm, void *ctx)
+{
+    ev_pick_t *p = (ev_pick_t *) ctx;
+    if (nm[0] == '.' || !strstr(nm, ".jpg")) return;
+    if (p->lo[0] && strcmp(nm, p->lo) < 0) return;
+    if (p->hi[0] && strcmp(nm, p->hi) >= 0) return;
+    if (p->n >= EV_MAX_FRAMES) return;
+    strlcpy(p->names[p->n++], nm, 48);
+}
 #define EV_OBUF       4096  /* reply buffer; own constant - EVENTS_OBUF is declared below */    /* a burst is ~5-10; cap so one event can't flood the reply */
 static esp_err_t h_event(httpd_req_t *req)
 {
@@ -3633,10 +3648,10 @@ static esp_err_t h_event(httpd_req_t *req)
             return ESP_OK;
         }
 
-    char dir[112];
-    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.36s", date);
-    DIR *d = (storage_sd_present() && date[0] && base[0]) ? opendir(dir) : NULL;
-    if (!d) { httpd_resp_sendstr(req, "{\"files\":[]}"); return ESP_OK; }
+    if (!storage_sd_present() || !date[0] || !base[0]) {
+        httpd_resp_sendstr(req, "{\"files\":[]}");
+        return ESP_OK;
+    }
 
     gal_tab_t *tab = heap_caps_calloc(1, sizeof(gal_tab_t),
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -3664,17 +3679,11 @@ static esp_err_t h_event(httpd_req_t *req)
      * buffer would interleave their frame lists. */
     char (*names)[48] = heap_caps_calloc(EV_MAX_FRAMES, 48,
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int n = 0;
-    struct dirent *e;
-    while (names && (e = readdir(d)) != NULL) {
-        if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
-        if (!strstr(e->d_name, ".jpg")) continue;
-        if (lo[0] && strcmp(e->d_name, lo) < 0) continue;
-        if (hi[0] && strcmp(e->d_name, hi) >= 0) continue;
-        if (n >= EV_MAX_FRAMES) continue;
-        strlcpy(names[n++], e->d_name, 48);
-    }
-    closedir(d);
+    /* Walks both layouts (v3.41). Names stay bare, so the [lo, hi) bracket and
+     * the sort below are unchanged — the hour bucket is invisible here. */
+    ev_pick_t pick = { names, 0, lo, hi };
+    if (names) storage_capture_foreach(date, ev_pick_cb, &pick);
+    int n = pick.n;
     for (int i = 1; i < n; i++) {                    /* insertion sort, n is tiny */
         char tmp[48];
         strlcpy(tmp, names[i], sizeof(tmp));
@@ -3719,6 +3728,54 @@ static esp_err_t h_event(httpd_req_t *req)
 /* GET /api/events?date=YYYY-MM-DD — files of one capture day, each annotated
  * with its species label + confidence when it's a logged event's first frame */
 #define EVENTS_OBUF 4096   /* response send-buffer; flush at this fill (v1.98) */
+/* Streaming state for the gallery listing: one JSON item per capture, flushed
+ * at ~EVENTS_OBUF so a 2600-image day goes out in a few dozen sends rather than
+ * one chunk per file (v1.98). */
+typedef struct {
+    httpd_req_t *req;
+    char        *obuf;
+    size_t       used;
+    bool         first;
+    gal_tab_t   *tab;
+    int          nlabels;
+} ev_list_t;
+
+static void ev_list_cb(const char *nm, void *ctx)
+{
+    ev_list_t *L = (ev_list_t *) ctx;
+    if (nm[0] == '.') return;
+    const char *sp = "", *pf = "";
+    int pct = 0, state = 0, src = 0;
+    bool confirmed = false, labelled = false;
+    for (int i = 0; i < L->nlabels; i++)
+        if (strcmp(L->tab->l[i].base, nm) == 0) {
+            if (L->tab->l[i].spi != GAL_SPI_NONE) sp = L->tab->sp[L->tab->l[i].spi];
+            if (L->tab->l[i].pfi != GAL_PF_NONE)  pf = L->tab->pf[L->tab->l[i].pfi];
+            pct       = L->tab->l[i].pct;
+            state     = L->tab->l[i].state;
+            src       = L->tab->l[i].src;
+            confirmed = gal_confirmed(L->tab->l[i].state);
+            labelled  = true; break;
+        }
+    char item[480];   /* + the per-frame "pf" field (up to GAL_PF_LEN) */
+    int len;
+    if (labelled)
+        len = snprintf(item, sizeof(item),
+                       "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d,\"src\":%d,\"pf\":\"%s\"}",
+                       L->first ? "" : ",", nm, sp, pct,
+                       confirmed ? "true" : "false", state, src, pf);
+    else
+        len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"st\":0}",
+                       L->first ? "" : ",", nm);
+    if (len < 0) return;
+    if (L->used + (size_t) len > EVENTS_OBUF) {   /* flush before overflow */
+        httpd_resp_send_chunk(L->req, L->obuf, L->used);
+        L->used = 0;
+    }
+    memcpy(L->obuf + L->used, item, len);
+    L->used += len;
+    L->first = false;
+}
 static esp_err_t h_events(httpd_req_t *req)
 {
     char query[64] = {0}, date[36] = {0};
@@ -3733,9 +3790,8 @@ static esp_err_t h_events(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     char dir[112];
-    snprintf(dir, sizeof(dir), STORAGE_MOUNT_POINT "/captures/%.36s", date);
-    DIR *d = (storage_sd_present() && date[0]) ? opendir(dir) : NULL;
-    if (!d) {
+    (void) dir;
+    if (!storage_sd_present() || !date[0]) {
         httpd_resp_sendstr(req, "[]");
         return ESP_OK;
     }
@@ -3756,56 +3812,19 @@ static esp_err_t h_events(httpd_req_t *req)
      * it, but that's a larger change touching stats/export). */
     char *obuf = malloc(EVENTS_OBUF);
     if (!obuf) {
-        closedir(d); free(tab);
+        free(tab);
         httpd_resp_sendstr(req, "[]");
         return ESP_OK;
     }
-    size_t used = 0;
-    obuf[used++] = '[';
-    struct dirent *e;
-    bool first = true;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_type != DT_REG || e->d_name[0] == '.') continue;
-        const char *sp = "";
-        const char *pf = "";
-        int pct = 0;
-        bool confirmed = false;
-        int state = 0;
-        int src = 0;
-        bool labelled = false;
-        for (int i = 0; i < nlabels; i++)
-            if (strcmp(tab->l[i].base, e->d_name) == 0) {
-                if (tab->l[i].spi != GAL_SPI_NONE) sp = tab->sp[tab->l[i].spi];
-                if (tab->l[i].pfi != GAL_PF_NONE)  pf = tab->pf[tab->l[i].pfi];
-                pct = tab->l[i].pct;
-                state = tab->l[i].state;
-                src = tab->l[i].src;
-                confirmed = gal_confirmed(tab->l[i].state);
-                labelled = true; break;
-            }
-        char item[480];   /* + the per-frame "pf" field (up to GAL_PF_LEN) */
-        int len;
-        if (labelled)
-            len = snprintf(item, sizeof(item),
-                           "%s{\"f\":\"%.48s\",\"sp\":\"%s\",\"pct\":%d,\"c\":%s,\"st\":%d,\"src\":%d,\"pf\":\"%s\"}",
-                           first ? "" : ",", e->d_name, sp, pct,
-                           confirmed ? "true" : "false", state, src, pf);
-        else
-            len = snprintf(item, sizeof(item), "%s{\"f\":\"%.48s\",\"st\":0}",
-                           first ? "" : ",", e->d_name);
-        if (used + (size_t) len > EVENTS_OBUF) {   /* flush before overflow (item < OBUF) */
-            httpd_resp_send_chunk(req, obuf, used);
-            used = 0;
-        }
-        memcpy(obuf + used, item, len);
-        used += len;
-        first = false;
-    }
-    if (used + 1 > EVENTS_OBUF) { httpd_resp_send_chunk(req, obuf, used); used = 0; }
-    obuf[used++] = ']';
-    httpd_resp_send_chunk(req, obuf, used);
+    /* Walks both layouts (v3.41); `f` stays the bare filename, so the UI keeps
+     * building /captures/<date>/<f> and nothing downstream sees the bucket. */
+    ev_list_t L = { req, obuf, 0, true, tab, nlabels };
+    L.obuf[L.used++] = '[';
+    storage_capture_foreach(date, ev_list_cb, &L);
+    if (L.used + 1 > EVENTS_OBUF) { httpd_resp_send_chunk(req, obuf, L.used); L.used = 0; }
+    obuf[L.used++] = ']';
+    httpd_resp_send_chunk(req, obuf, L.used);
     httpd_resp_send_chunk(req, NULL, 0);
-    closedir(d);
     free(tab);
     free(obuf);
     return ESP_OK;
@@ -4102,13 +4121,20 @@ static esp_err_t h_captures_delete(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad path");
         return ESP_OK;
     }
-    char path[160];
-    snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
-    if (unlink(path) != 0) {
+    /* Logical URI → either layout (v3.41). */
+    char path[192], day[40], name[64];
+    int rc = -1;
+    if (storage_capture_split(req->uri, day, sizeof(day), name, sizeof(name))) {
+        rc = storage_capture_unlink(day, name);
+    } else {
+        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
+        rc = unlink(path);
+    }
+    if (rc != 0) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
         return ESP_OK;
     }
-    ESP_LOGI(TAG, "deleted %s", path);
+    ESP_LOGI(TAG, "deleted %s", req->uri);
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -4155,18 +4181,9 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
 
     storage_write_lock();
     if (all[0] == '1') {
-        DIR *dd = opendir(dir);
-        if (dd) {
-            struct dirent *e;
-            while ((e = readdir(dd)) != NULL) {
-                if (e->d_type != DT_REG) continue;
-                char p[176];
-                snprintf(p, sizeof(p), "%s/%.48s", dir, e->d_name);
-                if (unlink(p) == 0) deleted++;
-            }
-            closedir(dd);
-            rmdir(dir);                 /* drop the now-empty day-folder */
-        }
+        /* Removes both layouts and the hour folders with it (v3.41). */
+        deleted = storage_capture_foreach(date, gal_count_cb, NULL);
+        storage_capture_remove_day(date);
     } else {
         /* files=a.jpg,b.jpg,... — parsed straight from the body so a long
          * multi-select list isn't truncated by a fixed field buffer. */
@@ -4182,9 +4199,7 @@ static esp_err_t h_captures_delete_batch(httpd_req_t *req)
                 memcpy(fname, tok, tl);
                 fname[tl] = '\0';
                 if (!strchr(fname, '/') && !strstr(fname, "..")) {
-                    char p[176];
-                    snprintf(p, sizeof(p), "%s/%.48s", dir, fname);
-                    if (unlink(p) == 0) deleted++;
+                    if (storage_capture_unlink(date, fname) == 0) deleted++;
                 }
             }
             if (!comma || (end && comma >= end)) break;
@@ -5951,9 +5966,8 @@ static void ident_task(void *arg)
         break;
 
     case IDENT_MODEL_FILE: {
-        char path[160];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
-                 j->date, j->file);
+        char path[192];
+        storage_capture_resolve(j->date, j->file, path, sizeof(path));
         FILE *f = fopen(path, "rb");
         long sz = 0;
         if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET); }
@@ -5980,9 +5994,8 @@ static void ident_task(void *arg)
     }
 
     case IDENT_CLOUD_FILE: {
-        char path[160];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
-                 j->date, j->file);
+        char path[192];
+        storage_capture_resolve(j->date, j->file, path, sizeof(path));
         if (cloud_classify_file(j->provider, path, &r) != ESP_OK) {
             /* Surface the provider's own words (bad key, quota, safety block) —
              * the Gallery prints this straight into the tile. */
@@ -6000,9 +6013,8 @@ static void ident_task(void *arg)
     }
 
     case IDENT_INAT_FILE: {
-        char path[160];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
-                 j->date, j->file);
+        char path[192];
+        storage_capture_resolve(j->date, j->file, path, sizeof(path));
         if (inat_classify_file(path, &r) != ESP_OK) {
             char e[128], msg[96];
             json_escape(msg, sizeof(msg), inat_last_error());
@@ -6024,9 +6036,8 @@ static void ident_task(void *arg)
          * change. Lets an event be re-scored to inspect the per-frame result
          * (and top-3 candidate spread, e.g. Pica pica vs the geo-wrong Pica
          * hudsonia) without touching ground truth. `saved` is always false. */
-        char path[160];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
-                 j->date, j->file);
+        char path[192];
+        storage_capture_resolve(j->date, j->file, path, sizeof(path));
         if (inat_classify_file(path, &r) != ESP_OK) {
             char e[128], msg[96];
             json_escape(msg, sizeof(msg), inat_last_error());
@@ -6051,9 +6062,8 @@ static void ident_task(void *arg)
             httpd_resp_sendstr(req, "{\"error\":\"no ROI logged for this frame\"}");
             break;
         }
-        char path[160];
-        snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "/captures/%.23s/%.79s",
-                 j->date, j->file);
+        char path[192];
+        storage_capture_resolve(j->date, j->file, path, sizeof(path));
         FILE *f = fopen(path, "rb");
         long sz = 0;
         if (f) { fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET); }
