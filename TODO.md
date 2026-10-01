@@ -4,6 +4,38 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-10-01 (1.0.2-1.1.0, the directory-scan work)
+- [ ] **VERIFY TOMORROW: a bucketed read on a clean day folder.** The read-side
+      win of v3.41 is PREDICTED, not measured. 2026-10-01 is transitional - its
+      folder holds 2654 flat files AND the new hour directories, so resolving the
+      directory `17` is itself a 2654-entry scan and a bucketed read still
+      measures ~0.43 s. On 2026-10-02 the folder holds only ~24 bucket dirs, so
+      the same read should fall to tens of ms. Test:
+      `curl -o /dev/null -w "%{time_starttransfer}" http://192.168.10.205/captures/<tomorrow>/<a-frame>.jpg`
+      (fetch it twice - the first call builds the per-day bucket mask).
+      **If it does NOT fall, the O(N) model is wrong and v3.40/v3.41's whole
+      rationale needs re-checking**, starting from the position-vs-latency
+      measurement that produced 0.155 ms/entry.
+- [ ] **Re-measure `capMs` over a full day.** It was the dominant unexplained
+      cost; directory walks turn out to be ~5 s of it at ~6.8 frames/event.
+      First post-change event read 7994 ms against 9641 / peak 18467 before, but
+      that is one 5-frame event, not a day.
+- [ ] **`append_visit_line()` still stats before appending** (storage.c). Same
+      bug class as v3.40: a `stat()` on the path to decide whether to write the
+      CSV header, which scans `/log` (~365 entries, ~57 ms) once per event,
+      inside the detect task. Fix is `fseek(f, 0, SEEK_END); ftell(f) == 0`
+      after opening in append mode. Small; left out of 1.1.0 to keep that
+      release to one idea.
+- [ ] **The per-day bucket mask is single-entry.** Alternating between two days
+      rebuilds it each time (measured: a bucketed read went 0.43 -> 1.33 s while
+      interleaving two days). Real use is day-at-a-time so this has not bitten,
+      but a 4-entry table would remove it if gallery browsing ever feels slow.
+- [ ] **`.240` has lost its SD card.** `sdPresent:false`, `sdWriteOk:false`,
+      `sdRemounts:0`, last capture 2026-09-30 12:06 - roughly 29 h of recording
+      nothing. It never retried the mount. It is the untouched control, so
+      nothing was done; needs an operator decision (reseat/replace the card, and
+      possibly a mount retry on a card that disappears mid-run).
+
 ## Added 2026-09-29 (0.84.0-0.90.0)
 - [ ] **`err:<reason>` has never fired in the field.** Shipped in 0.84.0; no iNat
       call has failed since. Until one does the tag is unwitnessed and the

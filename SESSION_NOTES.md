@@ -1,164 +1,101 @@
-# Session notes — 2026-09-30
+# Session notes — 2026-10-01
 
 Working notes for resuming. The durable record is `FSD_BirdBox_CHANGELOG.md`;
 this file is the "where we stopped and what is still unproven" layer.
-The 2026-09-29 session is in git history (commit `511e90e`).
+Earlier sessions are in git history (`c379b43` for 2026-09-30).
 
 ## Shipped today
 
 | Version | FSD | What |
 |---|---|---|
-| 0.91.0 | v3.25 | Detect frame split into its two waits (grab vs decode) |
-| 0.91.1 | v3.27 | Time the work the detect task does inline (capture, handoff) |
-| 0.92.0 | v3.28 | Pin detect task to core 0 — **did NOT help**, recorded as a negative |
-| 0.93.0 | v3.29 | **Stop uploading frames once the verdict is decided** (operator's idea) |
-| 0.94.0 | v3.30 | iNaturalist's own latency (`inatMs`), + `docs/TELEMETRY.md` |
-| **0.95.0** | **v3.31** | **Pin TCP/IP to core 1 — the one change that worked, +31%** |
-| 0.96.0 | v3.32 | Debug rows get (i) buttons; **`tools/check-ui-js.py`** pre-flash gate |
-| 0.96.1 | — | All 45 Debug rows documented, not just the new ones |
-| 0.97.0 | v3.33 | Pacing 1100→400 ms; card read timed |
-| 0.97.2 | v3.34 | Report frames **uploaded** not saved; (i) no longer toggles checkboxes |
-| 0.98.0 | v3.35 | `detect_zoom` default 0→1; stale "zoom hurts" advice retired |
-| **0.99.0** | **v3.36** | **HA panic family fixed** — never publish from the MQTT task |
-| 0.99.2 | v3.37 | OTA with `haen=1` confirmed clean, 2/2 |
-| **1.0.0** | **v3.38** | Publish the three costs that are ours (capture, card read, uploads) |
-| 1.0.1 | v3.39 | Count iNat **calls**, not just frames — the crop path doubles them |
+| 1.0.2 | v3.40 | Removed the two **redundant** directory walks (read + write) |
+| **1.1.0** | **v3.41** | **Hour buckets on the card; logical paths unchanged** |
 
-PR #1 merged (squashed, linear history kept). **Released v0.99.2** on GitHub
-(asset verified byte-identical). `.205` on **1.0.1**, `.240` untouched on 0.80.0.
+`.205` on **1.1.0**, `.240` untouched on 0.80.0.
 
-## The one real win: pin the network stack off the detection core
+## The finding: the SD card was never degrading
 
-```
-before (no pin, HA off):  3676 ms/frame   16% of capable
-after  (TCP on core 1):   2551 ms/frame   23% of capable    +31%
-```
+Yesterday's dashboard read "Frame read from card" rising 852 → 1409 ms over one
+day and concluded the card was worn. **It is not.** `s_sd_ms` starts before
+`fopen`, so it times path resolution, and FATFS resolves a name by scanning the
+directory linearly. Measured by fetching capture files at known positions in a
+2647-file day folder:
 
-`classify_task` (priority 3) could never have starved `motion_task`
-(priority 4) — but **lwIP, at priority ~18, carries its TLS uploads**, and
-`CONFIG_LWIP_TCPIP_TASK_AFFINITY_NO_AFFINITY` let it follow the work onto
-core 0. Pinning *motion* alone (v3.28) did nothing for exactly that reason.
-Now `CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y`. Needs the generated `sdkconfig`
-deleted.
+| position in dir | TTFB |
+|---|---|
+| 2 | 23, 28 ms |
+| 1300 | 227, 232, 223 ms |
+| 2640 | 429, 423, 438 ms |
 
-## Measured, and worth keeping
+**0.155 ms per preceding entry, dead linear.** Classification did `fopen` *and*
+`stat(path)` — two walks: 2 × 0.155 × 2647 = 821 ms predicted vs 876 ms
+measured, leaving ~55 ms for the actual 110 kB read (~2 MB/s, a healthy card).
+The 852 and 1409 figures were the same card at 09:00 and at 16:00.
+
+## Measured, same folder size (~2650 files)
 
 | | |
 |---|---|
-| card read, one ~110 kB frame | **852–854 ms**, once **1814 ms** (~130 kB/s — slow) |
-| iNat per call | 4.4–6.3 s today (1–3 s is normal) |
-| an 8-frame event | 60.3 s total, of which **8.8 s was our own pacing gap** |
-| frames uploaded per event | **1 of 8 saved** after the early exit — working better than expected |
-| detect cadence, idle | ~590 ms/frame at HD |
-| `capMax` | 17–27 s — **still the dominant unexplained cost** |
+| single-frame save, 1.0.1 | 1.728 / 1.805 / 2.031 s (mean **1.85**) |
+| after v3.40 (one less walk) | 1.310 / 1.347 / 1.341 / 1.345 (mean **1.34**) |
+| after v3.41 (buckets) | 1.008 / 1.031 (**~1.01**) |
+| spread | 0.30 s → **0.04 s** — the variance *was* the walk |
+| old-day image read, with the memo | **0.026 s** |
 
-## Hypotheses KILLED (do not retry)
+At ~6.8 frames/event that is ~5 s off `capMs`, all inside the detect task.
+First post-change event: `capMs` **7994** (was 9641 / peak 18467).
 
-- PSRAM bandwidth starving the camera DMA
-- decoder contention with `classify_crop_jpeg`
-- the classify queue wait (`subMs` is flat **0**)
-- motion on the wrong core (pinning it alone changed nothing)
-- **MQTT** — plain `mqtt://` on 1883 to a LAN broker, one payload a minute;
-  stalls persist unchanged with `haen=0` (worst `loopMs` 9712 with HA off)
+## The layout, in one line
+
+Physical `/captures/<day>/<HH>/<name>.jpg`; **logical** `/captures/<day>/<name>.jpg`
+is what the visit log, every URL, every API parameter and the retrain export
+still carry. `storage.c` alone knows the difference, derives `HH` from the
+filename, and falls back to the flat location — so nothing migrated and all 15
+stored days still work.
+
+**A lookup memo was necessary.** The first build tried the bucket then fell back,
+which made every pre-v3.41 capture pay a failed bucket open (a full day-folder
+scan) first: browsing an old day went 0.23 → 0.63 s. A 24-bit per-day mask of
+which hour folders exist now picks the order. It is **advisory** — read/written
+without a lock — so both helpers still try the other layout if the first misses;
+a stale mask costs a scan, never a 404.
+
+## Verified after flashing
+
+- `/api/days` byte-identical across all 15 days (374 … 2991 files).
+- `/api/events` lists all 2654 pre-existing files plus new ones, in order.
+- Legacy flat frames and bucketed frames both serve and both group through
+  `/api/event` (confirmed Blåmeis burst; Kjøttmeis burst).
+- **Full event end to end:** captured into bucket `17`, logged with the logical
+  path, classified Kjøttmeis **95%**, 1 upload / 1 call (early exit), all 5
+  frames grouped, image serves.
+- Two OTAs with `haen=1`, `resetReason` `software` both times — the v3.36 fix
+  continues to hold (now 5/5).
 
 ## Still open
 
-- **`capMax` 17–27 s.** `capture_event()` runs inline in the detect task.
-  Note it calls `detect_once()` itself to know when the visitor leaves, so
-  "detection stops during capture" is **less true than it was stated** — it is
-  detecting, just not free to start a new event.
-- ~~HA must stay OFF on `.205`~~ — **FIXED in 0.99.0, HA is back on.** The
-  cause was `MQTT_EVENT_CONNECTED` calling `publish_discovery()` +
-  `publish_state()` **inside the esp-mqtt callback**, i.e. on esp-mqtt's own
-  6 kB task, with ~2.9 kB of buffers on it. Announcing now happens on `ha_task`
-  (stack 6144→8192). **That one bug explains the whole family**: the OTA
-  panic (6/6), the settings-save panic, the spontaneous one 3h45m into a boot,
-  and the 0.94.0 boot loop — all moments of extra memory pressure against a
-  stack that was already marginal. Verified **2/2 clean OTAs with `haen=1`**,
-  `resetReason` `software` both times. The `haen=0` workaround is retired.
-- SD card is slow and inconsistent (852 → 1814 ms). Worth trying another card.
-- Run-time stats are **not** enabled (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`),
-  so per-core/per-task CPU still cannot be measured. That is the instrument
-  that would have answered the whole duty-cycle question in one request.
+- **The read-side win is predicted, not yet measured.** Today is a transitional
+  folder: 2654 flat files *and* the new hour directories, so resolving the
+  directory `17` is itself a 2654-entry scan and a bucketed read still measures
+  ~0.43 s. **The test is a bucketed read tomorrow** on a folder holding only
+  ~24 bucket directories — it should fall to tens of milliseconds. If it does
+  not, the model is wrong and the whole v3.41 rationale needs re-checking.
+- `capMax` was the dominant unexplained cost and is now partly explained
+  (directory walks were ~5 s of it). Re-measure over a full day.
+- `append_visit_line()` still does a `stat()` on `/log` before appending —
+  same bug class, ~57 ms per event. Located, not fixed (see TODO).
+- Run-time stats still not enabled; per-core CPU still unmeasurable.
+- `.240` is on 0.80.0 and **lost its SD card** (`sdPresent:false`,
+  `sdRemounts:0`, last capture 2026-09-30 12:06). Untouched — operator's call.
 
-## Evening: the dashboard, and what it immediately revealed
+## What I got wrong today
 
-`docs/HA-CARDS.md` holds eight ApexCharts cards, verified against a live
-dashboard. Two rules they follow, both decided rather than defaulted: **one
-scale per card** (a dual axis invites comparing lines whose relative heights
-mean nothing) and **colours in fixed order from a CVD-validated palette**.
-
-The charts paid for themselves within minutes:
-
-- **A 77.7 s event against 4.3 s per call and 5 frames** left 56 s unexplained.
-  Cause: `score_frame_best` sends a **second** call for a crop whenever the
-  whole frame identifies nothing and `detect_zoom` is on — so a hard 5-frame
-  event is **10** round trips. `cls_calls` (1.0.1) now counts them. This is the
-  cost side of flipping the `dzoom` default the same afternoon, now visible
-  rather than inferred.
-- **The card is degrading**: 852 ms → 1409 ms, worst 2030 ms, per frame read
-  over one day. ~60 kB/s. Replace it.
-- **"Visits per hour" showed 1774-visit spikes** — reboot artifacts, not
-  birds. ApexCharts `group_by: diff` on a cumulative sensor reads the
-  unavailable gap across a restart as a jump. Use `statistics: type: change`.
-
-## What I got wrong today (five things)
-
-1. **"CPU-intensive classifier"** — wrong framing. Priority 3 cannot starve
-   priority 4; it was the *network stack* at 18.
-2. **"Detection stops during classification"** — overstated. `loopMs` reports
-   the last *completed* gap, so stalls show up in samples taken after they end.
-   Stalls also occurred with `clsBusy` false.
-3. **`/api/capture` timing as a per-frame cost proxy** — it is not; SD write and
-   HTTP dominate (HD ~2.57 s vs QSXGA ~2.6–3.2 s despite a 5× smaller JPEG).
-4. **My own arithmetic from the Debug screenshot** — treated `lastFrames` as
-   frames *scored* (it is frames *saved*) and `inatMs` as an *average* (it is the
-   *last* call). Overshot the next measured event by 84% — then I shipped the
-   same confusion into the UI, which is what the operator caught.
-5. **Flagged `dzoom` as harmful** from memory without reading the changelog.
-   v2.31 repurposed it: whole frame is always scored first, the crop is only a
-   fallback, so it **can never score below whole-only**. Default is now 1.
-
-6. **Claimed "everything is now measurable"** in the v3.37 release notes when
-   three of the measurements were only a Debug row and had never been published
-   to MQTT. A Debug row and a sensor are not the same thing; the sensor is the
-   one that gets watched. Caught by the operator asking whether the dashboard
-   covered them.
-7. **Named a counter for the wrong unit.** `cls_uploads` counts *frames*, but
-   what costs time is *calls* — and with the crop path they differ by 2x. "5"
-   read as reassuring when it was ten round trips.
-
-**The pattern: the changelog is authoritative, memory is a hint.** Check the
-former before acting on the latter. Written up as
-`birdbox-changelog-over-memory` in memory.
-
-## Also shipped late in the day
-
-- **The HA reporting interval is a setting** (`ha_interval_s`, 30–600 s,
-  default 120, was a fixed 60) after the operator noticed it was not exposed.
-  There is no single right value and the (i) says so: nothing published moves
-  meaningfully inside a minute, and the peak/cumulative fields carry their own
-  extremes — so 30–60 s while diagnosing, 300–600 s for monitoring.
-- **`detect_zoom` defaults ON** (v3.35). The old default and the Settings advice
-  both described pre-v2.31 behaviour where the crop *replaced* the whole frame.
-  It has been a fallback since v2.31 and can never score below whole-only.
-
-## Process changes that stuck
-
-- **`tools/check-ui-js.py`** parses the inline script out of `build/BirdBox.bin`
-  *before* flashing. Added after a duplicated `drowi()` tail reached the device:
-  the esprima check had caught it, but only because it ran *after* the flash.
-  Now step 2 of the verification list in CLAUDE.md.
-- **`docs/TELEMETRY.md`** documents every field, and is explicit about which are
-  live and which are snapshots written only on success — the distinction behind
-  four separate wrong conclusions this week.
-- Every Debug row now carries an (i) with meaning, healthy range, and what a bad
-  value indicates.
-
-## Suggested next steps
-
-1. **`capMax` 17–27 s** — now the last big unexplained cost.
-3. Consider enabling run-time stats temporarily to settle per-core load.
-4. Re-measure detect cadence when iNaturalist is fast again; some of today's
-   pain was theirs (4.4–6.3 s/call against a 1–3 s norm).
-5. `.240` is still on 0.80.0 and can take a release when convenient.
+1. **Truncated `main/version.h`** with `sed -n '...' -i` — `-n` plus `-i` writes
+   an empty file. Restored from git immediately; no loss. Use plain
+   `sed -i 's/a/b/'`, never `-n` with `-i`.
+2. **Shipped the bucket fallback without thinking about the legacy cost.** It
+   doubled old-day browsing (0.23 → 0.63 s) and only showed up because the
+   post-flash check happened to time a legacy file. The memo fixed it, but the
+   regression was predictable from the design and was not predicted.
+3. Guessed at a 0.43 s bucketed read before testing the direct physical path;
+   the direct test settled it in one request. Same lesson as yesterday's.
