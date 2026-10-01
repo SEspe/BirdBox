@@ -40,11 +40,34 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       rebuilds it each time (measured: a bucketed read went 0.43 -> 1.33 s while
       interleaving two days). Real use is day-at-a-time so this has not bitten,
       but a 4-entry table would remove it if gallery browsing ever feels slow.
-- [ ] **`.240` has lost its SD card.** `sdPresent:false`, `sdWriteOk:false`,
-      `sdRemounts:0`, last capture 2026-09-30 12:06 - roughly 29 h of recording
-      nothing. It never retried the mount. It is the untouched control, so
-      nothing was done; needs an operator decision (reseat/replace the card, and
-      possibly a mount retry on a card that disappears mid-run).
+- [ ] **`.240`'s SD card is gone at the HARDWARE level - needs physical access.**
+      Diagnosed 2026-10-01 with the operator's go-ahead (it was the untouched
+      control until then). The card vanished mid-run on 2026-09-30 ~12:06 with
+      the box UP - uptime was 5.4 days and never reset - and did not come back
+      for: `sd_recover()` (ran on every failed capture, `sdRemounts` still **0**
+      after ~589 failed attempts), a soft reboot on 0.80.0, or a fresh boot on
+      1.1.0. `sdCard` is the EMPTY STRING, so the SDMMC probe finds no card at
+      all - this is card detection, not a filesystem problem. Nothing in the
+      firmware gap is implicated: `storage.c` had exactly ONE commit between
+      0.80.0 and 1.1.0 (the v3.41 bucket work), none of it touching the mount.
+      **Remedy is physical: reseat the card, then replace it.** A consumer
+      microSD writing ~2600 files/day is a plausible wear-out.
+      Note this says NOTHING about `.205`'s card - the "degradation" there was
+      the directory scan (v3.40), and `.205` reads a healthy ~2 MB/s.
+- [ ] **The "SD WRITE FAILING" banner cannot fire when there is NO card** - and
+      `.240` proves it cost 30 h of silent non-recording. `web_server.c:1479`
+      toggles the banner on `s.sdWriteOk === false`, but `storage_save_jpeg()`
+      returns `ESP_ERR_INVALID_STATE` on `!s_sd_present` BEFORE touching
+      `s_last_write_ok` - so with the card absent the flag stays **true** and the
+      one warning built for exactly this situation stays hidden. `.240` reported
+      `sdWriteOk:true` while holding no card whatsoever.
+      **Fifth instance of the same bug class** (counters that publish only on
+      success - see v3.17/v3.18/v3.24/v3.28). Fix: drive the banner off
+      `sdWriteOk === false || sdPresent === false`, and word it for both cases.
+      Cheap, and it converts a 30-hour silent outage into an immediate one.
+      Consider also a periodic re-mount attempt for a card that disappears
+      mid-run: `sd_recover()` only runs on a failed write, and `sdRemounts:0`
+      after 589 of them says that path is not recovering this failure anyway.
 
 ## Added 2026-09-29 (0.84.0-0.90.0)
 - [ ] **`err:<reason>` has never fired in the field.** Shipped in 0.84.0; no iNat
