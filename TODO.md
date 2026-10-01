@@ -5,8 +5,15 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
 ## Added 2026-10-01 (1.0.2-1.1.0, the directory-scan work)
-- [ ] **VERIFY TOMORROW: a bucketed read on a clean day folder.** The read-side
-      win of v3.41 is PREDICTED, not measured. 2026-10-01 is transitional - its
+- [x] ~~**VERIFY: a bucketed read on a clean day folder.**~~ **DONE 2026-10-01
+      on `.240`**, which after its power cycle had a fresh day folder (17 files,
+      hour bucket `20/`): a bucketed read measured **0.023-0.039 s** against
+      **~0.43 s** for the same request on `.205`'s 2650-file transitional
+      folder. The predicted order-of-magnitude drop is real, and it reproduces
+      on the OTHER unit and the other sensor. Caveat: 17 files is not a full
+      hour - the steady-state case is a bucket holding ~500, which the model
+      puts near 0.08 s and which still wants checking on a busy day.
+      Original entry: The read-side win of v3.41 is PREDICTED, not measured. 2026-10-01 is transitional - its
       folder holds 2654 flat files AND the new hour directories, so resolving the
       directory `17` is itself a 2654-entry scan and a bucketed read still
       measures ~0.43 s. On 2026-10-02 the folder holds only ~24 bucket dirs, so
@@ -40,18 +47,26 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       rebuilds it each time (measured: a bucketed read went 0.43 -> 1.33 s while
       interleaving two days). Real use is day-at-a-time so this has not bitten,
       but a 4-entry table would remove it if gallery browsing ever feels slow.
-- [ ] **`.240`'s SD card is gone at the HARDWARE level - needs physical access.**
-      Diagnosed 2026-10-01 with the operator's go-ahead (it was the untouched
-      control until then). The card vanished mid-run on 2026-09-30 ~12:06 with
-      the box UP - uptime was 5.4 days and never reset - and did not come back
-      for: `sd_recover()` (ran on every failed capture, `sdRemounts` still **0**
-      after ~589 failed attempts), a soft reboot on 0.80.0, or a fresh boot on
-      1.1.0. `sdCard` is the EMPTY STRING, so the SDMMC probe finds no card at
-      all - this is card detection, not a filesystem problem. Nothing in the
-      firmware gap is implicated: `storage.c` had exactly ONE commit between
-      0.80.0 and 1.1.0 (the v3.41 bucket work), none of it touching the mount.
-      **Remedy is physical: reseat the card, then replace it.** A consumer
-      microSD writing ~2600 files/day is a plausible wear-out.
+- [ ] **`.240`'s SD dropout is a LATCH that only a HARD POWER CYCLE clears.**
+      ~~Earlier entry said the card was gone at the hardware level and should be
+      replaced - WRONG, and corrected the same evening.~~ With the box on the
+      bench and power-cycled, the card came back **completely healthy**:
+      `sdCard:"BC2QT"`, 61039 MB total / 53317 MB free, and **every capture
+      intact** - 53 day-folders back to 2026-07-08, including 2026-09-30's 1335
+      files. Writes work (`POST /api/capture` 200). Nothing was lost.
+      What this means: the fault survived `sd_recover()` (~589 failed writes,
+      `sdRemounts` 0) AND a soft `/api/reboot` on 0.80.0 AND a fresh boot on
+      1.1.0, but did NOT survive removing power. That is the **same failure
+      class as the OV2640 camera latch** already in the notes - the peripheral
+      wedges in a way a soft reset cannot reach, because the device is never
+      actually de-powered. Treat "soft reboot did not fix it" as evidence FOR a
+      latch, not against the hardware being fine.
+      **OPEN QUESTION for the operator: was the card reseated, or only
+      power-cycled?** Power-cycle-only means a true host/card latch and the
+      remedy is firmware-visible (see the banner item below, plus a possible
+      auto power-cycle of the SD rail if the board allows it). Reseat means
+      mechanical contact and the remedy is physical. The two have different
+      fixes and the answer is not recoverable from the device.
       Note this says NOTHING about `.205`'s card - the "degradation" there was
       the directory scan (v3.40), and `.205` reads a healthy ~2 MB/s.
 - [ ] **The "SD WRITE FAILING" banner cannot fire when there is NO card** - and
