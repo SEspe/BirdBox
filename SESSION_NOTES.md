@@ -1,108 +1,85 @@
-# Session notes — 2026-10-01
+# Session notes — 2026-10-04
 
 Working notes for resuming. The durable record is `FSD_BirdBox_CHANGELOG.md`;
 this file is the "where we stopped and what is still unproven" layer.
-Earlier sessions are in git history (`c379b43` for 2026-09-30).
+Earlier sessions are in git history (`54d7bdf` for 2026-10-01).
 
 ## Shipped today
 
-| Version | FSD | What |
+| Version | FSD | What | GitHub release |
+|---|---|---|---|
+| 1.1.1 | v3.42 | (from 10-01) SD self-test — pushed + released today | v1.1.1 |
+| **1.2.0** | **v3.43** | **Daily GitHub update check + header note** | v1.2.0 |
+| **1.3.0** | **v3.44** | **Stats aggregate cache (6.7 s → 0.2 s)** | v1.3.0 (Latest) |
+
+`master` == `origin/master`. Releases were missing since v0.99.2; v1.1.1, v1.2.0
+and v1.3.0 were all cut today, each asset verified byte-identical after
+download.
+
+## Units
+
+| | fw | state |
 |---|---|---|
-| 1.0.2 | v3.40 | Removed the two **redundant** directory walks (read + write) |
-| **1.1.0** | **v3.41** | **Hour buckets on the card; logical paths unchanged** |
+| `.205` | **1.3.0** | healthy; updated by the operator FROM the new header note |
+| `.240` | 1.1.0 | **offline.** Something else answers ping at .240 (DHCP moved it?). Predates the update check — needs one manual OTA to ≥1.2.0. |
 
-Both units on **1.1.0** — `.240` was brought current the same evening (see below), so
-there is no longer a stale-firmware control.
+## 1.2.0 — the update check
 
-## The finding: the SD card was never degrading
+- `main/update_check.c`. An `esp_timer` asks every 5 min "is a check due?"
+  (24 h since last success, 1 h after a failure, WiFi up, real clock, not
+  classifying, no OTA running) and only then spawns a short-lived 8 kB task
+  that calls `api.github.com/repos/SEspe/BirdBox/releases/latest` and exits.
+  No permanent internal-DRAM cost. Timestamps in `RTC_DATA_ATTR` so night mode
+  2's deep-sleep wakes don't re-check.
+- Cert **bundle**, not pinned: one handshake/day makes the ~7-block leak
+  noise; pinning would die silently at GitHub's next CA change. Measured
+  internal free 114775 → 114275 B across one check, largest block unchanged.
+- Generic User-Agent, **no version** sent (§9 no-telemetry posture).
+- `/api/status`: `latest`, `updAvail`, `updAgeS`, `updErr`. Header note
+  `#updN` → `goOta()`; OTA tab status line `#updSts`; i18n rows added.
+- Release only counts with a plain `X.Y.Z` tag AND a `.bin` asset.
+- **Verified:** a 1.1.0-labelled build saw 1.1.1 as newer 305 s after boot;
+  the served `updShow`/`goOta` were exercised under `cscript` (no node on this
+  PC) against stub elements; and finally **the operator's own test** — reboot
+  on 1.2.0, note appeared for 1.3.0, updated from the OTA tab. First check
+  sometimes lands on the 2nd tick (~10 min) when the first finds the box busy.
 
-Yesterday's dashboard read "Frame read from card" rising 852 → 1409 ms over one
-day and concluded the card was worn. **It is not.** `s_sd_ms` starts before
-`fopen`, so it times path resolution, and FATFS resolves a name by scanning the
-directory linearly. Measured by fetching capture files at known positions in a
-2647-file day folder:
+## 1.3.0 — Stats speed
 
-| position in dir | TTFB |
-|---|---|
-| 2 | 23, 28 ms |
-| 1300 | 227, 232, 223 ms |
-| 2640 | 429, 423, 438 ms |
+- Cause (measured): the tab fires daily/species/hourly together; each re-read
+  every `visits-*.csv` (~2.2 s on 15 days), httpd serialised them → done at
+  2.26 / 4.50 / 6.75 s. HA re-ran the same scan every 15 min.
+- Fix: `storage_visit_log_gen()` (bumped AFTER every rewrite: relabel, batch,
+  confirm, day reset, stats reset, migration, remount, `rc_rewrite_row`) and
+  `storage_visit_log_appends()`. `stats.c` caches past days (`hist`), the
+  finished result (`full`) and the single-day view (`day`) under one mutex.
+  Plus a 16 kB PSRAM stdio buffer, files sorted by name, and **the daily series
+  now keeps the NEWEST 62 days** — it used to freeze on the first 62 (`.240`
+  had 53 days and would have hit it in ~10).
+- **Measured, settled:** all-time view **~0.2 s** (214/202/209 ms), single
+  requests 0.07-0.10 s, day view 0.24 s first / 0.06-0.11 s warm.
 
-**0.155 ms per preceding entry, dead linear.** Classification did `fopen` *and*
-`stat(path)` — two walks: 2 × 0.155 × 2647 = 821 ms predicted vs 876 ms
-measured, leaving ~55 ms for the actual 110 kB read (~2 MB/s, a healthy card).
-The 852 and 1409 figures were the same card at 09:00 and at 16:00.
+## Still open (also in TODO.md)
 
-## Measured, same folder size (~2650 files)
-
-| | |
-|---|---|
-| single-frame save, 1.0.1 | 1.728 / 1.805 / 2.031 s (mean **1.85**) |
-| after v3.40 (one less walk) | 1.310 / 1.347 / 1.341 / 1.345 (mean **1.34**) |
-| after v3.41 (buckets) | 1.008 / 1.031 (**~1.01**) |
-| spread | 0.30 s → **0.04 s** — the variance *was* the walk |
-| old-day image read, with the memo | **0.026 s** |
-
-At ~6.8 frames/event that is ~5 s off `capMs`, all inside the detect task.
-First post-change event: `capMs` **7994** (was 9641 / peak 18467).
-
-## The layout, in one line
-
-Physical `/captures/<day>/<HH>/<name>.jpg`; **logical** `/captures/<day>/<name>.jpg`
-is what the visit log, every URL, every API parameter and the retrain export
-still carry. `storage.c` alone knows the difference, derives `HH` from the
-filename, and falls back to the flat location — so nothing migrated and all 15
-stored days still work.
-
-**A lookup memo was necessary.** The first build tried the bucket then fell back,
-which made every pre-v3.41 capture pay a failed bucket open (a full day-folder
-scan) first: browsing an old day went 0.23 → 0.63 s. A 24-bit per-day mask of
-which hour folders exist now picks the order. It is **advisory** — read/written
-without a lock — so both helpers still try the other layout if the first misses;
-a stale mask costs a scan, never a 404.
-
-## Verified after flashing
-
-- `/api/days` byte-identical across all 15 days (374 … 2991 files).
-- `/api/events` lists all 2654 pre-existing files plus new ones, in order.
-- Legacy flat frames and bucketed frames both serve and both group through
-  `/api/event` (confirmed Blåmeis burst; Kjøttmeis burst).
-- **Full event end to end:** captured into bucket `17`, logged with the logical
-  path, classified Kjøttmeis **95%**, 1 upload / 1 call (early exit), all 5
-  frames grouped, image serves.
-- Two OTAs with `haen=1`, `resetReason` `software` both times — the v3.36 fix
-  continues to hold (now 5/5).
-
-## Still open
-
-- **The read-side win is predicted, not yet measured.** Today is a transitional
-  folder: 2654 flat files *and* the new hour directories, so resolving the
-  directory `17` is itself a 2654-entry scan and a bucketed read still measures
-  ~0.43 s. **The test is a bucketed read tomorrow** on a folder holding only
-  ~24 bucket directories — it should fall to tens of milliseconds. If it does
-  not, the model is wrong and the whole v3.41 rationale needs re-checking.
-- `capMax` was the dominant unexplained cost and is now partly explained
-  (directory walks were ~5 s of it). Re-measure over a full day.
-- `append_visit_line()` still does a `stat()` on `/log` before appending —
-  same bug class, ~57 ms per event. Located, not fixed (see TODO).
-- Run-time stats still not enabled; per-core CPU still unmeasurable.
-- **`.240`'s SD dropout — cause still unknown, card is fine.** It lost the card
-  mid-run on 2026-09-30 12:06 (box up, uptime never reset) and ~589 failed
-  writes, a soft reboot and a fresh boot on 1.1.0 all failed to recover it. The
-  operator then pulled the card, confirmed it reads on a PC, reseated it and
-  powered on: back healthy, **all 53 day-folders intact** back to 2026-07-08.
-  Because removal, reseating and power loss happened together, **nothing
-  isolates the cause** — contact/seating and a host latch both survive. If it
-  recurs: power-cycle FIRST without touching the card. See TODO.
+- **Post-boot anomaly:** seconds after boot, all-time took 6.2 s, then 2.5 s.
+  2.5 s means a hist rebuild where a hit was expected. Unexplained. Next step:
+  expose last-rebuild ms + count in `/api/sysinfo` rather than reading serial.
+- Cache invalidation not yet exercised on hardware (relabel → Stats must move;
+  midnight rollover; Reset Statistics).
+- From 10-01, still open: SD banner can't fire with NO card; sdhealth.csv
+  unreadable over HTTP; `capMs` full-day re-measure; sdtest busy-refusal untested.
 
 ## What I got wrong today
 
-1. **Truncated `main/version.h`** with `sed -n '...' -i` — `-n` plus `-i` writes
-   an empty file. Restored from git immediately; no loss. Use plain
-   `sed -i 's/a/b/'`, never `-n` with `-i`.
-2. **Shipped the bucket fallback without thinking about the legacy cost.** It
-   doubled old-day browsing (0.23 → 0.63 s) and only showed up because the
-   post-flash check happened to time a legacy file. The memo fixed it, but the
-   regression was predictable from the design and was not predicted.
-3. Guessed at a 0.43 s bucketed read before testing the direct physical path;
-   the direct test settled it in one request. Same lesson as yesterday's.
+1. **Shell quoting cost two attempts.** A big heredoc with mixed quotes broke
+   bash; files with mixed CRLF/LF line endings broke exact-match Python edits.
+   Writing fragments to the scratchpad with the Write tool and using the Edit
+   tool on mixed-EOL files worked first time.
+2. **Inserted lines by number after earlier inserts had shifted them** — two
+   counter bumps landed in the wrong place (one inside an `#if`). Caught by
+   printing every site's context before building. Insert bottom-up in ONE pass,
+   or anchor on text, never on stale line numbers.
+3. **Released 1.3.0 before it ran on hardware** — at the operator's request (to
+   test the update note), and the changelog said so until measurements replaced
+   it. The settled numbers held; the post-boot ones did not fit the model and
+   are recorded as unexplained rather than explained away.

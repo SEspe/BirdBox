@@ -69,7 +69,7 @@ try `http://birdbox.local/`, else sweep the /24.
 | | address | role |
 |---|---|---|
 | test | `192.168.10.205` | OV5640. Where everything is tried first. |
-| production | `192.168.10.240` | OV2640 @ HD, outdoors. **Do not touch without being asked.** It was the untouched 0.80.0 control for A/B work until 2026-10-01, when it was brought to 1.1.0 at the operator's request — so there is no longer a stale-firmware control. If you need one, say so before updating anything. |
+| production | `192.168.10.240` | OV2640 @ HD, outdoors. **Do not touch without being asked.** It was the untouched 0.80.0 control for A/B work until 2026-10-01, when it was brought to 1.1.0 at the operator's request — so there is no longer a stale-firmware control. If you need one, say so before updating anything. **Offline as of 2026-10-04** (another device answered ping at .240, so DHCP has likely reassigned the address — find it again via `birdbox.local` or a /24 sweep). Still on 1.1.0, which predates the update check: it needs one manual OTA to 1.2.0+ before it will announce releases itself. |
 
 (Earlier addresses, for grep: `192.168.1.111`, `192.168.10.236`.)
 
@@ -192,6 +192,20 @@ ship tests). Verification is empirical, on real hardware:
   visits fall between samples; the field of view changes with the aspect ratio
   too. **HD is the locked default** (§5) for exactly this reason. Read
   `/api/motion` `loopMs` after any resolution change instead of guessing.
+
+- **Stats are cached; every visit-log REWRITE must call
+  `storage_visit_log_bump()`.** (1.3.0 / FSD v3.44.) `stats.c` keeps the
+  aggregate of past days and only rebuilds when that counter moves, the date
+  rolls over, or the stats reset point changes; appends are tracked separately
+  and only ever touch today's file. Relabel, confirm, recheck, day/stats reset,
+  migration and remount already bump it, AFTER the rename. A new rewriter that
+  forgets will leave the Stats tab and Home Assistant's totals silently stale.
+
+- **The device checks GitHub daily for a newer release** (`update_check.c`,
+  1.2.0). To test the header note without waiting a day, flash a build labelled
+  BELOW the latest release and wait ~5-10 min after boot; `/api/status`
+  `latest`/`updAvail`/`updAgeS`/`updErr` show what it found. It is notification
+  only, and it uses the cert bundle on purpose (one handshake a day).
 
 - **Classification never drops work.** Prefer queue/wait/degrade over emitting
   "unclassified".

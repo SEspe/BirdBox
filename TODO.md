@@ -4,6 +4,30 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-10-04 (1.2.0 update check, 1.3.0 Stats cache)
+- [ ] **Explain the two slow post-boot Stats readings on 1.3.0.** Settled, an
+      all-time Stats view is ~0.2 s (was 6.7 s). But seconds after boot the
+      first view took 6.2 s and the NEXT one 2.5 s - and 2.5 s looks like a full
+      rebuild of the past-days slot where only a cache hit was expected. Either
+      something bumped `storage_visit_log_gen()` (remount? recheck?) or boot
+      contention for the card is far worse than assumed. The rebuild time is
+      logged (`stats: past days rebuilt in N ms`) on SERIAL only - read it there
+      (resets the board), or expose the last rebuild ms + count in
+      `/api/sysinfo` so this can be answered over HTTP. Do the latter first.
+- [ ] **Invalidation is untested on hardware.** Relabel or confirm one image,
+      then load Stats: the counts must move immediately. Also check across
+      midnight (date rollover rebuilds) and after Reset Statistics.
+- [ ] **The 16 kB read buffer's effect is unmeasured.** It only shows in the
+      cold build, which needs the number above.
+- [ ] **`stats_list_images` (Stats row click, all-time) still scans every log**
+      per click. Not cached. Fine at 15 days; measure on a 60-day card.
+- [ ] **`.240` is offline** (2026-10-04; something else answers ping at that
+      address). On 1.1.0, so it will NOT show the update note - it needs one
+      manual OTA to >= 1.2.0. Find it via `birdbox.local` or a /24 sweep.
+- [x] ~~Daily update check~~ - **DONE 1.2.0 / FSD v3.43**, and verified end to
+      end by the operator: rebooted `.205` on 1.2.0, header showed
+      *(update available v1.3.0)*, updated from the OTA tab.
+
 ## Added 2026-10-01 (1.1.1, the SD self-test)
 - [ ] **`/log/sdhealth.csv` cannot be read without pulling the card.** The SD
       self-test appends a row per run precisely so a single reading becomes a

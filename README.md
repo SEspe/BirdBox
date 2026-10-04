@@ -108,10 +108,15 @@ gets an entry there.
 - **Debug tab** — heap/uptime/WiFi health, SD card status, camera sensor info,
   the active classifier + its species-list counts, and open-HTTP-socket count.
 - **WiFi tab** — network scan + credential save, DHCP or static IP.
-- **OTA Update** — upload a `.bin` from the browser; dual OTA partitions with
-  automatic bootloader rollback if an image fails to boot cleanly.
+- **OTA Update** — upload a `.bin` from the browser, or let the box download
+  and flash a chosen GitHub release itself; dual OTA partitions with automatic
+  bootloader rollback if an image fails to boot cleanly. Once a day the box
+  checks GitHub for a newer release and, if there is one, shows a clickable
+  *(update available vX.Y.Z)* note in the page header that opens this tab. It
+  only notifies, never installs, and the request carries no device data.
 - **No cloud, no accounts, no telemetry** — everything above runs entirely on
-  the device and your LAN.
+  the device and your LAN (species ID and the daily release check are the only
+  outbound requests).
 
 ## Hardware
 
