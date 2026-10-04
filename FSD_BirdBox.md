@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.46
+**Version:** 3.47
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -396,7 +396,7 @@ No authentication in v1 (LAN-only device, same posture as RemoteStart); an optio
   ├── docs/                   # enclosure/mounting notes, model-swap guide
   └── .github/workflows/      # CI
   ```
-- **CI (GitHub Actions):** every push builds with the pinned ESP-IDF version for both targets (esp32s3 primary, esp32 fallback); a `v*` tag creates a GitHub Release with the built `.bin` files and auto-generated per-target version lines (RemoteStart v1.16 pattern).
+- **CI (GitHub Actions):** every push runs the host unit tests (`test/host`, built with AddressSanitizer and UBSan), builds the firmware with the pinned ESP-IDF version for esp32s3, and syntax-checks the web UI's inline JavaScript in the built image. A `v*` tag additionally publishes the GitHub Release, and only when all of that passed: the tag must match the firmware version, the release notes are taken from the changelog entry for that version (a tag without one fails), and the built `.bin` is attached. Releases are made only this way, never by hand.
 - **Versioning:** `FIRMWARE_VERSION` in `version.h`, semver; FSD changelog is the change record.
 - **Open-source posture:** issues/PRs welcome; docs must be good enough that a stranger with the listed hardware succeeds without asking. Community label corrections (§3.2) may be pooled via voluntary GitHub issue uploads to retrain the regional models — no telemetry, ever, and nothing leaves the device automatically.
 

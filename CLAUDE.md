@@ -35,6 +35,15 @@ what it used to say.
 Commit-message convention (see `git log`): `Short imperative summary (A.B.C,
 FSD vX.Y)`. Version commits land directly on `master` (linear history).
 
+**Releasing: CI owns releases.** After the version commit is on `master`, push
+a tag: `git tag vA.B.C && git push origin vA.B.C`. The `release` job then runs
+only if the host tests and the firmware build (with the UI JS check) pass,
+refuses a tag that does not match `main/version.h`, takes the notes from the
+changelog entry that says `(firmware A.B.C)` (`tools/release-notes.py`, and it
+fails if there is none), and publishes `BirdBox_esp32s3_vA.B.C.bin`. **Never
+`gh release create`**: the tag it makes triggers this job, which overwrites a
+hand-made release's asset and notes (it did, to v1.1.1-v1.4.1).
+
 ## Build
 
 ESP-IDF **v6.0.1** lives at `D:\esp\v6.0.1\esp-idf`; the IDF Python env is
@@ -114,8 +123,17 @@ non-invasive peek on this wiring): open the port, then
 
 ## Testing / verification
 
-There is **no first-party unit-test suite** (only vendored `managed_components`
-ship tests). Verification is empirical, on real hardware:
+**Host unit tests** cover the pure logic: `make -C test/host test` (needs gcc
+or clang; this Windows PC has neither, so they run in CI on every push, in the
+`host-tests` job). They test the CSV field scanner, the Stats row folding, the
+update check's version/JSON parsing, the capture-name/path rules and the
+day-count table — see `test/host/README.md`. Keep new logic testable the same
+way: pure C in a `main/*.c` with no ESP-IDF headers, called by the module that
+touches the hardware. A first-run pass proves little; break the code on a
+throwaway branch once and watch the test fail (done for the 62-day eviction).
+
+Everything that touches the SD card, FreeRTOS, the camera or HTTP is still
+verified empirically, on real hardware:
 
 1. **Build** — catches all C/C++ errors.
 2. **Gate the UI JavaScript BEFORE flashing** — `python tools/check-ui-js.py build/BirdBox.bin` parses the inline script straight out of the built image. A JS syntax error builds and flashes cleanly and then kills EVERY handler on the page. Do not skip this on any `web_server.c` change; it has caught a duplicated function tail that had already reached the device.
@@ -244,7 +262,10 @@ ship tests). Verification is empirical, on real hardware:
   (C++ TFLM), `settings` (NVS), `storage` (SD/FATFS + visit log), `stats`,
   `species_i18n` (localized names), `main.c` (bringup). `version.h`,
   `board_config.h`.
-- `tools/` — `convert_model_int8.py` (model → device-ready int8).
+- `tools/` — `check-ui-js.py` (UI JS syntax gate), `release-notes.py` (release
+  notes from the changelog, used by CI), `convert_model_int8.py` (obsolete).
+- `test/host/` — host unit tests for the pure modules (`csv_field`, `stats_core`,
+  `release_core`, `capture_name`, `count_table`); run in CI on every push.
 - `training-data/` — off-device Nordic-species retrain pipeline: relabel export
   (`export-labels.ps1`), capture puller (`pull-new-captures.ps1`), `train.py`,
   versioned model artifacts. See its `README.md`. `dataset/` is gitignored.
