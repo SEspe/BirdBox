@@ -22,6 +22,7 @@
 #include "species_i18n.h"
 #include "target_species.h"
 #include "board_config.h"
+#include "update_check.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -265,6 +266,7 @@ static const char INDEX_HTML[] =
 ".hdr{background:#1e3826;padding:12px 20px;display:flex;align-items:center;gap:14px;"
 "border-bottom:2px solid #7fc98b}"
 ".hdr h1{font-size:1.1rem;color:#7fc98b;margin:0}.hdr .v{font-size:.75rem;color:#9ab}"
+".hdr .updn{color:#f0c050;margin-left:4px;text-decoration:underline;cursor:pointer}"
 ".logo{width:1.5em;height:1.5em;border-radius:50%;object-fit:cover;vertical-align:-.35em;"
 "margin-right:.15em;box-shadow:0 1px 3px rgba(0,0,0,.35)}"
 ".tabs{display:flex;background:#1e3826}"
@@ -643,7 +645,9 @@ static const char INDEX_HTML[] =
 "</style></head><body>"
 "<div class='uivb' id='uivb'></div>"
 "<div class='hdr'><h1><img class='logo' src='" BIRD_LOGO "' alt=''> " FIRMWARE_NAME "</h1>"
-"<span class='v'>v" FIRMWARE_VERSION "</span></div>"
+"<span class='v'>v" FIRMWARE_VERSION
+/* Filled from /api/status by updShow() when a newer GitHub release exists. */
+"<a id='updN' class='updn' href='#otap' onclick='return goOta()' style='display:none'></a></span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"livep\",this)'>Live</button>"
 "<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
@@ -652,7 +656,7 @@ static const char INDEX_HTML[] =
 "<button class='tab' onclick='show(\"maintp\",this)'>Maint</button>"
 "<button class='tab' onclick='show(\"dbgp\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"wifip\",this)'>WiFi</button>"
-"<button class='tab' onclick='show(\"otap\",this)'>OTA Update</button>"
+"<button class='tab' id='tabOta' onclick='show(\"otap\",this)'>OTA Update</button>"
 "</div>"
 "<div id='livep' class='pane on'>"
 "<div class='rotbar'><label class='sts' style='margin:0'>Rotation</label>"
@@ -1114,6 +1118,7 @@ ROT_OPTIONS
 "<div id='otap' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>Firmware Update</h3>"
 "<p class='sts'>Running version: v" FIRMWARE_VERSION "</p>"
+"<p class='sts' id='updSts'></p>"
 "<p class='sts'>Upload a birdbox-vX.Y.Z.bin release. The device flashes it to the "
 "inactive slot and reboots into it immediately; if that image never boots cleanly, "
 "the previous version resumes automatically on the next boot (dual OTA partitions, "
@@ -1502,6 +1507,7 @@ ROT_OPTIONS
  * the photo stays up to compare against instead of vanishing on a 1-min TTL. */
 "if(s.species)refShow(s.species,s.spConf);else refHide();"
 "var sb=$g('sdbadge');if(sb)sb.classList.toggle('on',s.sdWriteOk===false);"
+"updShow(s);"
 /* One comparison, every poll: the build this script came from vs the build the
  * device is running now. */
 "if(s.version&&typeof UIVER==='string'&&s.version!==UIVER){var ub=$g('uivb');"
@@ -2888,6 +2894,19 @@ ROT_OPTIONS
 "xhr.onerror=function(){p.textContent='Upload error';};"
 "xhr.send(f);}"
 "var g_fwver='" FIRMWARE_VERSION "';"
+/* Daily update check (v3.43): the device asks GitHub once a day and reports
+ * latest/updAvail/updAgeS/updErr on /api/status; the header note links here. */
+"function goOta(){show('otap',$g('tabOta'));window.scrollTo(0,0);return false;}"
+"function updT(t){return (g_i18n&&g_i18n[t])||t;}"
+"function updAgo(x){return x<3600?Math.max(1,Math.round(x/60))+' min':Math.round(x/3600)+' h';}"
+"function updShow(s){var a=!!(s.updAvail&&s.latest),n=$g('updN'),u=$g('updSts');"
+"if(n){n.style.display=a?'':'none';if(a)n.textContent='('+updT('update available')+' v'+s.latest+')';}"
+"if(!u||s.latest==null)return;"
+"var t=updT('Latest release on GitHub')+': '+(s.latest?'v'+s.latest:'—');"
+"if(s.latest)t+=a?' — '+updT('update available'):' — '+updT('up to date');"
+"if(s.updAgeS>=0)t+=' ('+updT('checked')+' '+updAgo(s.updAgeS)+')';"
+"if(s.updErr)t+=' — '+updT('last check failed')+': '+s.updErr;"
+"u.textContent=t;}"
 /* List this repo's releases via the GitHub API (CORS-open); the device can't
  * fetch the asset itself for listing, but the browser can read the JSON. */
 "function ghLoad(){var s=$g('ghRel');s.innerHTML='<option>Loading\\u2026</option>';$g('ghSts').textContent='';"
@@ -5216,7 +5235,11 @@ static esp_err_t h_status(httpd_req_t *req)
     char tstr[24]; const char *tsrc;
     device_time(tstr, sizeof(tstr), &tsrc);
 
-    char buf[960];   /* grew with spFile/clsBusy/fastBird, two long capture paths, queue */
+    char upd_latest[16], upd_err[8];
+    update_check_latest(upd_latest, sizeof(upd_latest));   /* digits and dots only */
+    update_check_error(upd_err, sizeof(upd_err));          /* fixed short tags */
+
+    char buf[1040];  /* grew with spFile/clsBusy/fastBird, two long capture paths, queue, update check */
     snprintf(buf, sizeof(buf),
         "{\"name\":\"%s\",\"version\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"ch\":%d,"
         "\"heap\":%lu,\"uptime\":%lld,\"portal\":%s,\"wifiReconnects\":%lu,"
@@ -5228,7 +5251,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"spLive\":%s,\"evStart\":%lu,\"clsSeq\":%lu,\"spFile\":\"%s\","
         "\"clsBusy\":%s,\"fastBird\":%s,\"cooldownS\":%u,"
         "\"clsQ\":%u,\"clsQMax\":%u,\"clsQPeak\":%u,\"clsQDrops\":%lu,"
-        "\"lastFrames\":%d,\"lastFast\":%d}",
+        "\"lastFrames\":%d,\"lastFast\":%d,"
+        "\"latest\":\"%s\",\"updAvail\":%s,\"updAgeS\":%ld,\"updErr\":\"%s\"}",
         FIRMWARE_NAME, FIRMWARE_VERSION, ip, rssi, ch,
         (unsigned long) esp_get_free_heap_size(),
         esp_timer_get_time() / 1000000,
@@ -5255,7 +5279,9 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned) motion_cooldown_remaining_s(),
         (unsigned) classify_queue_depth(), (unsigned) classify_queue_max(),
         (unsigned) classify_queue_peak(), (unsigned long) classify_queue_drops(),
-        capture_last_frames(), capture_last_fast());
+        capture_last_frames(), capture_last_fast(),
+        upd_latest, update_check_available() ? "true" : "false",
+        update_check_age_s(), upd_err);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

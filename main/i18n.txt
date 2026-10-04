@@ -245,6 +245,12 @@ Device	Enhet
 Reboot Now	Start på nytt nå
 # ── OTA tab ──
 Firmware Update	Fastvareoppdatering
+# daily update check (v3.43) — built in JS, looked up via updT()
+update available	oppdatering tilgjengelig
+Latest release on GitHub	Siste utgivelse på GitHub
+up to date	oppdatert
+checked	sjekket
+last check failed	siste sjekk feilet
 Upload a birdbox-vX.Y.Z.bin release. The device flashes it to the inactive slot and reboots into it immediately; if that image never boots cleanly, the previous version resumes automatically on the next boot (dual OTA partitions, FSD §8) — a bad upload can't brick the device. Don't power-cycle mid-upload.	Last opp en birdbox-vX.Y.Z.bin-utgivelse. Enheten skriver den til den inaktive plassen og starter rett inn i den; hvis det nye bildet aldri starter rent, gjenopptas forrige versjon automatisk ved neste oppstart (doble OTA-partisjoner, FSD §8) — en dårlig opplasting kan ikke ødelegge enheten. Ikke kutt strømmen midt i opplastingen.
 Upload & Flash	Last opp og flash
 Flash from GitHub release	Flash fra GitHub-utgivelse

@@ -41,6 +41,7 @@
 #include "night.h"
 #include "classify.h"
 #include "illum.h"
+#include "update_check.h"
 
 static const char *TAG = "main";
 
@@ -121,11 +122,12 @@ static void housekeeping_task(void *arg)
          * leak, is what fired the guard under sustained classification (v2.55,
          * proven: reboots correlated with image load while the at-rest largest
          * block held at 31744). classify_busy() covers the queue+in-flight window;
-         * motion covers capture; recheck covers a bulk pass. Defer on any of them
+         * motion covers capture; recheck covers a bulk pass; the daily update
+         * check (v3.43) is a handshake of its own. Defer on any of them
          * and reset the strike run, so only a genuinely-idle low reading counts. */
         bool rc_busy = false;
         classify_recheck_status(&rc_busy, NULL, NULL, NULL, 0);
-        if (motion_active() || rc_busy || classify_busy()) { strikes = 0; continue; }
+        if (motion_active() || rc_busy || classify_busy() || update_check_busy()) { strikes = 0; continue; }
 
         size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (big >= HEAP_GUARD_MIN_BLOCK) { strikes = 0; continue; }
@@ -216,4 +218,9 @@ void app_main(void)
      * camera down and can enter deep sleep, neither of which should ever be in
      * the path of the rollback vote above. Returns immediately when off. */
     night_start();
+
+    /* Daily "newer release on GitHub?" check (FSD §8). A timer only; the
+     * first check waits for WiFi and a real clock, so nothing here can delay
+     * boot or the rollback vote. */
+    update_check_start();
 }

@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.42
+**Version:** 3.43
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -323,7 +323,7 @@ Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab b
 - **Maintenance** — destructive whole-day operations, kept out of the Gallery so they cannot be hit by accident while labelling: pick a day, then delete its photos or wipe it (photos + visit-log rows). Also the confirm-gated factory reset, which erases settings, the saved WiFi network and the stored credentials but never touches the card.
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
 - **WiFi** — §4 step 5, plus a Reboot Now button.
-- **OTA Update** — §8.
+- **OTA Update** — §8. When a newer release exists, the header shows a clickable *(update available vX.Y.Z)* note after the running version; clicking it opens this tab.
 
 All settings persist in NVS and apply without reflashing; settings that require a restart (camera resolution) say so and offer the reboot.
 
@@ -337,7 +337,7 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/status` | GET | Current state: motion, last event, species, SD/heap/WiFi summary |
+| `/api/status` | GET | Current state: motion, last event, species, SD/heap/WiFi summary, daily update-check result (§8) |
 | `/api/sysinfo` | GET | Debug-card data (heap, heapMin+age, uptime, reconnects) |
 | `/api/events?date=&species=&page=` | GET | Paged visit log |
 | `/api/events/<id>` | PATCH / DELETE | Correct species label, favorite, delete |
@@ -374,7 +374,8 @@ No authentication in v1 (LAN-only device, same posture as RemoteStart); an optio
 ## 8. OTA Updates
 
 - Web-based OTA (OTA Update tab): upload a `.bin` from the browser, RemoteStart-style, with bounded `httpd_req_recv()` retries (v1.5 lesson) and dual OTA partitions with rollback on boot failure.
-- Release binaries are produced by CI (§9) so open-source users never need an ESP-IDF toolchain to stay current: download `birdbox-vX.Y.Z.bin` from GitHub Releases → OTA tab → upload.
+- Release binaries are produced by CI (§9) so open-source users never need an ESP-IDF toolchain to stay current: download `birdbox-vX.Y.Z.bin` from GitHub Releases → OTA tab → upload, or let the device fetch and flash a chosen release itself (*Flash from GitHub release*, repo-locked to this project's release URLs).
+- **Daily update check.** Once a day the device asks the GitHub API for this project's latest published release and compares its tag with the running version. A release counts only if its tag is plain `X.Y.Z` semver and it carries a `.bin` asset (the OTA tab can flash nothing else). The result is reported on `/api/status` as `latest`, `updAvail`, `updAgeS` (seconds since the last successful check, -1 if none yet) and `updErr` (last failure tag: `net`, `hNNN`, `parse`, `nobin`); the OTA tab shows it as a status line, and the header carries the update note (§5). The check only notifies — it never downloads or flashes. It waits for WiFi and a real clock (TLS cannot verify a certificate on the pre-SNTP clock), stays clear of classification and of a firmware write, retries hourly after a failure, and keeps its timestamps in RTC memory so night mode's deep-sleep wakes (§14) do not re-check each time. The request sends no device data: no version, no identifiers, just a generic User-Agent.
 
 ---
 
