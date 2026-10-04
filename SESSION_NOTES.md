@@ -10,11 +10,14 @@ Earlier sessions are in git history (`54d7bdf` for 2026-10-01).
 |---|---|---|---|
 | 1.1.1 | v3.42 | (from 10-01) SD self-test — pushed + released today | v1.1.1 |
 | **1.2.0** | **v3.43** | **Daily GitHub update check + header note** | v1.2.0 |
-| **1.3.0** | **v3.44** | **Stats aggregate cache (6.7 s → 0.2 s)** | v1.3.0 (Latest) |
+| **1.3.0** | **v3.44** | **Stats aggregate cache (6.7 s → 0.2 s)** | v1.3.0 |
 
-`master` == `origin/master`. Releases were missing since v0.99.2; v1.1.1, v1.2.0
-and v1.3.0 were all cut today, each asset verified byte-identical after
-download.
+`master` == `origin/master`; **v1.4.2 is the Latest release** (see below).
+Releases were missing since v0.99.2. v1.1.1-v1.4.1 were created by hand with
+`gh release create`, and each asset checked byte-identical after download —
+**but CI's tag-triggered job then replaced every one** with its own build and a
+template body. Firmware unaffected (same commit, same IDF); notes regenerated
+from the changelog. Fixed for good in 1.4.2: CI owns releases.
 
 ## Later the same evening: 1.4.0 → 1.4.2
 
@@ -45,7 +48,7 @@ and publishes. Never `gh release create` (CI overwrote v1.1.1-v1.4.1 that way; n
 
 | | fw | state |
 |---|---|---|
-| `.205` | **1.3.0** | healthy; updated by the operator FROM the new header note |
+| `.205` | **1.3.0** | healthy; updated by the operator FROM the new header note. NOT yet on 1.4.x at session end - the operator updates tomorrow |
 | `.240` | 1.1.0 | **offline.** Something else answers ping at .240 (DHCP moved it?). Predates the update check — needs one manual OTA to ≥1.2.0. |
 
 ## 1.2.0 — the update check
@@ -108,3 +111,16 @@ and publishes. Never `gh release create` (CI overwrote v1.1.1-v1.4.1 that way; n
    test the update note), and the changelog said so until measurements replaced
    it. The settled numbers held; the post-boot ones did not fit the model and
    are recorded as unexplained rather than explained away.
+
+4. **Created releases by hand while CI also creates them on the tag.** Both
+   ran; CI won, silently replacing assets and notes on five releases, and my
+   "verified byte-identical" report was true for only a few minutes. Found only
+   because the operator asked about CI. Lesson: before automating around a
+   pipeline, read what the pipeline already does.
+5. **A Python one-liner with mismatched quotes** wrote nothing, but the build
+   step after it ran and passed - so the version was bumped while the
+   changelog was not. Caught by checking the FSD header afterwards. Check each
+   step's exit status, not just the last one's.
+6. **Unit tests passed first time** - which proves nothing on its own. A
+   deliberate regression (reverting the 62-day fix) on a throwaway branch made
+   CI fail on exactly the three expected checks. Do that once for any new suite.

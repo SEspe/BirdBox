@@ -152,6 +152,17 @@ install needed there at all. It's for the initial flash only; every update
 after that goes over OTA. The page is rebuilt automatically from `master` by
 [`.github/workflows/webflash-pages.yml`](.github/workflows/webflash-pages.yml).
 
+## Tests & CI
+
+Every push runs [`.github/workflows/release.yml`](.github/workflows/release.yml):
+host unit tests for the firmware's pure logic (`make -C test/host test`, built
+with AddressSanitizer and UBSan — see [`test/host/README.md`](test/host/README.md)),
+the ESP-IDF firmware build, and a syntax check of the web UI's inline
+JavaScript. Pushing a `vX.Y.Z` tag publishes a release, but only when all of
+that passes and the tag matches `main/version.h`; its notes come from
+[`FSD_BirdBox_CHANGELOG.md`](FSD_BirdBox_CHANGELOG.md). Hardware behaviour
+(camera, SD card, network) is verified on real units.
+
 ## Species identification setup
 
 Classification is **online, via iNaturalist** (no model to install). In

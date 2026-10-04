@@ -4,6 +4,24 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-10-04, late (1.4.0-1.4.2: day-count cache, unit tests, CI releases)
+- [ ] **1.4.x has not run on hardware.** `.205` ends the day on 1.3.0. Verify
+      tomorrow per SESSION_NOTES "TOMORROW": `/api/days` speed and counts vs
+      real files, today's count rising, Stats moving after a relabel.
+- [ ] **Unit-test the stats CACHE keying, not just the row folding.**
+      `slot_ok`/`slot_key` in `stats.c` and the day-count bookkeeping around the
+      mutex still live in hardware-facing files. Extract the key comparison into
+      a pure module the way `count_table.c` was, and test gen/appends/date/reset
+      invalidation directly.
+- [ ] **No local C compiler on the dev PC** (no gcc/clang/mingw), so host tests
+      only run in CI. Installing one (e.g. WinLibs or LLVM-MinGW via winget)
+      would let `make -C test/host test` run before pushing. Operator's call.
+- [ ] **`stats_list_images` (Stats row click) still scans every log** - see the
+      1.3.0 entry below; not cached and not tested.
+- [x] ~~CI only proved the firmware compiled~~ - **DONE 1.4.2 / FSD v3.47:**
+      159 host checks under ASan/UBSan, UI JS gate in CI, tag-only releases with
+      notes from the changelog.
+
 ## Added 2026-10-04 (1.2.0 update check, 1.3.0 Stats cache)
 - [ ] **Explain the two slow post-boot Stats readings on 1.3.0.** Settled, an
       all-time Stats view is ~0.2 s (was 6.7 s). But seconds after boot the
