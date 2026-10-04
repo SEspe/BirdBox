@@ -16,6 +16,31 @@ Earlier sessions are in git history (`54d7bdf` for 2026-10-01).
 and v1.3.0 were all cut today, each asset verified byte-identical after
 download.
 
+## Later the same evening: 1.4.0 → 1.4.2
+
+| Version | FSD | What |
+|---|---|---|
+| 1.4.0 | v3.45 | `/api/days` counts cached (was 9.3 s per Gallery/Maintenance/Stats open); Stats asks `names=1` |
+| 1.4.1 | v3.46 | consistency sweep of both caches; reset-point race fixed |
+| **1.4.2** | **v3.47** | **host unit tests (159 checks, ASan/UBSan) + CI owns releases** — no functional change in normal operation (operator accepted the two edge-case differences) |
+
+**Releasing is now: version commit on master → `git tag vX.Y.Z && git push origin vX.Y.Z`.**
+CI tests, builds, checks the UI JS, verifies tag == version.h, takes notes from the changelog
+and publishes. Never `gh release create` (CI overwrote v1.1.1-v1.4.1 that way; notes restored).
+
+## TOMORROW (2026-10-05): see the unit in operation
+
+`.205` was still on 1.3.0 at the end of the session; the operator updates via the header note.
+1. `/api/status` → `version` 1.4.2, `resetReason`/uptime sane (`/api/sysinfo`).
+2. Open `http://192.168.10.205/?v=142` (cache-bust).
+3. Time it: `/api/days` (expect well under 1 s after the first minute of uptime),
+   `/api/days?names=1`, and a Stats all-time view (3 requests, expect ~0.2 s).
+4. Day counts correct: compare `/api/days` `n` with `/api/events?date=` counts for a
+   past day and for today; check today's count rises as frames are saved.
+5. Stats invalidation: relabel/confirm one image → Stats counts move at once.
+6. Post-boot Stats anomaly (6.2 s / 2.5 s right after boot on 1.3.0): does it recur?
+7. Update check: `latest` 1.4.2, `updAvail` false, `updErr` "".
+
 ## Units
 
 | | fw | state |
