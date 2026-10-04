@@ -176,6 +176,19 @@ int storage_capture_foreach(const char *day,
 /* Remove a whole day: every bucket, every file, then the folders. */
 void storage_capture_remove_day(const char *day);
 
+/* How many captures `day` holds, from a cache (v3.45). Counting means reading
+ * every directory entry of the day — ~9 s for a card's worth of days — so the
+ * answer is kept and maintained in place: a save adds one, an unlink takes one
+ * away, removing a day, a failed write or a remount drops the entry. Anything
+ * that deletes a capture WITHOUT going through storage_capture_unlink() or
+ * storage_capture_remove_day() must call storage_capture_counts_invalidate()
+ * (NULL = every day), or the Gallery day list will show a stale number. */
+int  storage_capture_count(const char *day);
+void storage_capture_counts_invalidate(const char *day);
+/* Fill the cache in a low-priority background task shortly after boot, so the
+ * first Gallery/Maintenance/Stats open does not pay the whole scan. */
+void storage_capture_counts_warm(void);
+
 /* ── SD self-test (FSD §3.1) ─────────────────────────────────────────────────
  * Manual, operator-triggered throughput + integrity check. It exists because the
  * numbers already on the Debug tab CANNOT answer "is the card healthy?":

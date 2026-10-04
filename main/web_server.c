@@ -2099,7 +2099,7 @@ ROT_OPTIONS
 "function sDayQ(){var v=$g('sDay').value;return v?'&date='+v:'';}"
 "function sDayLbl(){var v=$g('sDay').value;return v?(' on '+v):' today';}"
 "function sDayFill(){var s=$g('sDay');if(s.dataset.f)return;s.dataset.f='1';"
-"fetch('/api/days').then(r=>r.json()).then(a=>{a.sort((x,y)=>y.d.localeCompare(x.d));"
+"fetch('/api/days?names=1').then(r=>r.json()).then(a=>{a.sort((x,y)=>y.d.localeCompare(x.d));"
 "a.forEach(o=>{var op=document.createElement('option');op.value=o.d;"
 "op.textContent=o.d;s.appendChild(op);});}).catch(()=>{delete s.dataset.f;});}"
 "function setStatScope(s){g_statScope=s;"
@@ -3448,9 +3448,16 @@ static void gal_count_cb(const char *name, void *ctx) { (void) name; (void) ctx;
 
 
 /* GET /api/days — capture day-folders with file counts (Gallery tab).
- * Chunked JSON so a card full of days never needs one big buffer. */
+ * Chunked JSON so a card full of days never needs one big buffer.
+ * The counts come from storage's maintained cache (v3.45); walking every
+ * day's directory per request cost ~9 s and blocked every request behind it.
+ * ?names=1 skips counts altogether for callers that only list dates (Stats). */
 static esp_err_t h_days(httpd_req_t *req)
 {
+    char q[32] = {0}, nm[4] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
+        httpd_query_key_value(q, "names", nm, sizeof(nm));
+    bool names_only = (nm[0] == '1');
     httpd_resp_set_type(req, "application/json");
     DIR *d = storage_sd_present() ? opendir(STORAGE_MOUNT_POINT "/captures") : NULL;
     if (!d) {
@@ -3462,12 +3469,17 @@ static esp_err_t h_days(httpd_req_t *req)
     bool first = true;
     while ((e = readdir(d)) != NULL) {
         if (e->d_type != DT_DIR || e->d_name[0] == '.') continue;
-        /* Counts both layouts: flat files from before v3.41 and the hour
-         * buckets written since. */
-        int n = storage_capture_foreach(e->d_name, gal_count_cb, NULL);
         char item[112];
-        int len = snprintf(item, sizeof(item), "%s{\"d\":\"%.64s\",\"n\":%d}",
+        int len;
+        if (names_only) {
+            len = snprintf(item, sizeof(item), "%s{\"d\":\"%.64s\"}",
+                           first ? "" : ",", e->d_name);
+        } else {
+            /* Both layouts (flat pre-v3.41 + hour buckets), cached (v3.45). */
+            int n = storage_capture_count(e->d_name);
+            len = snprintf(item, sizeof(item), "%s{\"d\":\"%.64s\",\"n\":%d}",
                            first ? "" : ",", e->d_name, n);
+        }
         httpd_resp_send_chunk(req, item, len);
         first = false;
     }
@@ -4173,6 +4185,7 @@ static esp_err_t h_captures_delete(httpd_req_t *req)
     } else {
         snprintf(path, sizeof(path), STORAGE_MOUNT_POINT "%.120s", req->uri);
         rc = unlink(path);
+        if (rc == 0) storage_capture_counts_invalidate(NULL);   /* day unknown here */
     }
     if (rc != 0) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");

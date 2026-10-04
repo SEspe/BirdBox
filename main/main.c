@@ -225,4 +225,8 @@ void app_main(void)
      * first check waits for WiFi and a real clock, so nothing here can delay
      * boot or the rollback vote. */
     update_check_start();
+
+    /* Gallery day counts (v3.45): fill the cache in the background a minute
+     * after boot, so the first Gallery open does not pay the whole ~9 s walk. */
+    storage_capture_counts_warm();
 }

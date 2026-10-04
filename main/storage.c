@@ -12,6 +12,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -37,6 +38,9 @@ static int64_t           s_last_remount_us = 0;     /* last ATTEMPT (cooldown ga
 static int64_t           s_last_remount_ok_us = 0;  /* last SUCCESS */
 #define SD_RECOVER_COOLDOWN_US  (20 * 1000000LL)    /* ≤1 remount attempt / 20 s */
 
+static void cnt_init(void);                 /* capture-count cache, v3.45 */
+static void cnt_note_save(const char *day, bool ok);
+static void cnt_note_unlink(const char *day);
 static void storage_migrate_perday(void);   /* one-time monthly→per-day split */
 
 /* Visit-log change counters (storage.h). Plain 32-bit words: a single store is
@@ -76,6 +80,7 @@ static esp_err_t sd_mount(void)
                                             &mount_cfg, &s_card);
     s_sd_present = (err == ESP_OK);
     s_vlog_gen++;              /* a (re)mounted card may hold different logs */
+    storage_capture_counts_invalidate(NULL);   /* ...and different captures */
     return err;
 }
 
@@ -112,6 +117,7 @@ static bool sd_recover(void)
 esp_err_t storage_init(void)
 {
     s_write_mtx = xSemaphoreCreateMutex();
+    cnt_init();
 
 #if !SD_USE_SDMMC
     ESP_LOGE(TAG, "SPI-mode SD not implemented yet (this board uses SDMMC)");
@@ -321,10 +327,12 @@ int storage_capture_unlink(const char *day, const char *name)
     int  h = capture_hour_num(name);
     bool bucket_first = (h >= 0) && (bucket_mask(day) & (1u << h));
     storage_capture_fs_path(day, name, bucket_first, p, sizeof(p));
-    if (unlink(p) == 0) return 0;
+    if (unlink(p) == 0) { cnt_note_unlink(day); return 0; }
     if (h < 0) return -1;
     storage_capture_fs_path(day, name, !bucket_first, p, sizeof(p));
-    return unlink(p);
+    if (unlink(p) != 0) return -1;
+    cnt_note_unlink(day);
+    return 0;
 }
 
 int storage_capture_foreach(const char *day,
@@ -397,6 +405,148 @@ void storage_capture_remove_day(const char *day)
         }
     }
     rmdir(dir);
+    storage_capture_counts_invalidate(day);
+}
+
+/* ── Per-day capture counts (v3.45) ──────────────────────────────────────────
+ * /api/days printed "(1623)" beside every day by walking every directory entry
+ * of every day: ~17 000 entries, 9.3 s on .205, on every Gallery, Maintenance
+ * and Stats open — and because httpd serves one request at a time, everything
+ * the tab asked for next waited behind it.
+ *
+ * A past day's count only changes when something is deleted; today's only grows
+ * by saves. Both go through this file, so the count is maintained in place
+ * rather than re-derived: save +1, unlink -1, remove-day / failed write /
+ * remount drop the entry. Only a day with no entry is walked.
+ *
+ * A walk runs WITHOUT any lock (holding the write mutex for seconds would stall
+ * the detect task's saves). So a change that lands mid-walk could be counted or
+ * missed. The walk therefore notes two counters first and only stores its
+ * result if neither moved in a way that touches its day: `s_cnt_gen` (any
+ * delete or invalidation) and `s_cnt_save_seq` + `s_cnt_save_day` (saves only
+ * ever go to the current day). A discarded walk is still returned, just not
+ * kept; the next call walks again. */
+#define CNT_MAX_DAYS 512
+typedef struct { char day[16]; int n; } cnt_ent_t;
+static cnt_ent_t        *s_cnt;            /* PSRAM table, CNT_MAX_DAYS entries */
+static int               s_cnt_used;
+static SemaphoreHandle_t s_cnt_mtx;        /* table only; never held across I/O */
+static uint32_t          s_cnt_gen;
+static uint32_t          s_cnt_save_seq;
+static char              s_cnt_save_day[16];
+
+static void cnt_init(void)
+{
+    s_cnt_mtx = xSemaphoreCreateMutex();
+    s_cnt = heap_caps_calloc(CNT_MAX_DAYS, sizeof(cnt_ent_t),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+static int cnt_find(const char *day)        /* caller holds s_cnt_mtx */
+{
+    for (int i = 0; i < s_cnt_used; i++)
+        if (strcmp(s_cnt[i].day, day) == 0) return i;
+    return -1;
+}
+
+static void cnt_drop(int i)                 /* caller holds s_cnt_mtx */
+{
+    if (i < 0) return;
+    s_cnt[i] = s_cnt[--s_cnt_used];
+}
+
+/* Saves: +1 if the day is cached, and note the save for in-flight walks. A
+ * failed write may have left a partial file behind, so it drops the entry. */
+static void cnt_note_save(const char *day, bool ok)
+{
+    if (!s_cnt_mtx || !s_cnt) return;
+    xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
+    int i = cnt_find(day);
+    if (ok) { if (i >= 0) s_cnt[i].n++; }
+    else    { cnt_drop(i); s_cnt_gen++; }
+    s_cnt_save_seq++;
+    strlcpy(s_cnt_save_day, day, sizeof(s_cnt_save_day));
+    xSemaphoreGive(s_cnt_mtx);
+}
+
+static void cnt_note_unlink(const char *day)
+{
+    if (!s_cnt_mtx || !s_cnt) return;
+    xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
+    int i = cnt_find(day);
+    if (i >= 0 && s_cnt[i].n > 0) s_cnt[i].n--;
+    s_cnt_gen++;
+    xSemaphoreGive(s_cnt_mtx);
+}
+
+void storage_capture_counts_invalidate(const char *day)
+{
+    if (!s_cnt_mtx || !s_cnt) return;
+    xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
+    if (day) cnt_drop(cnt_find(day));
+    else     s_cnt_used = 0;
+    s_cnt_gen++;
+    xSemaphoreGive(s_cnt_mtx);
+}
+
+static void count_cb(const char *name, void *ctx) { (void) name; (void) ctx; }
+
+int storage_capture_count(const char *day)
+{
+    if (!s_cnt_mtx || !s_cnt) return storage_capture_foreach(day, count_cb, NULL);
+
+    xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
+    int i = cnt_find(day);
+    if (i >= 0) { int n = s_cnt[i].n; xSemaphoreGive(s_cnt_mtx); return n; }
+    uint32_t gen0 = s_cnt_gen, seq0 = s_cnt_save_seq;
+    xSemaphoreGive(s_cnt_mtx);
+
+    int n = storage_capture_foreach(day, count_cb, NULL);
+
+    xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
+    bool raced = s_cnt_gen != gen0 ||
+                 (s_cnt_save_seq != seq0 && strcmp(s_cnt_save_day, day) == 0);
+    if (!raced && cnt_find(day) < 0 && s_cnt_used < CNT_MAX_DAYS &&
+        strlen(day) < sizeof(s_cnt[0].day)) {
+        strlcpy(s_cnt[s_cnt_used].day, day, sizeof(s_cnt[0].day));
+        s_cnt[s_cnt_used].n = n;
+        s_cnt_used++;
+    }
+    xSemaphoreGive(s_cnt_mtx);
+    return n;
+}
+
+#define CNT_WARM_DELAY_S 60   /* let boot, WiFi and the first captures settle */
+static void cnt_warm_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(CNT_WARM_DELAY_S * 1000));
+    int64_t t0 = esp_timer_get_time();
+    int days = 0;
+    DIR *d = s_sd_present ? opendir(STORAGE_MOUNT_POINT "/captures") : NULL;
+    if (d) {
+        /* Names first, then walk: opening subdirectories while a readdir() on
+         * the parent is open is what storage_capture_foreach also avoids. */
+        char (*names)[16] = heap_caps_malloc(CNT_MAX_DAYS * sizeof(names[0]),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        struct dirent *e;
+        while (names && (e = readdir(d)) != NULL && days < CNT_MAX_DAYS)
+            if (e->d_type == DT_DIR && e->d_name[0] != '.' &&
+                strlen(e->d_name) < sizeof(names[0]))
+                strlcpy(names[days++], e->d_name, sizeof(names[0]));
+        closedir(d);
+        for (int i = 0; i < days; i++) storage_capture_count(names[i]);
+        free(names);
+    }
+    ESP_LOGI(TAG, "capture counts warmed: %d day(s) in %lld ms", days,
+             (esp_timer_get_time() - t0) / 1000);
+    vTaskDelete(NULL);
+}
+
+void storage_capture_counts_warm(void)
+{
+    /* Priority 1: below everything that matters; it only reads directories. */
+    if (xTaskCreate(cnt_warm_task, "cntwarm", 4096, NULL, 1, NULL) != pdPASS)
+        ESP_LOGW(TAG, "capture-count warm-up task not started");
 }
 
 static void remove_day_folder(const char *day)
@@ -543,6 +693,7 @@ esp_err_t storage_save_jpeg(const uint8_t *data, size_t len,
     }
 #endif
     xSemaphoreGive(s_write_mtx);
+    cnt_note_save(day, ok);              /* Gallery day count (v3.45) */
 
     s_last_write_ok = ok;
     if (!ok) {
