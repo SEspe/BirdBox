@@ -277,20 +277,23 @@ void stats_init(void)
         ESP_LOGW(TAG, "stats cache unavailable; every request will scan");
 }
 
+/* `reset` is the stats reset point as SNAPSHOT before the build, like the
+ * counters: copying the live setting after the build would let a reset that
+ * lands mid-build key old data as current. */
 static bool slot_ok(const stats_slot_t *s, uint32_t gen, const uint32_t *appends,
-                    const char *date)
+                    const char *date, const char *reset)
 {
     return s->valid && s->gen == gen && (!appends || s->appends == *appends) &&
-           strcmp(s->date, date) == 0 &&
-           strcmp(s->reset, g_settings.stats_reset_ts) == 0;
+           strcmp(s->date, date) == 0 && strcmp(s->reset, reset) == 0;
 }
 
-static void slot_key(stats_slot_t *s, uint32_t gen, uint32_t appends, const char *date)
+static void slot_key(stats_slot_t *s, uint32_t gen, uint32_t appends,
+                     const char *date, const char *reset)
 {
     s->gen = gen;
     s->appends = appends;
     strlcpy(s->date, date, sizeof(s->date));
-    strlcpy(s->reset, g_settings.stats_reset_ts, sizeof(s->reset));
+    strlcpy(s->reset, reset, sizeof(s->reset));
     s->valid = true;
 }
 
@@ -321,10 +324,12 @@ esp_err_t stats_collect_scoped(stats_t *out, const char *date)
         if (!cache) { stats_ingest_file(out, fname); return ESP_OK; }
         xSemaphoreTake(s_lock, portMAX_DELAY);
         uint32_t gen = storage_visit_log_gen(), app = storage_visit_log_appends();
-        if (!slot_ok(s_day, gen, &app, date)) {
+        char reset[sizeof(g_settings.stats_reset_ts)];
+        strlcpy(reset, g_settings.stats_reset_ts, sizeof(reset));
+        if (!slot_ok(s_day, gen, &app, date, reset)) {
             memset(&s_day->st, 0, sizeof(s_day->st));
             stats_ingest_file(&s_day->st, fname);
-            slot_key(s_day, gen, app, date);
+            slot_key(s_day, gen, app, date, reset);
         }
         *out = s_day->st;
         xSemaphoreGive(s_lock);
@@ -336,19 +341,21 @@ esp_err_t stats_collect_scoped(stats_t *out, const char *date)
     day_file(today, fname, sizeof(fname));
     xSemaphoreTake(s_lock, portMAX_DELAY);
     uint32_t gen = storage_visit_log_gen(), app = storage_visit_log_appends();
-    if (!slot_ok(s_full, gen, &app, today)) {
-        if (!slot_ok(s_hist, gen, NULL, today)) {
+    char reset[sizeof(g_settings.stats_reset_ts)];
+    strlcpy(reset, g_settings.stats_reset_ts, sizeof(reset));
+    if (!slot_ok(s_full, gen, &app, today, reset)) {
+        if (!slot_ok(s_hist, gen, NULL, today, reset)) {
             int64_t t0 = esp_timer_get_time();
             memset(&s_hist->st, 0, sizeof(s_hist->st));
             ingest_all(&s_hist->st, fname);
-            slot_key(s_hist, gen, 0, today);
+            slot_key(s_hist, gen, 0, today, reset);
             ESP_LOGI(TAG, "stats: past days rebuilt in %lld ms",
                      (esp_timer_get_time() - t0) / 1000);
         }
         /* Today last, so first/last-seen keep their oldest-first meaning. */
         s_full->st = s_hist->st;
         stats_ingest_file(&s_full->st, fname);
-        slot_key(s_full, gen, app, today);
+        slot_key(s_full, gen, app, today, reset);
     }
     *out = s_full->st;
     xSemaphoreGive(s_lock);

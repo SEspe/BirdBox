@@ -21,7 +21,9 @@ $seen = Get-Content $Manifest | Where-Object { $_.Trim() -ne "" }
 $seenSet = @{}
 foreach ($f in $seen) { $seenSet[$f] = $true }
 
-$days = Invoke-RestMethod -Uri "$Device/api/days" -TimeoutSec 15
+# names=1: dates only. Per-day counts are not needed here, and on firmware
+# before 1.4.0 computing them took ~9 s, close to this timeout.
+$days = Invoke-RestMethod -Uri "$Device/api/days?names=1" -TimeoutSec 15
 $newCount = 0
 
 foreach ($day in $days) {

@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.45
+**Version:** 3.46
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -345,7 +345,8 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 | `/api/events/<id>` | PATCH / DELETE | Correct species label, favorite, delete |
 | `/api/event?f=<frame path>` | GET | Every frame of the visit that frame belongs to (any frame of it, not only the first) |
 | `/api/stats/daily`, `/api/stats/species`, `/api/stats/hourly` | GET | Chart data |
-| `/api/stats/reset` | POST | Delete all visit-log CSVs (clears stats/history; photos untouched) |
+| `/api/days[?names=1]` | GET | Capture days with per-day capture counts (cached, §3.4); `names=1` returns dates only |
+| `/api/stats/reset` | POST | Set the statistics reset point to now: Stats count only later rows; the visit logs and photos are kept |
 | `/api/captures/delete` | POST | Bulk-delete photos: `date=` + `files=a.jpg,b.jpg` (multi-select) or `all=1` (whole day); add `stats=1` to also wipe that day's visit-log rows |
 | `/api/capture` | POST | Manual snapshot now |
 | `/api/settings` | GET / POST | Read/write settings |
