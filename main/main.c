@@ -42,6 +42,7 @@
 #include "classify.h"
 #include "illum.h"
 #include "update_check.h"
+#include "stats.h"
 
 static const char *TAG = "main";
 
@@ -177,6 +178,7 @@ void app_main(void)
     setenv("TZ", g_settings.timezone, 1);
     tzset();
     ESP_ERROR_CHECK(storage_init());     /* device runs without SD (FSD §7) */
+    stats_init();                        /* Stats aggregate cache (v3.44) */
     /* Classifier before camera: the model + arena (~5.5 MB PSRAM) reserve
      * first so a high camera resolution can't starve species ID — camera_init
      * then steps its resolution down to whatever PSRAM is left (FSD §5). */

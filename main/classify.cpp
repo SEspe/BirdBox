@@ -851,7 +851,7 @@ static bool rc_rewrite_row(const char *csv, const recheck_row_t *row,
     }
     fclose(in);
     fclose(out);
-    if (swapped) { unlink(csv); rename(tmp, csv); }
+    if (swapped) { unlink(csv); rename(tmp, csv); storage_visit_log_bump(); }
     else          unlink(tmp);
     storage_write_unlock();
     return swapped;

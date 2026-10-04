@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.43
+**Version:** 3.44
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -210,7 +210,8 @@ The model input is a **fixed `1×224×224×3` int8 tensor**. A camera frame of a
 
 ### 3.4 History & statistics
 
-- Every visit event is appended to a visit log on SD (`/log/visits.csv`, append-only, one file per month): timestamp, species, confidence, frame count, file paths, user correction.
+- Every visit event is appended to a visit log on SD (`/log/visits-YYYY-MM-DD.csv`, append-only, one file per day): timestamp, species, confidence, frame count, file paths, user correction.
+- **Statistics are served from a cache, not re-read per request.** The aggregate of every day before today is built once and kept until a visit log is rewritten (relabel, confirm, recheck, a day or stats reset), the date changes, or the card is remounted; each request then adds only today's file. The finished result is reused until a new row is appended, so the several requests behind one Stats view cost one read, and Home Assistant's periodic refresh shares the same cache. The daily series keeps the newest days when there are more than its bucket limit.
 - Each row also carries a **per-frame diagnostic column** — one entry per frame the online classifier scored: `<binomial>=<pct>` for an accepted species, `<binomial>?=<pct>` when the frame was scored but the species was not accepted, or `err:<reason>` when the call itself failed (`net`, `tmo`, `up`, `norep`, `401`, `http`, `429`, `cooldn`, `jpeg`, `mem`, `init`, `notok`). The reason is recorded, not just the fact of failure, because it is what makes an unclassified event self-explaining afterwards: an event the box never got an answer for and one the classifier genuinely was unsure about look identical in the log otherwise, and the two call for opposite remedies — fix the transport, or move the threshold.
 - **Sending a crop of the motion area is on by default.** A frame is always identified whole first; only when that yields nothing is a close crop of the moving area also tried, and the better result kept. It therefore cannot do worse than the whole frame alone, and it markedly helps the small, off-centre and edge-clipped birds this camera sees most. The cost is one extra request on a frame that had already failed — time, not accuracy.
 - **Requests made are counted separately from frames sent.** A frame that the whole image cannot identify costs a second request for its crop, so a hard event can make twice the requests it sent frames. The request count is what accounts for an event’s time, and it is reported rather than left to be inferred from a shortfall in the arithmetic.

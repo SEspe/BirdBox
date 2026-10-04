@@ -64,6 +64,17 @@ int storage_reset_stats(void);
  * the Gallery "wipe day" action. Returns rows removed (0 if none/no SD). */
 int storage_reset_stats_day(const char *date);
 
+/* Change counters for the visit logs, so a reader can cache what it parsed
+ * (the Stats aggregate, v3.44). `gen` moves on every REWRITE or DELETION of a
+ * visit-log file: relabel, confirm, recheck, day/stats reset, the per-day
+ * migration, a remount. `appends` moves on every appended row. Appends only
+ * ever go to the file for the current date, so a cache of PAST days need only
+ * watch `gen`. Any new code that rewrites a visit log must call
+ * storage_visit_log_bump(), or the Stats tab will keep showing old numbers. */
+uint32_t storage_visit_log_gen(void);
+uint32_t storage_visit_log_appends(void);
+void     storage_visit_log_bump(void);
+
 /* Sets the user-confirmed species on the visit row whose first_frame basename
  * is `file` (FSD §3.4/v1.51): writes `common` to the "corrected" column and
  * `latin` to the "latin" column (both CSV-sanitized), keeping the model's

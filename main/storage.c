@@ -39,6 +39,14 @@ static int64_t           s_last_remount_ok_us = 0;  /* last SUCCESS */
 
 static void storage_migrate_perday(void);   /* one-time monthly→per-day split */
 
+/* Visit-log change counters (storage.h). Plain 32-bit words: a single store is
+ * atomic on this core, and a reader that races a bump only rebuilds once more. */
+static volatile uint32_t s_vlog_gen;
+static volatile uint32_t s_vlog_appends;
+uint32_t storage_visit_log_gen(void)     { return s_vlog_gen; }
+uint32_t storage_visit_log_appends(void) { return s_vlog_appends; }
+void     storage_visit_log_bump(void)    { s_vlog_gen++; }
+
 #if SD_USE_SDMMC
 /* Mount the card (shared by storage_init and sd_recover). Sets s_sd_present. */
 static esp_err_t sd_mount(void)
@@ -67,6 +75,7 @@ static esp_err_t sd_mount(void)
     esp_err_t err = esp_vfs_fat_sdmmc_mount(STORAGE_MOUNT_POINT, &host, &slot,
                                             &mount_cfg, &s_card);
     s_sd_present = (err == ESP_OK);
+    s_vlog_gen++;              /* a (re)mounted card may hold different logs */
     return err;
 }
 
@@ -669,6 +678,7 @@ static void storage_migrate_perday(void)
                      months[i], in_rows, out_rows);
         }
     }
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
 }
 
@@ -715,6 +725,7 @@ esp_err_t storage_append_visit_log(const char *line)
 #if SD_USE_SDMMC
     if (!ok && sd_recover()) ok = append_visit_line(path, line);
 #endif
+    s_vlog_appends++;
     xSemaphoreGive(s_write_mtx);
 
     s_last_write_ok = ok;
@@ -741,6 +752,7 @@ int storage_reset_stats(void)
         }
         closedir(d);
     }
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
 
     ESP_LOGI(TAG, "stats reset: deleted %d visit-log file(s)", deleted);
@@ -757,6 +769,7 @@ int storage_reset_stats_day(const char *date)
     /* Unsynced captures all live in one file — wipe it whole. */
     if (strcmp(date, "no-date") == 0) {
         if (unlink(STORAGE_MOUNT_POINT "/log/visits-no-date.csv") == 0) removed = 1;
+        s_vlog_gen++;
         xSemaphoreGive(s_write_mtx);
         ESP_LOGI(TAG, "stats reset (no-date): removed unsynced log");
         return removed;
@@ -792,6 +805,7 @@ int storage_reset_stats_day(const char *date)
     unlink(path);
     if (kept > 0) rename(tmp, path);   /* else the month is now empty — drop it */
     else          unlink(tmp);
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
 
     ESP_LOGI(TAG, "stats reset (%s): removed %d row(s), kept %d", date, removed, kept);
@@ -854,6 +868,7 @@ esp_err_t storage_confirm(const char *date, const char *file)
 
     if (found) { unlink(path); rename(tmp, path); }
     else        unlink(tmp);
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
     ESP_LOGI(TAG, "confirm %s/%s -> %s", date, file, found ? "ok" : "nothing-to-confirm");
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
@@ -998,6 +1013,7 @@ esp_err_t storage_relabel(const char *date, const char *file,
 
     unlink(path);
     rename(tmp, path);
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
     free(frbuf);
     ESP_LOGI(TAG, "relabel %s/%s -> '%s' (%s)", date, file, c, found ? "updated" : "added");
@@ -1090,6 +1106,7 @@ esp_err_t storage_relabel_batch(const char *date, const char *const *files,
 
     unlink(path);
     rename(tmp, path);
+    s_vlog_gen++;                 /* past-day Stats cache must rebuild (v3.44) */
     xSemaphoreGive(s_write_mtx);
     free(found);
     free(frbuf);

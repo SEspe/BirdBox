@@ -57,3 +57,7 @@ int stats_list_images(const char *want, const char *date, stats_img_t *out, int 
  * `stats_collect` is the all-time convenience wrapper. */
 esp_err_t stats_collect_scoped(stats_t *out, const char *date);
 esp_err_t stats_collect(stats_t *out);
+
+/* Creates the aggregate cache (v3.44) — call once at boot, before anything can
+ * serve /api/stats or publish to Home Assistant. Without it every call scans. */
+void stats_init(void);
