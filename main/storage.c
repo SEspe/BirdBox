@@ -1,6 +1,8 @@
 #include "storage.h"
 #include "board_config.h"
 #include "settings.h"
+#include "capture_name.h"   /* hour buckets + path split, unit-tested */
+#include "count_table.h"    /* day-count table + walk race rule, unit-tested */
 
 #include <stdio.h>
 #include <string.h>
@@ -194,13 +196,7 @@ void storage_write_unlock(void) { xSemaphoreGive(s_write_mtx); }
  * does not match that shape (a pre-SNTP "upNNNN" name) has no bucket and stays
  * flat, which is also what makes the fallback in every lookup below correct for
  * captures written before this layout existed. */
-static bool capture_hour(const char *name, char out[3])
-{
-    if (strlen(name) < 14 || name[10] != '_' || name[13] != '-') return false;
-    if (name[11] < '0' || name[11] > '9' || name[12] < '0' || name[12] > '9') return false;
-    out[0] = name[11]; out[1] = name[12]; out[2] = '\0';
-    return true;
-}
+#define capture_hour(name, out) capture_name_hour((name), (out))   /* capture_name.c */
 
 void storage_capture_fs_path(const char *day, const char *name, bool bucket,
                              char *out, size_t out_len)
@@ -229,13 +225,7 @@ static char     s_bk_day[40];
 static uint32_t s_bk_mask;
 static bool     s_bk_valid;
 
-static int capture_hour_num(const char *name)
-{
-    char hh[3];
-    if (!capture_hour(name, hh)) return -1;
-    int h = (hh[0] - '0') * 10 + (hh[1] - '0');
-    return (h >= 0 && h < 24) ? h : -1;
-}
+#define capture_hour_num(name) capture_name_hour_num(name)          /* capture_name.c */
 
 static uint32_t bucket_mask(const char *day)
 {
@@ -301,17 +291,7 @@ void storage_capture_resolve(const char *day, const char *name,
 bool storage_capture_split(const char *logical, char *day, size_t dsz,
                            char *name, size_t nsz)
 {
-    const char *p = strstr(logical, "/captures/");
-    if (!p) return false;
-    p += strlen("/captures/");
-    const char *slash = strchr(p, '/');
-    if (!slash || (size_t) (slash - p) >= dsz) return false;
-    memcpy(day, p, (size_t) (slash - p));
-    day[slash - p] = '\0';
-    strlcpy(name, slash + 1, nsz);
-    /* A name with a slash in it is already a physical, bucketed path — the
-     * caller handed us something it got from the filesystem, not the log. */
-    return day[0] && name[0] && !strchr(name, '/');
+    return capture_path_split(logical, day, dsz, name, nsz);   /* capture_name.c */
 }
 
 FILE *storage_capture_fopen_logical(const char *logical, const char *mode)
@@ -427,9 +407,7 @@ void storage_capture_remove_day(const char *day)
  * ever go to the current day). A discarded walk is still returned, just not
  * kept; the next call walks again. */
 #define CNT_MAX_DAYS 512
-typedef struct { char day[16]; int n; } cnt_ent_t;
-static cnt_ent_t        *s_cnt;            /* PSRAM table, CNT_MAX_DAYS entries */
-static int               s_cnt_used;
+static cnt_table_t       s_cnt;            /* table in PSRAM, CNT_MAX_DAYS entries */
 static SemaphoreHandle_t s_cnt_mtx;        /* table only; never held across I/O */
 static uint32_t          s_cnt_gen;
 static uint32_t          s_cnt_save_seq;
@@ -438,32 +416,19 @@ static char              s_cnt_save_day[16];
 static void cnt_init(void)
 {
     s_cnt_mtx = xSemaphoreCreateMutex();
-    s_cnt = heap_caps_calloc(CNT_MAX_DAYS, sizeof(cnt_ent_t),
-                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-}
-
-static int cnt_find(const char *day)        /* caller holds s_cnt_mtx */
-{
-    for (int i = 0; i < s_cnt_used; i++)
-        if (strcmp(s_cnt[i].day, day) == 0) return i;
-    return -1;
-}
-
-static void cnt_drop(int i)                 /* caller holds s_cnt_mtx */
-{
-    if (i < 0) return;
-    s_cnt[i] = s_cnt[--s_cnt_used];
+    s_cnt.e = heap_caps_calloc(CNT_MAX_DAYS, sizeof(cnt_ent_t),
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_cnt.cap = s_cnt.e ? CNT_MAX_DAYS : 0;
 }
 
 /* Saves: +1 if the day is cached, and note the save for in-flight walks. A
  * failed write may have left a partial file behind, so it drops the entry. */
 static void cnt_note_save(const char *day, bool ok)
 {
-    if (!s_cnt_mtx || !s_cnt) return;
+    if (!s_cnt_mtx || !s_cnt.e) return;
     xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
-    int i = cnt_find(day);
-    if (ok) { if (i >= 0) s_cnt[i].n++; }
-    else    { cnt_drop(i); s_cnt_gen++; }
+    if (ok) cnt_table_add(&s_cnt, day, +1);
+    else  { cnt_table_drop(&s_cnt, cnt_table_find(&s_cnt, day)); s_cnt_gen++; }
     s_cnt_save_seq++;
     strlcpy(s_cnt_save_day, day, sizeof(s_cnt_save_day));
     xSemaphoreGive(s_cnt_mtx);
@@ -471,20 +436,19 @@ static void cnt_note_save(const char *day, bool ok)
 
 static void cnt_note_unlink(const char *day)
 {
-    if (!s_cnt_mtx || !s_cnt) return;
+    if (!s_cnt_mtx || !s_cnt.e) return;
     xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
-    int i = cnt_find(day);
-    if (i >= 0 && s_cnt[i].n > 0) s_cnt[i].n--;
+    cnt_table_add(&s_cnt, day, -1);
     s_cnt_gen++;
     xSemaphoreGive(s_cnt_mtx);
 }
 
 void storage_capture_counts_invalidate(const char *day)
 {
-    if (!s_cnt_mtx || !s_cnt) return;
+    if (!s_cnt_mtx || !s_cnt.e) return;
     xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
-    if (day) cnt_drop(cnt_find(day));
-    else     s_cnt_used = 0;
+    if (day) cnt_table_drop(&s_cnt, cnt_table_find(&s_cnt, day));
+    else     s_cnt.used = 0;
     s_cnt_gen++;
     xSemaphoreGive(s_cnt_mtx);
 }
@@ -493,25 +457,19 @@ static void count_cb(const char *name, void *ctx) { (void) name; (void) ctx; }
 
 int storage_capture_count(const char *day)
 {
-    if (!s_cnt_mtx || !s_cnt) return storage_capture_foreach(day, count_cb, NULL);
+    if (!s_cnt_mtx || !s_cnt.e) return storage_capture_foreach(day, count_cb, NULL);
 
     xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
-    int i = cnt_find(day);
-    if (i >= 0) { int n = s_cnt[i].n; xSemaphoreGive(s_cnt_mtx); return n; }
+    int i = cnt_table_find(&s_cnt, day);
+    if (i >= 0) { int n = s_cnt.e[i].n; xSemaphoreGive(s_cnt_mtx); return n; }
     uint32_t gen0 = s_cnt_gen, seq0 = s_cnt_save_seq;
     xSemaphoreGive(s_cnt_mtx);
 
     int n = storage_capture_foreach(day, count_cb, NULL);
 
     xSemaphoreTake(s_cnt_mtx, portMAX_DELAY);
-    bool raced = s_cnt_gen != gen0 ||
-                 (s_cnt_save_seq != seq0 && strcmp(s_cnt_save_day, day) == 0);
-    if (!raced && cnt_find(day) < 0 && s_cnt_used < CNT_MAX_DAYS &&
-        strlen(day) < sizeof(s_cnt[0].day)) {
-        strlcpy(s_cnt[s_cnt_used].day, day, sizeof(s_cnt[0].day));
-        s_cnt[s_cnt_used].n = n;
-        s_cnt_used++;
-    }
+    if (!cnt_walk_raced(gen0, s_cnt_gen, seq0, s_cnt_save_seq, s_cnt_save_day, day))
+        cnt_table_put(&s_cnt, day, n);
     xSemaphoreGive(s_cnt_mtx);
     return n;
 }

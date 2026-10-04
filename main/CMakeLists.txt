@@ -21,6 +21,11 @@ idf_component_register(
         "species_i18n.c"
         "target_species.c"
         "update_check.c"
+        "csv_field.c"        # pure, unit-tested in test/host
+        "stats_core.c"
+        "release_core.c"
+        "capture_name.c"
+        "count_table.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES
         "inat_roots.pem"   # pinned iNat root CAs (v2.64) — see inat.c

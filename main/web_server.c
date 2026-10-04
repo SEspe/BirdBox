@@ -23,6 +23,7 @@
 #include "target_species.h"
 #include "board_config.h"
 #include "update_check.h"
+#include "csv_field.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -3549,15 +3550,8 @@ static uint8_t gal_intern(gal_tab_t *t, const char *sp)
     return (uint8_t) t->nsp++;
 }
 
-/* One CSV field, in place; advances *p past the comma (or to the line end). */
-static char *gal_next_field(char **p)
-{
-    char *start = *p;
-    char *comma = strchr(start, ',');
-    if (comma) { *comma = '\0'; *p = comma + 1; }
-    else       { char *end = start + strcspn(start, "\r\n"); *end = '\0'; *p = end; }
-    return start;
-}
+/* CSV fields are split by csv_next_field() (csv_field.c, unit-tested): the
+ * same in-place scanner the stats use, kept in ONE place. */
 
 /* Fills t->l[] (up to GAL_MAX_LABELS) with basename -> localized species for
  * the given capture date, read from that month's visit log; returns the count. */
@@ -3580,17 +3574,17 @@ static int gal_build_labels(const char *date, gal_tab_t *t)
         if (header) { header = false; continue; }
         if (line[0] == '\0' || line[0] == '\n') continue;
         char *p = line;
-        gal_next_field(&p);                        /* timestamp */
-        char *species   = gal_next_field(&p);
-        char *conf      = gal_next_field(&p);
-        gal_next_field(&p);                        /* frames */
-        char *first     = gal_next_field(&p);
-        char *corrected = gal_next_field(&p);
-        char *latin     = gal_next_field(&p);
-        gal_next_field(&p);                        /* roi (col 8) */
-        gal_next_field(&p);                        /* top3 (col 9, ';'-separated, no comma) */
-        char *source    = gal_next_field(&p);      /* provenance (col 10, may be empty) */
-        char *pf        = gal_next_field(&p);      /* per-frame scores (col 11, may be empty) */
+        csv_next_field(&p);                        /* timestamp */
+        char *species   = csv_next_field(&p);
+        char *conf      = csv_next_field(&p);
+        csv_next_field(&p);                        /* frames */
+        char *first     = csv_next_field(&p);
+        char *corrected = csv_next_field(&p);
+        char *latin     = csv_next_field(&p);
+        csv_next_field(&p);                        /* roi (col 8) */
+        csv_next_field(&p);                        /* top3 (col 9, ';'-separated, no comma) */
+        char *source    = csv_next_field(&p);      /* provenance (col 10, may be empty) */
+        char *pf        = csv_next_field(&p);      /* per-frame scores (col 11, may be empty) */
         if (!species[0] || !first[0]) continue;
         char *base = strstr(first, match);         /* only this day's frames */
         if (!base) continue;
@@ -3992,14 +3986,14 @@ static esp_err_t h_labels_confirmed(httpd_req_t *req)
                 if (header) { header = false; continue; }
                 if (line[0] == '\0' || line[0] == '\n') continue;
                 char *p = line;
-                char *ts        = gal_next_field(&p);
-                gal_next_field(&p);                    /* species (model guess) */
-                gal_next_field(&p);                    /* confidence */
-                gal_next_field(&p);                    /* frames */
-                char *first_fr  = gal_next_field(&p);
-                char *corrected = gal_next_field(&p);
-                char *latin     = gal_next_field(&p);
-                char *roi       = gal_next_field(&p);   /* "x0-y0-x1-y1" or empty (whole frame) */
+                char *ts        = csv_next_field(&p);
+                csv_next_field(&p);                    /* species (model guess) */
+                csv_next_field(&p);                    /* confidence */
+                csv_next_field(&p);                    /* frames */
+                char *first_fr  = csv_next_field(&p);
+                char *corrected = csv_next_field(&p);
+                char *latin     = csv_next_field(&p);
+                char *roi       = csv_next_field(&p);   /* "x0-y0-x1-y1" or empty (whole frame) */
                 if (!corrected[0] || !first_fr[0]) continue;   /* confirmed rows only */
                 char f_e[112], c_e[80], l_e[80], t_e[40], r_e[48];
                 json_escape(f_e, sizeof(f_e), first_fr);

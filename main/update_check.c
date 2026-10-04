@@ -22,6 +22,7 @@
  * mode 2 reboots the app on every probe and must not re-check each time) but
  * resets on a power-on or OTA reboot — after a flash a fresh check is wanted. */
 #include "update_check.h"
+#include "release_core.h"   /* semver + reply parsing, unit-tested */
 #include "version.h"
 #include "wifi.h"
 #include "classify.h"
@@ -69,23 +70,6 @@ static bool clock_valid(time_t now)
     return tm.tm_year + 1900 >= UPD_VALID_YEAR;
 }
 
-/* "1.2.3" -> true and the three parts; anything else (including a "v" left
- * on, or a pre-release suffix) -> false, and is never offered as an update. */
-static bool parse_semver(const char *s, int v[3])
-{
-    char tail;
-    return sscanf(s, "%d.%d.%d%c", &v[0], &v[1], &v[2], &tail) == 3;
-}
-
-static bool newer_than_running(const char *tag)
-{
-    int a[3], b[3];
-    if (!parse_semver(tag, a) || !parse_semver(FIRMWARE_VERSION, b)) return false;
-    for (int i = 0; i < 3; i++)
-        if (a[i] != b[i]) return a[i] > b[i];
-    return false;
-}
-
 static void set_result(const char *latest, const char *err, bool ok)
 {
     time_t now = time(NULL);
@@ -96,26 +80,6 @@ static void set_result(const char *latest, const char *err, bool ok)
     s_try_epoch = now;
     if (ok) s_ok_epoch = now;
     portEXIT_CRITICAL(&s_mux);
-}
-
-/* Pull "tag_name":"v1.2.0" out of the reply without a JSON parser: the field
- * is a plain string and GitHub's API sends it compact. Tolerates whitespace
- * around the colon. Writes the tag with any leading 'v' stripped. */
-static bool extract_tag(const char *body, char *out, size_t n)
-{
-    const char *p = strstr(body, "\"tag_name\"");
-    if (!p) return false;
-    p += strlen("\"tag_name\"");
-    while (*p == ' ' || *p == ':') p++;
-    if (*p++ != '"') return false;
-    if (*p == 'v' || *p == 'V') p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < n) {
-        if (!((*p >= '0' && *p <= '9') || *p == '.')) return false;   /* JSON-safe by construction */
-        out[i++] = *p++;
-    }
-    out[i] = '\0';
-    return *p == '"' && i > 0;
 }
 
 static void upd_worker(void *arg)
@@ -158,15 +122,14 @@ static void upd_worker(void *arg)
         snprintf(etag, sizeof(etag), "h%d", status % 1000);
         set_result(NULL, etag, false);
         ESP_LOGW(TAG, "update check: HTTP %d", status);
-    } else if (!extract_tag(buf, tag, sizeof(tag))) {
+    } else if (!release_extract_tag(buf, tag, sizeof(tag))) {
         set_result(NULL, "parse", false);
         ESP_LOGW(TAG, "update check: no usable tag_name in %d bytes", rd);
     } else {
         /* Only offer a release the OTA tab can actually flash: it lists
          * releases by their .bin asset, so one without a .bin is not an
          * update this device can take. The assets array precedes the notes. */
-        const char *as = strstr(buf, "\"assets\"");
-        bool has_bin = as && strstr(as, ".bin\"");
+        bool has_bin = release_has_bin(buf);
         set_result(has_bin ? tag : NULL, has_bin ? "" : "nobin", has_bin);
         ESP_LOGI(TAG, "update check: latest release %s%s, running %s", tag,
                  has_bin ? "" : " (no .bin asset)", FIRMWARE_VERSION);
@@ -229,7 +192,7 @@ bool update_check_available(void)
 {
     char t[16];
     update_check_latest(t, sizeof(t));
-    return t[0] && newer_than_running(t);
+    return t[0] && semver_newer(t, FIRMWARE_VERSION);
 }
 
 long update_check_age_s(void)

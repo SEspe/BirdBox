@@ -6,39 +6,8 @@
  * (/sd/log/visits-*.csv) for the /api/stats endpoints. The device only
  * serves aggregated data; charts are rendered client-side (FSD §3.4). */
 
-#define STATS_MAX_DAYS     62   /* two months of daily buckets */
-#define STATS_MAX_SPECIES  24
-#define STATS_MAX_LOGFILES 400  /* newest-first cap on files parsed per request.
-                                 * v2.07: per-day files (not monthly), so this is
-                                 * days (~13 months) not months; older history
-                                 * beyond it is dropped from the all-time view
-                                 * (acceptable — history need not be exact). */
+#include "stats_core.h"   /* stats_t and the row folding (pure, unit-tested) */
 
-typedef struct {
-    int      day_count;
-    char     day[STATS_MAX_DAYS][11];        /* "YYYY-MM-DD" */
-    uint16_t day_n[STATS_MAX_DAYS];
-
-    int      sp_count;
-    char     sp[STATS_MAX_SPECIES][32];
-    uint16_t sp_n[STATS_MAX_SPECIES];
-    char     sp_first[STATS_MAX_SPECIES][20];  /* ISO timestamps */
-    char     sp_last[STATS_MAX_SPECIES][20];
-    char     sp_latin[STATS_MAX_SPECIES][40];  /* "" if unknown (older rows,
-                                                   or a user-corrected label) */
-
-    uint16_t hour[24];
-    uint32_t total;
-
-    /* Rows the classifier confidently decided were "no bird" (background
-     * class at/above the confidence threshold): motion triggers confirmed as
-     * false positives. Kept out of the bird species/daily/hourly buckets and
-     * the visits total, but surfaced as their own row in the species table
-     * (FSD §3.4/v1.50) — count + first/last, like a species line. */
-    uint32_t false_pos;
-    char     fp_first[20];
-    char     fp_last[20];
-} stats_t;
 
 /* One image reference for the per-row image list (FSD §3.4/v1.50). */
 typedef struct { char path[64]; char ts[20]; } stats_img_t;
