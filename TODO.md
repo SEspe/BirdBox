@@ -5,9 +5,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
 ## Added 2026-10-04, late (1.4.0-1.4.2: day-count cache, unit tests, CI releases)
-- [ ] **1.4.x has not run on hardware.** `.205` ends the day on 1.3.0. Verify
-      tomorrow per SESSION_NOTES "TOMORROW": `/api/days` speed and counts vs
-      real files, today's count rising, Stats moving after a relabel.
+- [x] ~~1.4.x has not run on hardware~~ - **DONE 2026-10-06 on `.205` (1.4.2):**
+      `/api/days` 0.08 s (was 11.7 s), counts equal walked counts on 5 days,
+      snapshot +1 / delete -1 tracked, warm-up fills the cache by 80 s uptime,
+      Stats tab open 0.12-0.15 s. See changelog v3.45.
+- [ ] **Stats moving after a relabel/confirm is the one check left.** Labels are
+      the operator's, so it waits for them to relabel or confirm one image;
+      then compare that species' count before and after.
 - [ ] **Unit-test the stats CACHE keying, not just the row folding.**
       `slot_ok`/`slot_key` in `stats.c` and the day-count bookkeeping around the
       mutex still live in hardware-facing files. Extract the key comparison into
@@ -23,7 +27,11 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       notes from the changelog.
 
 ## Added 2026-10-04 (1.2.0 update check, 1.3.0 Stats cache)
-- [ ] **Explain the two slow post-boot Stats readings on 1.3.0.** Settled, an
+- [x] **NOT REPRODUCED on 1.4.2 (2026-10-06)** - controlled reboot, no browser:
+      first Stats open at 6 s = 1.94 s (the one cold scan), then 0.12-0.15 s
+      from 12 s on. Likely boot-time contention with other requests; no longer
+      observable. Kept below for the record; reopen only if it recurs.
+      **Explain the two slow post-boot Stats readings on 1.3.0.** Settled, an
       all-time Stats view is ~0.2 s (was 6.7 s). But seconds after boot the
       first view took 6.2 s and the NEXT one 2.5 s - and 2.5 s looks like a full
       rebuild of the past-days slot where only a cache hit was expected. Either
@@ -32,11 +40,13 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
       logged (`stats: past days rebuilt in N ms`) on SERIAL only - read it there
       (resets the board), or expose the last rebuild ms + count in
       `/api/sysinfo` so this can be answered over HTTP. Do the latter first.
-- [ ] **Invalidation is untested on hardware.** Relabel or confirm one image,
-      then load Stats: the counts must move immediately. Also check across
-      midnight (date rollover rebuilds) and after Reset Statistics.
-- [ ] **The 16 kB read buffer's effect is unmeasured.** It only shows in the
-      cold build, which needs the number above.
+- [ ] **Invalidation partly verified.** Date rollover: two midnights on 1.3.0,
+      all-time per-day totals then matched every independently built day (20/20).
+      Appends: a visit logged mid-check showed up in both views on the next read.
+      Still open: relabel/confirm (needs the operator), and Reset Statistics.
+- [ ] **The 16 kB read buffer's effect is roughly measured, confounded.** Cold
+      build 1.94 s at 6 s uptime on 1.4.2 vs ~2.2 s per scan on 1.3.0: ~0.3 s,
+      but taken under boot load. A clean figure needs the rebuild time over HTTP.
 - [ ] **`stats_list_images` (Stats row click, all-time) still scans every log**
       per click. Not cached. Fine at 15 days; measure on a 60-day card.
 - [ ] **`.240` is offline** (2026-10-04; something else answers ping at that

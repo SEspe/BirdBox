@@ -1,3 +1,35 @@
+# Session notes — 2026-10-06 (on top of 2026-10-04)
+
+## 2026-10-06: 1.4.2 verified on `.205`
+
+The operator updated `.205` from 1.3.0 to 1.4.2 through the header note, then
+asked for a controlled reboot. Results (full detail in changelog v3.45/v3.44):
+
+| Check | Result |
+|---|---|
+| boot health | `software` reset, `guardReboots` 0, heapInt 116 kB, big block 32 kB |
+| update check | `latest` 1.4.2, `updAvail` false, `updErr` "", ran 311 s after boot |
+| `/api/days` | **0.08 s** (1.3.0 that morning: **11.7 s**); `names=1` 0.08 s |
+| counts vs walked files | equal on 08-02, 09-26, 10-03, 10-05, and today x3 |
+| count tracking | `POST /api/capture` +1, deleting that snapshot -1, walk agreed |
+| warm-up | first `/api/days` of a clean boot, at 80 s uptime: 0.08 s |
+| Stats tab open | 0.12-0.15 s; first open after boot 1.94 s (the one cold scan) |
+| post-boot anomaly | **not reproduced** |
+
+Before the update, 1.3.0 had run 47 h through two midnights: all-time vs
+per-day totals 20/20 days equal, totals 4069 = 4069 = 4069.
+
+**Still open:** Stats moving after a relabel/confirm (operator's labels - waits
+for them), and Reset Statistics. `.240` still not found (`birdbox.local`
+answers as `.205`; nothing at .240).
+
+**Measurement gotcha seen today:** the first readings after the update were
+skewed by the operator's browser running the CACHED 1.3.0 page, which still
+asked `/api/days` WITH counts - an ~11 s walk that my requests queued behind.
+Same family as the stale-UI-after-OTA rule: know which page is running.
+
+---
+
 # Session notes — 2026-10-04
 
 Working notes for resuming. The durable record is `FSD_BirdBox_CHANGELOG.md`;
