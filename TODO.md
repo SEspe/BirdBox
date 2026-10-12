@@ -4,6 +4,19 @@ Snapshot 2026-07-22 (fw 0.74.31). Nothing here is urgent — the box is healthy 
 the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
 (v2.64). Ordered by how much it actually matters.
 
+## Added 2026-10-12 (1.4.3, HA visit labels)
+- [ ] **Confirm 1.4.3 in Home Assistant** after a real visit: hovering the newest
+      "Bird visits" point shows THAT visit's outcome (or *unclassified*), and the
+      renamed "Last identified species" entity appears. Device side verified only.
+- [ ] **Headless / edge-clipped big birds go unclassified** (magpie on the back
+      rim, 2026-10-12: 5 frames agree on Pica pica at 12-22 %, zero votes under
+      `conf` 25). Operator's call between an agreement rule, the cloud fallback
+      for unclassified visits, and camera framing. Measure first: how many past
+      unclassified visits have >=3 frames agreeing on one in-region species?
+- [ ] `pf` writes `err:401` even when later frames scored - the tag reads as the
+      cause when it was not. Consider tagging the visit's error only when NO
+      frame scored.
+
 ## Added 2026-10-04, late (1.4.0-1.4.2: day-count cache, unit tests, CI releases)
 - [x] ~~1.4.x has not run on hardware~~ - **DONE 2026-10-06 on `.205` (1.4.2):**
       `/api/days` 0.08 s (was 11.7 s), counts equal walked counts on 5 days,

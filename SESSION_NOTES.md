@@ -1,3 +1,53 @@
+# Session notes — 2026-10-12 (on top of 2026-10-06 and 2026-10-04)
+
+## 2026-10-12: 1.4.3 — HA visit labels (released)
+
+**Trigger:** the operator saw `.205`'s one visit of the day as *Skjære* in Home
+Assistant but *unclassified* on the Stats tab.
+
+**Stats was right.** The visit (08:35:17 first frame, 08:35:22 log row - same
+visit; the Gallery names the first frame, Stats the row written at the end)
+was a magpie on the back rim with its **head above the frame in all 8 shots**.
+pf: `err:401` (daily JWT expiry; refresh worked) then Pica pica 16/22/15/15/12 %,
+Toppmeis 6 %. A frame votes only at >= `conf` 25, so five agreeing frames still
+gave zero votes. Cloud fallback is off (`cprov=0`). Read-only re-score via
+`/api/id-frame-debug` today: 15 % and 5 % - not a transient.
+
+**The HA bug (fixed, 1.4.3 / FSD v3.48, commit `7fd7057`):** the visits
+sensor's `species`/`confidence` attributes were the last IDENTIFICATION, which
+an unclassified visit leaves alone - so it showed the previous day's 16:11
+Skjære. Also the count moved only on the 15-min log re-read while attributes
+moved every publish. Now `classify_last_visit()` -> `visit`/`visit_conf` in the
+state message, visits attributes read those, and a new visit triggers the log
+re-read at once. `species`/`sp_conf` renamed "Last identified species /
+confidence" (same uniq_id). FSD §13's stale per-species-sensor paragraph
+rewritten.
+
+| Check | Result |
+|---|---|
+| build + UI JS gate | clean |
+| OTA `.205` 1.4.2 -> 1.4.3 | `software` reset, HA connected, `visits` 5525, heapIntBig8 32 kB |
+| CI on tag `v1.4.3` | host tests, build, release all green; Latest = v1.4.3 with `.bin` |
+| **HA hover after a real visit** | **NOT YET** - operator checks; broker password unknown to us |
+
+heapInt read 94 kB ~1 min after boot (1.4.2 on 10-06: 116 kB at steady
+state, not the same moment) - not a comparison; re-read at steady state.
+
+**Classification of headless/edge birds - operator's call, nothing applied:**
+an agreement rule (>=3 frames same top-1 below threshold, with a floor,
+in-region only), the cloud fallback for unclassified only, or tilting the
+camera up. See the unclassified-two-causes memory: 75 % solo and the
+pica/hudsonia band are settled; don't reopen those.
+
+**Also today (not BirdBox):** Discussions enabled on `SEspe/smarthomesec_ha`.
+BirdBox shows 0 watchers - operator told how to Watch + email delivery. `gh`
+lacks the `notifications` scope.
+
+**Stale file:** untracked `resumetext.txt` (09-28) still says "disable HA
+before flashing" - retired since 0.99.0. Delete or rewrite.
+
+---
+
 # Session notes — 2026-10-06 (on top of 2026-10-04)
 
 ## 2026-10-06: 1.4.2 verified on `.205`
