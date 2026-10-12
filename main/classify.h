@@ -159,6 +159,12 @@ bool        classify_last_event_identified(void); /* did the most recent event g
                                                      species? false ⇒ clear the live badge */
 uint32_t    classify_result_seq(void);         /* ++ each time an async classification result
                                                   lands; the live "Current" badge keys on it */
+/* The most recent VISIT's outcome — "unclassified" (conf 0) when nothing was
+ * identified; "no bird" events are not visits and leave it alone. Copies the
+ * strings out (another task writes them) and returns a sequence that moves once
+ * per visit logged since boot, 0 = none yet. */
+uint32_t    classify_last_visit(char *species, size_t sp_len,
+                                char *latin, size_t lat_len, uint8_t *conf);
 
 /* Vocabulary access for the relabel picker (FSD §3.4/v1.51): entry at index i
  * ("Latin (Common)"), "" out of range; and whether it is in the Norway subset.

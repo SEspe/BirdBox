@@ -50,6 +50,17 @@ static char             s_last_file[96] = "";  /* frame that scored the last ID'
                                                   badge links to (v2.53) */
 static volatile bool    s_last_event_ided = false; /* did the MOST RECENT event get a real
                                                        species? gates the live badge (v2.29) */
+/* The outcome of the most recent VISIT (any event the log does not file as
+ * "no bird"), unclassified included. Distinct from s_last_species, which only
+ * ever holds a real identification: Home Assistant attaches this one to the
+ * visit count, and attaching the last identification instead labelled an
+ * unclassified visit with an earlier bird. Read by another task, so copied
+ * out under a lock rather than handed over as pointers. */
+static portMUX_TYPE     s_visit_mux = portMUX_INITIALIZER_UNLOCKED;
+static char             s_visit_species[64] = "";
+static char             s_visit_latin[64] = "";
+static uint8_t          s_visit_conf = 0;
+static uint32_t         s_visit_seq = 0;      /* ++ per visit logged since boot */
 static volatile bool    s_cls_busy = false;  /* a job is being scored right now — drives the
                                                 live view's yellow CLASSIFYING state (v2.54).
                                                 Set while the task holds a job, so it spans the
@@ -708,6 +719,18 @@ static void classify_task(void *arg)
         }
         if (storage_append_visit_log(line) != ESP_OK)
             ESP_LOGW(TAG, "visit log append failed");
+        /* After the append, so a reader that sees the new sequence and re-reads
+         * the log finds this row in it. "no bird" is a false positive, not a
+         * visit — the same rule the Stats totals apply. */
+        if (!(have_best && strcmp(best.species, "no bird") == 0)) {
+            portENTER_CRITICAL(&s_visit_mux);
+            strlcpy(s_visit_species, have_best ? best.species : "unclassified",
+                    sizeof(s_visit_species));
+            strlcpy(s_visit_latin, have_best ? best.latin : "", sizeof(s_visit_latin));
+            s_visit_conf = have_best ? best.confidence_pct : 0;
+            s_visit_seq++;
+            portEXIT_CRITICAL(&s_visit_mux);
+        }
         /* Wall time of the whole tier cascade (iNat frames + cloud fallback +
          * log write) for this event — repurposes the on-device-era inference
          * counter, which nothing had written since the 0.74.0 pivot (v2.71). */
@@ -1158,6 +1181,18 @@ const char *classify_last_file(void)        { return s_last_file; }
 uint8_t     classify_last_confidence(void)  { return s_last_conf; }
 bool        classify_last_event_identified(void) { return s_last_event_ided; }
 uint32_t    classify_result_seq(void)       { return s_cls_seq; }
+
+uint32_t classify_last_visit(char *species, size_t sp_len,
+                             char *latin, size_t lat_len, uint8_t *conf)
+{
+    portENTER_CRITICAL(&s_visit_mux);
+    if (species && sp_len) strlcpy(species, s_visit_species, sp_len);
+    if (latin && lat_len)  strlcpy(latin, s_visit_latin, lat_len);
+    if (conf) *conf = s_visit_conf;
+    uint32_t seq = s_visit_seq;
+    portEXIT_CRITICAL(&s_visit_mux);
+    return seq;
+}
 uint16_t    classify_queue_depth(void)
 {
     return s_jobq ? (uint16_t) uxQueueMessagesWaiting(s_jobq) : 0;

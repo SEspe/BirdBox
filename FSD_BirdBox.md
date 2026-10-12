@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.47
+**Version:** 3.48
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -474,15 +474,15 @@ from the broker noticing the box stopped answering.
 **Published set** — diagnostics: SoC temperature, WiFi signal, free heap, free
 internal RAM, largest internal block, free PSRAM, uptime, SD free, SD used,
 WiFi reconnects, firmware version, IP address, SD-card and camera health.
-Operational: capture events, motion triggers, last species, last confidence,
-and a motion binary sensor. Night sleep (§14) reports its state, the reason an
+Operational: capture events, motion triggers, the last identified species and
+its confidence, and a motion binary sensor. Night sleep (§14) reports its state, the reason an
 enabled box is still awake, whether the sensor is powered and how long it has
 been asleep, so dusk and dawn transitions are visible and alertable in HA with
 history rather than only by polling the box. Camera health is reported as a
 `problem` binary sensor (auto-recovery gave up, needs a power cycle) plus a
 recovery counter — a climbing count is the early warning that shows up long
 before a hard fault, and nightly sleep/wake cycling is new stress on that path.
-**Per-species visit counters.** One monotonic sensor per species actually seen, so Home Assistant can answer “how many great tits this week” — its statistics engine derives per-day deltas from a cumulative total, which a text sensor holding the last species cannot support at all. Counts are read from the **visit log**, not tallied as events happen: relabelling a bird in the Gallery rewrites the log, and a live counter would never see the correction. Re-reading also makes the totals survive reboots without persisting anything, which is what lets them be honest `total_increasing` sensors. The read is SD-bound, so it runs on a slow cadence of its own rather than with every state message. Entities are keyed on the Latin binomial so switching UI language does not orphan them, and the confirmed false-positive total is published alongside as the honest measure of detector noise.
+**Bird visits.** One cumulative `total_increasing` sensor counts every visit (every logged event except a confirmed "no bird"), so Home Assistant's statistics engine can derive visits per day or week. Each visit's **own outcome** rides on it as attributes — its species, or *unclassified*, and its confidence — so hovering a point on the history shows which bird that visit was. That outcome is never the last identified species: an unclassified visit does not change that sensor, and attaching it would label the visit with an earlier bird. The count is read from the **visit log**, not tallied as events happen: relabelling a bird in the Gallery rewrites the log, and a live counter would never see the correction. Re-reading also makes the total survive reboots without persisting anything. The log is re-read on a 15-minute cadence and **immediately after each new visit**, so the count moves in the same state message that carries that visit's outcome; the Stats cache keeps that read to today's file. The confirmed false-positive total is published alongside as the honest measure of detector noise. Per-species sensors are not published; any left on the broker by an earlier design are removed.
 
 Motion cluster telemetry (§3.1) is published too — last cluster size, the
 current cap, the oversized-rejection count and the largest rejected cluster —

@@ -99,8 +99,10 @@ static const ha_entity_t ENTITIES[] = {
      * confidence attached as attributes (see publish_discovery). */
     { "visits",       "Bird visits",           NULL,             "visits", "total_increasing", false, false },
     { "triggers",     "Motion triggers",       NULL,             NULL,  "total_increasing", false, false },
-    { "species",      "Last species",          NULL,             NULL,  NULL,           false, false },
-    { "sp_conf",      "Last confidence",       NULL,             "%",   "measurement",  false, false },
+    /* The last IDENTIFIED bird — an unclassified visit leaves it as it was,
+     * so the name says so; the visits trend carries each visit's own result. */
+    { "species",      "Last identified species", NULL,           NULL,  NULL,           false, false },
+    { "sp_conf",      "Last identified confidence", NULL,        "%",   "measurement",  false, false },
     { "version",      "Firmware",              NULL,             NULL,  NULL,           true,  false },
     { "ip",           "IP address",            NULL,             NULL,  NULL,           true,  false },
     { "motion",       "Motion",                "motion",         NULL,  NULL,           false, true  },
@@ -280,6 +282,7 @@ static int jcat(char *buf, size_t cap, int n, const char *fmt, ...)
 static uint32_t s_visits_total;   /* cumulative bird visits, from the visit log */
 static uint32_t s_false_pos;
 static int64_t  s_sp_next_us;     /* 0 = due now */
+static uint32_t s_visit_seen;     /* classify_last_visit() sequence last counted */
 
 /* Latin binomial -> "parus_major". Stable across UI language changes, which
  * matters because the display name is localized and switching language would
@@ -423,8 +426,8 @@ static void publish_discovery(void)
         if (strcmp(e->key, "visits") == 0)
             n = jcat(payload, sizeof(payload), n,
                      ",\"json_attr_t\":\"%s\",\"json_attr_tpl\":"
-                     "\"{{ {'species': value_json.species,"
-                     " 'confidence': value_json.sp_conf,"
+                     "\"{{ {'species': value_json.visit,"
+                     " 'confidence': value_json.visit_conf,"
                      " 'false_positives': value_json.false_pos} | tojson }}\"",
                      s_topic_state);
         /* The device block is what makes all twenty-nine entities collapse into a
@@ -542,6 +545,24 @@ static void publish_state(void)
     n = jcat(buf, sizeof(buf), n, ",\"false_pos\":%lu,\"visits\":%lu",
              (unsigned long) s_false_pos, (unsigned long) s_visits_total);
 
+    /* The latest visit's OWN outcome, for the visits trend's attributes.
+     * Not "species": that is the last identification, which an unclassified
+     * visit leaves untouched — so it would label that visit with an earlier
+     * bird. "none" until a visit has been logged since boot. */
+    {
+        char vsp[64], vlat[64], vloc[80], vsafe[80];
+        uint8_t vconf = 0;
+        uint32_t vseq = classify_last_visit(vsp, sizeof(vsp), vlat, sizeof(vlat), &vconf);
+        if (vseq == 0) {
+            strlcpy(vsafe, "none", sizeof(vsafe));
+        } else {
+            species_localize(vsp, vlat, g_settings.lang, vloc, sizeof(vloc));
+            json_safe(vloc, vsafe, sizeof(vsafe));
+        }
+        n = jcat(buf, sizeof(buf), n, ",\"visit\":\"%s\",\"visit_conf\":%u",
+                 vsafe, (unsigned) vconf);
+    }
+
     n = jcat(buf, sizeof(buf), n, "}");
 
     /* One malformed state message takes EVERY entity to "unknown" at once,
@@ -643,8 +664,19 @@ static void ha_task(void *arg)
          * scarce pool on this board — the two together panicked a box mid-
          * upload. The same reasoning already keeps the WiFi scan away from an
          * OTA. Deferring costs at most one refresh interval. */
+        /* A new visit refreshes at once, so the count moves in the SAME state
+         * message that carries that visit's outcome as its attributes. On the
+         * 15-minute cadence alone, the count rose up to 15 min after the
+         * attributes had already moved on, and HA's history pinned whatever
+         * the latest visit was to that increment. The read is cheap now: Stats
+         * caches past days and an append only re-reads today's file. */
+        uint32_t vseq = classify_last_visit(NULL, 0, NULL, 0, NULL);
+        bool new_visit = vseq != s_visit_seen;
         if (s_connected && !s_stop_req && !web_server_ota_active() &&
-            esp_timer_get_time() >= s_sp_next_us) species_refresh();
+            (new_visit || esp_timer_get_time() >= s_sp_next_us)) {
+            species_refresh();
+            s_visit_seen = vseq;
+        }
         /* Re-check AFTER the refresh: it reads the SD card and can take a
          * couple of seconds, which is long enough for ha_stop() to have asked
          * us to quit and given up waiting. Publishing into a client that is
