@@ -646,7 +646,7 @@ static const char INDEX_HTML[] =
 "</style></head><body>"
 "<div class='uivb' id='uivb'></div>"
 "<div class='hdr'><h1><img class='logo' src='" BIRD_LOGO "' alt=''> " FIRMWARE_NAME "</h1>"
-"<span class='v'>v" FIRMWARE_VERSION
+"<span class='v'>v" FIRMWARE_VERSION " &middot; <span id='hip'></span>"
 /* Filled from /api/status by updShow() when a newer GitHub release exists. */
 "<a id='updN' class='updn' href='#otap' onclick='return goOta()' style='display:none'></a></span></div>"
 "<div class='tabs'>"
@@ -1468,6 +1468,7 @@ ROT_OPTIONS
 "if(s.lastEvent)t+=' | last: <a href=\"'+s.lastEvent+'\">'+s.lastEvent.split('/').pop()+'</a>';"
 "if(s.species)t+=' ('+s.species+')';"
 "document.getElementById('sts').innerHTML=t;"
+"$g('hip').textContent=s.ip;"
 /* Species overlay in the live view: the last event's species + confidence with a
  * Dompap avatar. Shown (and pops) on a NEW event — keyed to the events count, so
  * two events of the same species still re-trigger — then AUTO-HIDES after
@@ -2203,6 +2204,7 @@ ROT_OPTIONS
 "c.appendChild(d);});}).catch(function(){st.textContent='Scan failed';});}"
 "function wfCfg(){fetch('/api/wificfg').then(r=>r.json()).then(function(c){"
 "$g('wfConn').textContent='Connected to: '+(c.connected||'\\u2014')"
+"+'  \\u2022  IP: '+(c.ip||'\\u2014')"
 "+'  \\u2022  Primary: '+(c.primary||'not set')"
 "+'  \\u2022  Alt1: '+(c.alt||'not set');}).catch(function(){});}"
 "function rebootDev(){if(confirm('Reboot BirdBox?'))"
@@ -3202,14 +3204,21 @@ static esp_err_t h_wificfg(httpd_req_t *req)
     wifi_ap_record_t ap = {0};
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) strlcpy(conn, (char *) ap.ssid, sizeof(conn));
 
+    /* Same lookup as h_status, so the WiFi tab and the header show one address. */
+    char ip[16] = "";
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t info;
+    if (netif && esp_netif_get_ip_info(netif, &info) == ESP_OK)
+        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
+
     char p[70], a[70], c[70];
     json_escape(p, sizeof(p), wifi_configured_ssid(WIFI_SLOT_PRIMARY));
     json_escape(a, sizeof(a), wifi_configured_ssid(WIFI_SLOT_ALT));
     json_escape(c, sizeof(c), conn);
 
-    char buf[256];
+    char buf[320];   /* two 69-char SSIDs + the IP: 256 clipped in the worst case */
     int n = snprintf(buf, sizeof(buf),
-        "{\"primary\":\"%s\",\"alt\":\"%s\",\"connected\":\"%s\"}", p, a, c);
+        "{\"primary\":\"%s\",\"alt\":\"%s\",\"connected\":\"%s\",\"ip\":\"%s\"}", p, a, c, ip);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;

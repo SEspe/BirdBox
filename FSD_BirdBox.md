@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.48
+**Version:** 3.49
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -294,7 +294,7 @@ The device stores **two** networks: a **primary** (`ssid`/`pass`) and an optiona
 - **Boot:** try the primary first (15 s / 5 retries); if unreachable, try alt1 (same budget); if both fail, open the portal — which then keeps retrying **both** networks, alternating each 60 s cycle.
 - **In service:** after 5 consecutive reconnect failures on the current AP, fail over to the other stored network, and keep alternating — so the box latches onto whichever AP is actually present as it roams or as APs come and go. Never reopens the portal once ever-connected.
 - **Shared IP setting:** the DHCP-or-static IP configuration (§4.5) applies to **whichever** network connects. A single static address is only valid if the primary and alt1 are on the **same subnet**; for APs on different subnets, use DHCP. The WiFi tab states this.
-- **Visibility:** the WiFi tab shows the currently-connected AP plus both configured SSIDs (`GET /api/wificfg`, passwords never exposed); the Debug tab's WiFi Link section shows the connected network name (`apSsid` in `/api/sysinfo`).
+- **Visibility:** the WiFi tab shows the currently-connected AP, the device's current IP address, and both configured SSIDs (`GET /api/wificfg`, passwords never exposed); the Debug tab's WiFi Link section shows the connected network name (`apSsid` in `/api/sysinfo`).
 - **Editing:** saving with `slot=1` and a blank SSID removes alt1. The boot-button reset (§4.6) erases both networks. Passwords are write-only — the tab shows SSIDs but never pre-fills passwords.
 
 **Signal-based preference.** Failover alone only reacts to total failure, which leaves the common bad case untouched: a connection that works but is awful. A box sat on a −85 dBm AP at 2.9 KB/s for hours while a −58 dBm one was in range, because nothing was failing; failover also never returns to primary once it has moved off. The box therefore re-evaluates periodically and moves to a materially stronger stored network.
@@ -317,6 +317,8 @@ The unit runs an mDNS responder (`espressif/mdns`) once STA-connected, so the UI
 Single-page UI embedded in firmware (no filesystem-served assets, no CDN), tab bar following the RemoteStart standard:
 
 **Live | Gallery | Stats | Settings | Maintenance | Debug | WiFi | OTA Update**
+
+The page header shows the firmware name, the running version and the device's current IP address (after the version, on every tab), so the unit being looked at can always be identified by address.
 
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
