@@ -275,6 +275,11 @@ static const char INDEX_HTML[] =
 ".tab{padding:10px 20px;cursor:pointer;color:#aac;border:none;background:none;"
 "font-size:.9rem;border-bottom:3px solid transparent}"
 ".tab.on{color:#7fc98b;border-bottom-color:#7fc98b;font-weight:bold}"
+".tabdd{position:relative;display:inline-block}"
+".tabdd-menu{display:none;position:absolute;top:100%;left:0;min-width:100%;z-index:20;background:#1e3826;border:1px solid #3f8a4f;box-shadow:0 4px 12px rgba(0,0,0,.4)}"
+".tabdd.open .tabdd-menu{display:block}"
+".tabdd-menu button{display:block;width:100%;text-align:left;padding:8px 14px;white-space:nowrap;border:none;background:none;color:#aac;cursor:pointer;font-size:.9rem}"
+".tabdd-menu button:hover{background:#2a4d34;color:#fff}"
 ".pane{display:none;padding:16px;max-width:960px;margin:0 auto}.pane.on{display:block}"
 ".liveWrap{max-width:960px;margin:0 auto;position:relative;overflow:hidden;"
 "border-radius:8px;background:#000;padding-top:75%}"
@@ -657,7 +662,12 @@ static const char INDEX_HTML[] =
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"livep\",this)'>Live</button>"
 "<button class='tab' onclick='show(\"galleryp\",this)'>Gallery</button>"
-"<button class='tab' onclick='show(\"statsp\",this)'>Stats</button>"
+"<div class='tabdd' id='tabStats'>"
+"<button class='tab' id='tabStatsBtn' onclick='tabMenu(event)'>Stats &#9662;</button>"
+"<div class='tabdd-menu'>"
+"<button onclick='statsPick(\"a\",event)'>Day statistics</button>"
+"<button onclick='statsPick(\"b\",event)'>Year statistics</button>"
+"</div></div>"
 "<button class='tab' onclick='show(\"setp\",this)'>Settings</button>"
 "<button class='tab' onclick='show(\"maintp\",this)'>Maint</button>"
 "<button class='tab' onclick='show(\"dbgp\",this)'>Debug</button>"
@@ -759,12 +769,9 @@ ROT_OPTIONS
 "<datalist id='speclist'></datalist>"
 "</div>"
 "<div id='statsp' class='pane'>"
-/* Two views on one tab: the per-day and per-species overview (stA), and the
- * best visits per species by calendar year (stB, below). */
-"<div class='gacts' style='margin-bottom:12px'>"
-"<button class='act' id='stvA' onclick='stView(\"a\")'>Overview</button>"
-"<button class='act' id='stvB' style='opacity:.5' onclick='stView(\"b\")'>Best visits</button>"
-"</div>"
+/* Two views on one tab, picked from the Stats menu in the top bar: the per-day
+ * and per-species view (stA), and the best visits per species by calendar year
+ * (stB, below). */
 "<div id='stA'>"
 /* Day picker (v2.69): first option "Today" (value '', server resolves the
  * date, honouring the ~1970 clock guard), then every capture day from
@@ -1206,8 +1213,11 @@ ROT_OPTIONS
 "<script>"
 "var g_stV='a',g_bv=[],g_bvSel=-1;"
 "function stView(v){g_stV=v;$g('stA').style.display=v==='a'?'':'none';$g('stB').style.display=v==='b'?'':'none';"
-"$g('stvA').style.opacity=v==='a'?1:.5;$g('stvB').style.opacity=v==='b'?1:.5;"
 "if(v==='b')bvLoad();}"
+"function tabMenu(ev){ev.stopPropagation();$g('tabStats').classList.toggle('open');}"
+"function statsPick(v,ev){ev.stopPropagation();$g('tabStats').classList.remove('open');"
+"show('statsp',$g('tabStatsBtn'));stView(v);}"
+"document.addEventListener('click',function(){$g('tabStats').classList.remove('open');});"
 "function bvLoad(y){"
 "var sel=$g('bvYear'),tb=$g('bvTable');"
 "if(y===undefined)y=sel.value!==''?sel.value:String(new Date().getFullYear());"
@@ -1271,7 +1281,7 @@ ROT_OPTIONS
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
 "if(id==='galleryp'){loadDays();gRcPoll();"
 "if(!g_nbBound){var gg=$g('grid');if(gg){gg.addEventListener('dblclick',nbDbl);g_nbBound=true;}}}"
-"if(id==='statsp'){loadStats();if(g_stV==='b')bvLoad();}"
+"if(id==='statsp')loadStats();"
 "if(id==='setp')stLoad();"
 "function sdTest(){var b=$g('sdtSts'),r=$g('sdtRes');"
 "b.textContent='running…';r.textContent='';"
