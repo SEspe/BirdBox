@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.49
+**Version:** 3.50
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -343,6 +343,8 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 |---|---|---|
 | `/api/status` | GET | Current state: motion, last event, species, SD/heap/WiFi summary, daily update-check result (§8) |
 | `/api/sysinfo` | GET | Debug-card data (heap, heapMin+age, uptime, reconnects) |
+| `/api/coredump` | GET | The kept panic core dump as a raw `application/octet-stream` download (decode with `idf.py coredump-info`); `404` + `{"present":false}` when none is stored (§8) |
+| `/api/coredump/erase` | POST | Clears the stored core dump so the next panic is kept (§8) |
 | `/api/events?date=&species=&page=` | GET | Paged visit log |
 | `/api/events/<id>` | PATCH / DELETE | Correct species label, favorite, delete |
 | `/api/event?f=<frame path>` | GET | Every frame of the visit that frame belongs to (any frame of it, not only the first) |
@@ -379,6 +381,8 @@ No authentication in v1 (LAN-only device, same posture as RemoteStart); an optio
 ## 8. OTA Updates
 
 - Web-based OTA (OTA Update tab): upload a `.bin` from the browser, RemoteStart-style, with bounded `httpd_req_recv()` retries (v1.5 lesson) and dual OTA partitions with rollback on boot failure.
+- **Panic core dump is kept.** A panic writes a core dump to a 256 KB `coredump` partition (`partitions-esp32s3.csv`). The firmware does not overwrite it, so the first panic since the last erase survives reboots. It is read with `GET /api/coredump` and cleared with `POST /api/coredump/erase`. The dump is only decodable with the ELF of the release that panicked, so each release's `build/BirdBox.elf` must be kept with it.
+- **The partition table changes only by serial flash.** OTA writes the app slots and nothing else. A release that changes `partitions-esp32s3.csv` must be flashed over USB with the table, and it cannot reach a unit by OTA alone.
 - Release binaries are produced by CI (§9) so open-source users never need an ESP-IDF toolchain to stay current: download `birdbox-vX.Y.Z.bin` from GitHub Releases → OTA tab → upload, or let the device fetch and flash a chosen release itself (*Flash from GitHub release*, repo-locked to this project's release URLs).
 - **Daily update check.** Once a day the device asks the GitHub API for this project's latest published release and compares its tag with the running version. A release counts only if its tag is plain `X.Y.Z` semver and it carries a `.bin` asset (the OTA tab can flash nothing else). The result is reported on `/api/status` as `latest`, `updAvail`, `updAgeS` (seconds since the last successful check, -1 if none yet) and `updErr` (last failure tag: `net`, `hNNN`, `parse`, `nobin`); the OTA tab shows it as a status line, and the header carries the update note (§5). The check only notifies — it never downloads or flashes. It waits for WiFi and a real clock (TLS cannot verify a certificate on the pre-SNTP clock), stays clear of classification and of a firmware write, retries hourly after a failure, and keeps its timestamps in RTC memory so night mode's deep-sleep wakes (§14) do not re-check each time. The request sends no device data: no version, no identifiers, just a generic User-Agent.
 

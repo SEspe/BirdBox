@@ -55,6 +55,7 @@
 #include "esp_camera.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_core_dump.h"    /* kept panic dump in the coredump partition (GET /api/coredump) */
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -3222,6 +3223,59 @@ static esp_err_t h_wificfg(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
+}
+
+/* GET /api/coredump — the panic core dump kept in the `coredump` partition.
+ * It is written only on a panic, and NO_OVERWRITE keeps the first one until it
+ * is erased. The reply is the raw partition image: decode it with
+ * `idf.py coredump-info -c <file> build/BirdBox.elf`, using the ELF of the SAME
+ * release that panicked. 404 + {"present":false} when there is no dump. */
+static esp_err_t h_coredump(httpd_req_t *req)
+{
+    size_t addr = 0, size = 0;
+    const esp_partition_t *part = NULL;
+    if (esp_core_dump_image_get(&addr, &size) == ESP_OK && size > 0)
+        part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                        ESP_PARTITION_SUBTYPE_DATA_COREDUMP, NULL);
+    if (!part) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"present\":false}");
+    }
+    if (size > part->size) size = part->size;
+
+    const size_t chunk = 4096;
+    uint8_t *buf = heap_caps_malloc(chunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return httpd_resp_send_500(req);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"birdbox-coredump.bin\"");
+    esp_err_t err = ESP_OK;
+    for (size_t off = 0; off < size && err == ESP_OK; off += chunk) {
+        size_t n = size - off < chunk ? size - off : chunk;
+        err = esp_partition_read(part, off, buf, n);
+        if (err == ESP_OK) err = httpd_resp_send_chunk(req, (const char *) buf, n);
+    }
+    free(buf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "coredump: read/send failed at %d", (int) err);
+        return ESP_FAIL;               /* headers already sent; httpd drops the socket */
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+/* POST /api/coredump/erase — clears the stored dump so the next panic is kept. */
+static esp_err_t h_coredump_erase(httpd_req_t *req)
+{
+    esp_err_t err = esp_core_dump_image_erase();
+    httpd_resp_set_type(req, "application/json");
+    if (err != ESP_OK) {
+        char buf[48];
+        int n = snprintf(buf, sizeof(buf), "{\"ok\":false,\"err\":%d}", (int) err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
+    }
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
 /* GET /api/portal-status — first-boot portal credential-verify result, so the
@@ -6796,7 +6850,7 @@ esp_err_t web_server_start(void)
     if (s_httpd) return ESP_OK;   /* already running (portal path starts us early) */
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 64;     /* headroom above route count (56 as of v2.50) — an
+    cfg.max_uri_handlers = 72;     /* headroom above route count (62 as of 1.4.5) — an
                                       exact-fit cap silently drops later registrations,
                                       404ing whichever routes land last (RemoteStart v1.27;
                                       hit again at v1.51 when the count crossed 32) */
@@ -6826,6 +6880,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/portal-status", .method = HTTP_GET, .handler = h_portal_status },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
+        { .uri = "/api/coredump", .method = HTTP_GET,  .handler = h_coredump },
+        { .uri = "/api/coredump/erase", .method = HTTP_POST, .handler = h_coredump_erase },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/motion",  .method = HTTP_GET,  .handler = h_motion     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },

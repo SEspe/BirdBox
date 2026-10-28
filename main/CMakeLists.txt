@@ -41,6 +41,7 @@ idf_component_register(
         esp_timer
         app_update
         esp_https_ota
+        espcoredump      # esp_core_dump_image_get/erase: keeps a panic dump (GET /api/coredump, 1.4.5)
         esp_http_client
         mqtt             # esp-mqtt, a managed component since IDF v6 (Home Assistant, v3.03)
         mbedtls

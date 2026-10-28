@@ -3,6 +3,13 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-esp32s3.csv"
 
+# Keep the first panic's core dump in the `coredump` partition (GET
+# /api/coredump). NO_OVERWRITE: a later panic does not replace it, so the
+# first crash since the last erase is the one that survives. Changing this
+# requires deleting the generated sdkconfig.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE=y
+
 # PSRAM is required on the S3 target (frame buffers + inference arena).
 # NOTE: SPIRAM mode is board-specific — octal matches ESP32-S3 modules with
 # embedded 8 MB PSRAM (N16R8/N8R8); Freenove ESP32-S3 CAM is quad (R2).
