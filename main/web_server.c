@@ -1234,7 +1234,7 @@ ROT_OPTIONS
 "['Species','Visits','First seen','Last seen','iNaturalist'].forEach(function(t){var th=document.createElement('th');th.className='sth';th.textContent=t;hr.appendChild(th);});"
 "tb.appendChild(hr);"
 "g_bv.forEach(function(s,i){"
-"var tr=document.createElement('tr');tr.style.cursor='pointer';tr.onclick=function(){bvDetail(i);};"
+"var tr=document.createElement('tr');tr.style.cursor='pointer';tr.onclick=function(){bvDetail(i);bvPopup(s);};"
 "var c1=document.createElement('td');c1.textContent=s.sp;tr.appendChild(c1);"
 "var c2=document.createElement('td');c2.textContent=String(s.n);tr.appendChild(c2);"
 "var c3=document.createElement('td');c3.textContent=s.first.replace('T',' ');tr.appendChild(c3);"
@@ -1260,6 +1260,12 @@ ROT_OPTIONS
 "g_taxId[la]=id;"
 "if(id){ln.href='https://www.inaturalist.org/taxa/'+id;ln.style.display='';}"
 "}).catch(function(){});}"
+/* Opens the Live view's species popup for a row. It needs the taxon record
+ * refShow fetches, so a cold lookup opens the popup when it lands (g_refWant). */
+"var g_refWant='';"
+"function bvPopup(s){if(!s.latin)return;var la=s.latin,nm=s.sp+' ('+la+')';"
+"if(g_ref[la]){g_refCur=la;g_refCo=s.sp;g_refCf=0;if(g_ref[la].id)spiOpen();return;}"
+"g_refWant=la;refShow(nm,0);}"
 "function bvDetail(i){g_bvSel=i;var s=g_bv[i],el=$g('bvList');"
 "var h=document.createElement('h3');h.className='sh';h.textContent='Best visits: '+s.sp;"
 "var grid=document.createElement('div');grid.className='grid';"
@@ -1389,7 +1395,8 @@ ROT_OPTIONS
 "else{var p=hit.default_photo;"
 "g_ref[la]={id:hit.id,t:p.square_url||p.url,b:p.medium_url||p.url,"
 "a:p.attribution||'',c:hit.preferred_common_name||''};}"
-"if(g_refCur===la)refRender(la,co,g_ref[la],cf);})"
+"if(g_refCur===la)refRender(la,co,g_ref[la],cf);"
+"if(g_refWant===la){g_refWant='';if(g_ref[la]&&g_ref[la].id)spiOpen();}})"
 ".catch(function(){g_ref[la]={};});}"
 /* ── Species info panel (v2.94) ────────────────────────────────────────────
  * Opened from the reference card's name block. Same rule as the card: the
