@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <ctype.h>
 #include <time.h>
 #include <sys/time.h>
@@ -482,6 +483,10 @@ static const char INDEX_HTML[] =
 "justify-content:center}"
 ".evbig{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}"
 ".evstrip{flex:0 0 auto;width:100%;display:flex;gap:8px;overflow-x:auto;padding:10px 0 2px}"
+".bvsp{margin:10px 0;padding-bottom:8px;border-bottom:1px solid #2a4d34}"
+".bvrow{display:flex;gap:10px;overflow-x:auto;padding:6px 0}"
+".bvrow img{width:180px;height:auto;border-radius:6px;display:block}"
+".bvcap{font-size:.78rem;color:#9ab;max-width:180px}"
 ".evth{flex:0 0 auto;width:160px;aspect-ratio:16/9;object-fit:cover;border-radius:5px;"
 "cursor:pointer;opacity:.5;border:2px solid transparent;transition:opacity .12s}"
 ".evth:hover{opacity:.85}"
@@ -754,6 +759,13 @@ ROT_OPTIONS
 "<datalist id='speclist'></datalist>"
 "</div>"
 "<div id='statsp' class='pane'>"
+/* Two views on one tab: the per-day and per-species overview (stA), and the
+ * best visits per species by calendar year (stB, below). */
+"<div class='gacts' style='margin-bottom:12px'>"
+"<button class='act' id='stvA' onclick='stView(\"a\")'>Overview</button>"
+"<button class='act' id='stvB' style='opacity:.5' onclick='stView(\"b\")'>Best visits</button>"
+"</div>"
+"<div id='stA'>"
 /* Day picker (v2.69): first option "Today" (value '', server resolves the
  * date, honouring the ~1970 clock guard), then every capture day from
  * /api/days. Changing it switches to (that) day scope. */
@@ -770,6 +782,14 @@ ROT_OPTIONS
 "<button class='act' style='margin-left:0;background:#8a3f3f' onclick='statsReset()'>"
 "&#128465; Reset Statistics</button>"
 "<span class='sts' id='sResetSts'></span>"
+"</div>"
+"<div id='stB' style='display:none'>"
+"<h3 class='sh' style='margin-top:0'>Best visits per species</h3>"
+"<div class='bvbar'><label>Year <select id='bvYear' onchange='bvLoad()'></select></label></div>"
+"<table class='st' id='bvTable'></table>"
+"<div class='sts' id='bvTotal'></div>"
+"<div id='bvList'></div>"
+"</div>"
 "</div>"
 "<div id='setp' class='pane'>"
 "<h3 class='sh' style='margin-top:0'>Placement<span class='inf' onclick='sInfo(\"mode\")'>i</span></h3>"
@@ -1184,6 +1204,64 @@ ROT_OPTIONS
 "</div>"
 "</div></div>"
 "<script>"
+"var g_stV='a',g_bv=[],g_bvSel=-1;"
+"function stView(v){g_stV=v;$g('stA').style.display=v==='a'?'':'none';$g('stB').style.display=v==='b'?'':'none';"
+"$g('stvA').style.opacity=v==='a'?1:.5;$g('stvB').style.opacity=v==='b'?1:.5;"
+"if(v==='b')bvLoad();}"
+"function bvLoad(y){"
+"var sel=$g('bvYear'),tb=$g('bvTable');"
+"if(y===undefined)y=sel.value!==''?sel.value:String(new Date().getFullYear());"
+"fetch('/api/stats/best?year='+encodeURIComponent(y)).then(r=>r.json()).then(function(d){"
+"var cy=new Date().getFullYear(),ys=d.years.slice().sort((a,b)=>b-a);"
+"if(ys.indexOf(cy)<0)ys.unshift(cy);"
+"sel.innerHTML='';"
+"ys.forEach(function(v){var o=document.createElement('option');o.value=String(v);o.textContent=String(v);sel.appendChild(o);});"
+"var all=document.createElement('option');all.value='0';all.textContent='All time';sel.appendChild(all);"
+"sel.value=String(d.year);"
+"g_bv=d.species;g_bvSel=-1;"
+"tb.innerHTML='';"
+"var hr=document.createElement('tr');"
+"['Species','Visits','First seen','Last seen','iNaturalist'].forEach(function(t){var th=document.createElement('th');th.className='sth';th.textContent=t;hr.appendChild(th);});"
+"tb.appendChild(hr);"
+"g_bv.forEach(function(s,i){"
+"var tr=document.createElement('tr');tr.style.cursor='pointer';tr.onclick=function(){bvDetail(i);};"
+"var c1=document.createElement('td');c1.textContent=s.sp;tr.appendChild(c1);"
+"var c2=document.createElement('td');c2.textContent=String(s.n);tr.appendChild(c2);"
+"var c3=document.createElement('td');c3.textContent=s.first.replace('T',' ');tr.appendChild(c3);"
+"var c4=document.createElement('td');c4.textContent=s.last.replace('T',' ');tr.appendChild(c4);"
+"var c5=document.createElement('td');var ln=document.createElement('a');"
+"ln.target='_blank';ln.rel='noopener';ln.textContent='iNat';ln.style.display='none';"
+"ln.onclick=function(ev){ev.stopPropagation();};c5.appendChild(ln);tr.appendChild(c5);"
+"bvTaxon(s.latin,ln);"
+"tb.appendChild(tr);});"
+"$g('bvTotal').textContent=g_bv.length+' species \\u00b7 '+d.years.length+' year(s) on the card \\u2014 click a species for its two best visits'+(d.overflow?' \\u00b7 '+d.overflow+' more not shown':'');"
+"$g('bvList').innerHTML='';"
+"}).catch(function(){$g('bvTotal').textContent='could not load best visits';});}"
+/* Same link as the Live view's species card: the taxon page, found the way
+ * refShow finds it (a species search, then the hit whose name IS the binomial).
+ * No match, no link. Cached per binomial for the life of the page. */
+"var g_taxId={};"
+"function bvTaxon(la,ln){if(!la)return;"
+"if(g_taxId[la]!==undefined){if(g_taxId[la]){ln.href='https://www.inaturalist.org/taxa/'+g_taxId[la];ln.style.display='';}return;}"
+"fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&locale='+spiLoc()+'&q='+encodeURIComponent(la))"
+".then(function(r){return r.json();}).then(function(j){"
+"var rs=(j&&j.results)||[],lc=la.toLowerCase(),id=0;"
+"for(var i=0;i<rs.length;i++){if(rs[i]&&String(rs[i].name).toLowerCase()===lc){id=rs[i].id;break;}}"
+"g_taxId[la]=id;"
+"if(id){ln.href='https://www.inaturalist.org/taxa/'+id;ln.style.display='';}"
+"}).catch(function(){});}"
+"function bvDetail(i){g_bvSel=i;var s=g_bv[i],el=$g('bvList');"
+"var h=document.createElement('h3');h.className='sh';h.textContent='Best visits: '+s.sp;"
+"var grid=document.createElement('div');grid.className='grid';"
+"s.v.forEach(function(v){"
+"var it=document.createElement('div');it.className='gitem';"
+"var a=document.createElement('a');a.href=v.f;a.target='_blank';a.onclick=function(ev){return evA(this,ev);};"
+"var im=document.createElement('img');im.loading='lazy';im.src=v.f;a.appendChild(im);it.appendChild(a);"
+"var m=document.createElement('div');m.className='gmeta';"
+"var sp1=document.createElement('span');sp1.textContent=v.ts.replace('T',' ')+' \\u00b7 '+v.pct+'%'+(v.c?' \\u00b7 \\u2713 confirmed':'');m.appendChild(sp1);it.appendChild(m);"
+"grid.appendChild(it);});"
+"el.innerHTML='';el.appendChild(h);el.appendChild(grid);"
+"var note=document.createElement('p');note.className='sts';note.textContent='Click a photo to see every frame of that visit.';el.appendChild(note);}"
 "function show(id,btn){"
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
@@ -1193,7 +1271,7 @@ ROT_OPTIONS
 "else{lv.src='';}"   /* stop streaming while hidden — frees a stream slot */
 "if(id==='galleryp'){loadDays();gRcPoll();"
 "if(!g_nbBound){var gg=$g('grid');if(gg){gg.addEventListener('dblclick',nbDbl);g_nbBound=true;}}}"
-"if(id==='statsp')loadStats();"
+"if(id==='statsp'){loadStats();if(g_stV==='b')bvLoad();}"
 "if(id==='setp')stLoad();"
 "function sdTest(){var b=$g('sdtSts'),r=$g('sdtRes');"
 "b.textContent='running…';r.textContent='';"
@@ -3222,6 +3300,67 @@ static esp_err_t h_wificfg(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
+}
+
+/* Best visits (Stats tab, "Best visits", §3.4). The reply grows with the number
+ * of species, so it is streamed in pieces rather than built in one buffer. */
+static esp_err_t send_fmt(httpd_req_t *req, const char *fmt, ...)
+{
+    char buf[384];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) return ESP_FAIL;
+    return httpd_resp_send_chunk(req, buf, json_fit(__func__, n, sizeof(buf)));
+}
+
+/* GET /api/stats/best?year=YYYY — the two best visits of each species in that
+ * year; year=0 (or no year) is all time. The reply also lists every year that
+ * has a visit log, for the picker. */
+static esp_err_t h_stats_best(httpd_req_t *req)
+{
+    char query[48] = {0}, val[8] = {0};
+    int year = 0;
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    if (httpd_query_key_value(query, "year", val, sizeof(val)) == ESP_OK) {
+        url_decode(val);
+        year = atoi(val);
+    }
+    httpd_resp_set_type(req, "application/json");
+    if (year != 0 && (year < 1970 || year > 2999)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"err\":\"year\"}");
+    }
+
+    best_t *b = heap_caps_malloc(sizeof(best_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!b) return httpd_resp_send_500(req);
+    stats_best_visits(b, year);
+
+    send_fmt(req, "{\"year\":%d,\"overflow\":%u,\"years\":[", year, (unsigned) b->overflow);
+    for (int i = 0; i < b->year_count; i++)
+        send_fmt(req, "%s%d", i ? "," : "", b->years[i]);
+    send_fmt(req, "],\"species\":[");
+    for (int i = 0; i < b->sp_count; i++) {
+        const best_species_t *s = &b->sp[i];
+        char name[80], latin[96];
+        json_escape(name, sizeof(name), s->name);
+        json_escape(latin, sizeof(latin), s->latin);
+        send_fmt(req, "%s{\"sp\":\"%s\",\"latin\":\"%s\",\"n\":%u,\"first\":\"%.19s\",\"last\":\"%.19s\",\"v\":[",
+                 i ? "," : "", name, latin, (unsigned) s->n, s->first, s->last);
+        for (int k = 0; k < s->nv; k++) {
+            const best_visit_t *v = &s->v[k];
+            char file[136];
+            json_escape(file, sizeof(file), v->file);
+            send_fmt(req, "%s{\"f\":\"%s\",\"ts\":\"%.19s\",\"pct\":%u,\"c\":%s}",
+                     k ? "," : "", file, v->ts, (unsigned) v->conf,
+                     v->confirmed ? "true" : "false");
+        }
+        send_fmt(req, "]}");
+    }
+    send_fmt(req, "]}");
+    free(b);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 /* GET /api/portal-status — first-boot portal credential-verify result, so the
@@ -6826,6 +6965,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/portal-status", .method = HTTP_GET, .handler = h_portal_status },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
+        { .uri = "/api/stats/best", .method = HTTP_GET, .handler = h_stats_best },
         { .uri = "/api/status",  .method = HTTP_GET,  .handler = h_status     },
         { .uri = "/api/motion",  .method = HTTP_GET,  .handler = h_motion     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },

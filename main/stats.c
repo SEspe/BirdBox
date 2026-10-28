@@ -141,12 +141,22 @@ typedef struct {
 static SemaphoreHandle_t s_lock;
 static stats_slot_t *s_hist, *s_full, *s_day;
 
+/* Best-visits cache (see stats_best_visits): one slot, PSRAM. */
+typedef struct {
+    bool     valid;
+    uint32_t gen, appends;
+    int      year;
+    best_t   b;
+} best_slot_t;
+static best_slot_t *s_best;
+
 void stats_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
     s_hist = heap_caps_calloc(1, sizeof(stats_slot_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_full = heap_caps_calloc(1, sizeof(stats_slot_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_day  = heap_caps_calloc(1, sizeof(stats_slot_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_best = heap_caps_calloc(1, sizeof(best_slot_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_lock || !s_hist || !s_full || !s_day)
         ESP_LOGW(TAG, "stats cache unavailable; every request will scan");
 }
@@ -311,4 +321,84 @@ int stats_list_images(const char *want, const char *date, stats_img_t *out, int 
     free(ring);
     free(names);
     return cnt;
+}
+
+/* ── Best visits per species (Stats tab, "Best visits") ──────────────────
+ * Unlike stats_collect, which keeps the newest STATS_MAX_LOGFILES files, this
+ * walks every /log/visits-*.csv so the view covers the complete history. The
+ * year of a file comes from its name ("visits-YYYY-MM-DD.csv"); "no-date" files
+ * have no year, so they appear only in the all-time view. The cache is keyed on
+ * the visit-log counters, the same rule as the aggregate above. */
+
+/* "visits-YYYY-..." -> YYYY, or 0 for any other name (the no-date log). */
+static int year_of_log(const char *name)
+{
+    if (strlen(name) < 12) return 0;
+    for (int i = 7; i < 11; i++)
+        if (!isdigit((unsigned char) name[i])) return 0;
+    return atoi(name + 7);
+}
+
+static void best_ingest_dir(best_t *out, int year)
+{
+    DIR *d = opendir(STORAGE_MOUNT_POINT "/log");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_type != DT_REG) continue;
+        const char *n = e->d_name;
+        if (strncmp(n, "visits-", 7) != 0 || !strstr(n, ".csv")) continue;
+
+        int fy = year_of_log(n);
+        if (fy) best_add_year(out, fy);          /* the picker lists every year on the card */
+        if (year != 0 && fy != year) continue;
+
+        char *vbuf;
+        FILE *fp = open_log(n, &vbuf);
+        if (!fp) continue;
+        char line[768];
+        bool header = true;
+        while (fgets(line, sizeof(line), fp)) {
+            if (header) { header = false; continue; }
+            if (line[0] == '\0' || line[0] == '\n') continue;
+            best_ingest_line(out, line, year);
+        }
+        fclose(fp);
+        free(vbuf);
+    }
+    closedir(d);
+}
+
+esp_err_t stats_best_visits(best_t *out, int year)
+{
+    best_init(out);
+    if (!storage_sd_present()) return ESP_OK;
+
+    /* Counters are read BEFORE the scan, as in stats_collect_scoped: a row that
+     * lands mid-scan leaves the slot keyed to the old counter, so the next
+     * request rebuilds. */
+    uint32_t gen = storage_visit_log_gen(), app = storage_visit_log_appends();
+    bool cache = s_lock && s_best;
+    if (cache) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (s_best->valid && s_best->gen == gen && s_best->appends == app && s_best->year == year) {
+            memcpy(out, &s_best->b, sizeof(*out));
+            xSemaphoreGive(s_lock);
+            return ESP_OK;
+        }
+        xSemaphoreGive(s_lock);
+    }
+
+    best_ingest_dir(out, year);
+
+    if (cache) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_best->valid = true;
+        s_best->gen = gen;
+        s_best->appends = app;
+        s_best->year = year;
+        memcpy(&s_best->b, out, sizeof(*out));
+        xSemaphoreGive(s_lock);
+    }
+    return ESP_OK;
 }
