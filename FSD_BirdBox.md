@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.49
+**Version:** 3.53
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -322,7 +322,7 @@ The page header shows the firmware name, the running version and the device's cu
 
 - **Live** — MJPEG stream, snapshot button, current motion-detection state indicator, quick rotation toggle (mirrors the Settings tab's rotation field).
 - **Gallery** — §3.4 browsing/labeling.
-- **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected).
+- **Stats** — §3.4 charts, plus a confirm-gated Reset Statistics button that clears the visit-log history (saved photos are unaffected). The tab has two views, chosen by two buttons at the top. **Overview** holds the per-day and per-species charts and table described above. **Best visits** lists every species the location has recorded in a chosen calendar year (the picker defaults to the current year, with an *All time* option), with columns Species, Visits, First seen, Last seen and an *iNat* link to that species' iNaturalist taxon page, found in the browser the same way as the Live view's species card (a species search, then the matching name; no link when nothing matches). Clicking a species shows its two best visits as thumbnails, and clicking a thumbnail opens every frame of that visit. Best means human-confirmed first, then classifier confidence, then the newer visit. This view reads the complete visit-log history, not the recent-days window of the charts, and the Reset Statistics point does not affect it.
 - **Settings** — placement mode (nest box/feeder), motion sensitivity, camera mount distance (close/medium/distant, §3.1), capture count/interval, cool-down, confidence threshold, species set (global / Northern-Europe filter, §3.2.1), retention cap, stream quality, camera resolution (HD or SXGA, reboot to apply), contrast, image rotation (0/90/180/270, mount-correction), species-model region (§3.2), timezone, NTP server, IR LED mode (off/auto), and a System Monitoring section carrying the Home Assistant / MQTT settings (§13), and a Night Sleep section (§14).
 - **Maintenance** — destructive whole-day operations, kept out of the Gallery so they cannot be hit by accident while labelling: pick a day, then delete its photos or wipe it (photos + visit-log rows). Also the confirm-gated factory reset, which erases settings, the saved WiFi network and the stored credentials but never touches the card.
 - **Debug** — System card (free heap + low-water mark with age, uptime, WiFi reconnect count + last-reconnect age), WiFi Link card (RSSI/channel/own MAC), SD card status (size/free/health), camera sensor status, last-inference timing.
@@ -343,6 +343,7 @@ All UI data flows through JSON endpoints, so the device is scriptable/integrable
 |---|---|---|
 | `/api/status` | GET | Current state: motion, last event, species, SD/heap/WiFi summary, daily update-check result (§8) |
 | `/api/sysinfo` | GET | Debug-card data (heap, heapMin+age, uptime, reconnects) |
+| `/api/stats/best?year=YYYY` | GET | Best visits per species for one calendar year (`year=0` or omitted: all time). Each species carries its visit count, first and last seen (`first`, `last`, synced timestamps only), up to two visits (`f` image, `ts`, `pct`, `c` confirmed) and the years that have a visit log. Streamed; `400` for a year outside 1970–2999 |
 | `/api/events?date=&species=&page=` | GET | Paged visit log |
 | `/api/events/<id>` | PATCH / DELETE | Correct species label, favorite, delete |
 | `/api/event?f=<frame path>` | GET | Every frame of the visit that frame belongs to (any frame of it, not only the first) |

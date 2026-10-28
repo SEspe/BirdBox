@@ -24,3 +24,4 @@ void test_stats_core(void);
 void test_release_core(void);
 void test_capture_name(void);
 void test_count_table(void);
+void test_best_core(void);

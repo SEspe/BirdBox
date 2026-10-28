@@ -22,6 +22,7 @@ idf_component_register(
         "target_species.c"
         "update_check.c"
         "csv_field.c"        # pure, unit-tested in test/host
+        "best_core.c"        # best visits per species, pure, unit-tested in test/host
         "stats_core.c"
         "release_core.c"
         "capture_name.c"

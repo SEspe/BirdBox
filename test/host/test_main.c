@@ -12,6 +12,7 @@ int main(void)
         { "release_core", test_release_core },
         { "capture_name", test_capture_name },
         { "count_table",  test_count_table  },
+        { "best_core",    test_best_core    },
     };
     for (size_t i = 0; i < sizeof(suites) / sizeof(suites[0]); i++) {
         int before = g_failures, checks = g_checks;

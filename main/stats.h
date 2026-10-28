@@ -7,6 +7,14 @@
  * serves aggregated data; charts are rendered client-side (FSD §3.4). */
 
 #include "stats_core.h"   /* stats_t and the row folding (pure, unit-tested) */
+#include "best_core.h"    /* best_t: top visits per species (pure, unit-tested) */
+
+/* Best visits per species (Stats tab, "Best visits", §3.4): the two best visits
+ * of each species in one calendar year (`year`, 0 = all time), over the COMPLETE
+ * visit-log history — not the 400-file window of stats_collect. `out` is filled
+ * even when there is no SD (empty). Cached on the visit-log counters and the
+ * year, so an unchanged log costs a copy. */
+esp_err_t stats_best_visits(best_t *out, int year);
 
 
 /* One image reference for the per-row image list (FSD §3.4/v1.50). */
