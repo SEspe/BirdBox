@@ -630,6 +630,10 @@ static const char INDEX_HTML[] =
  * no room, so the photos then use the full width. */
 ".bvrow{display:flex;align-items:flex-start;gap:12px}"
 ".bvrow #bvList{flex:1;min-width:0}"
+/* On a narrow window there is no room for the card beside the photos, so the
+ * card goes above them and the photos take the full width. */
+"@media(max-width:560px){.bvrow{flex-direction:column}"
+".bvrow .livref{margin-bottom:10px}.bvrow #bvList{flex:none;width:100%}}"
 ".spsub{font-size:.78rem;opacity:.82;margin-bottom:10px}"
 ".spsub i{font-style:italic}"
 ".spsub .spcf{color:#a8d8bb;font-weight:700;margin-left:5px}"
