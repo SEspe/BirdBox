@@ -623,6 +623,13 @@ static const char INDEX_HTML[] =
 /* Species-info panel (v2.94). The photo frame is a fixed 4:3 box so stepping
  * through photos of different aspect ratios does not make the modal jump. */
 ".spbox h4{margin-bottom:2px}"
+/* The Year statistics card is the Live reference card, placed at the top of the
+ * view: same card, same size. It is in normal flow there, not over the frame. */
+".livref.bvref{position:relative;top:auto;right:auto;transform:none;flex-shrink:0;margin:0}"
+/* The Year card sits to the left of the two best-visit photos. Hidden, it takes
+ * no room, so the photos then use the full width. */
+".bvrow{display:flex;align-items:flex-start;gap:12px}"
+".bvrow #bvList{flex:1;min-width:0}"
 ".spsub{font-size:.78rem;opacity:.82;margin-bottom:10px}"
 ".spsub i{font-style:italic}"
 ".spsub .spcf{color:#a8d8bb;font-weight:700;margin-left:5px}"
@@ -795,7 +802,14 @@ ROT_OPTIONS
 "<div class='bvbar'><label>Year <select id='bvYear' onchange='bvLoad()'></select></label></div>"
 "<table class='st' id='bvTable'></table>"
 "<div class='sts' id='bvTotal'></div>"
+"<div class='bvrow'>"
+"<div class='livref bvref' id='yrref'>"
+"<button class='rfx' id='yrfx' onclick='refToggle(1)'>&times;</button>"
+"<div class='rfh'>iNaturalist reference</div>"
+"<div class='rfbody' id='yrrefb'></div>"
+"</div>"
 "<div id='bvList'></div>"
+"</div>"
 "</div>"
 "</div>"
 "<div id='setp' class='pane'>"
@@ -1211,7 +1225,7 @@ ROT_OPTIONS
 "</div>"
 "</div></div>"
 "<script>"
-"var g_stV='a',g_bv=[],g_bvSel=-1;"
+"var g_stV='a',g_bv=[],g_bvSel=-1,g_yrCur='';"
 "function stView(v){g_stV=v;$g('stA').style.display=v==='a'?'':'none';$g('stB').style.display=v==='b'?'':'none';"
 "if(v==='b')bvLoad();}"
 "function tabMenu(ev){ev.stopPropagation();$g('tabStats').classList.toggle('open');}"
@@ -1245,7 +1259,7 @@ ROT_OPTIONS
 "bvTaxon(s.latin,ln);"
 "tb.appendChild(tr);});"
 "$g('bvTotal').textContent=g_bv.length+' species \\u00b7 '+d.years.length+' year(s) on the card \\u2014 click a species for its two best visits'+(d.overflow?' \\u00b7 '+d.overflow+' more not shown':'');"
-"$g('bvList').innerHTML='';"
+"$g('bvList').innerHTML='';$g('yrref').classList.remove('on');"
 "}).catch(function(){$g('bvTotal').textContent='could not load best visits';});}"
 /* Same link as the Live view's species card: the taxon page, found the way
  * refShow finds it (a species search, then the hit whose name IS the binomial).
@@ -1260,12 +1274,12 @@ ROT_OPTIONS
 "g_taxId[la]=id;"
 "if(id){ln.href='https://www.inaturalist.org/taxa/'+id;ln.style.display='';}"
 "}).catch(function(){});}"
-/* Opens the Live view's species popup for a row. It needs the taxon record
- * refShow fetches, so a cold lookup opens the popup when it lands (g_refWant). */
-"var g_refWant='';"
-"function bvPopup(s){if(!s.latin)return;var la=s.latin,nm=s.sp+' ('+la+')';"
-"if(g_ref[la]){g_refCur=la;g_refCo=s.sp;g_refCf=0;if(g_ref[la].id)spiOpen();return;}"
-"g_refWant=la;refShow(nm,0);}"
+/* Shows the Year card for a row: the Live reference card, drawn at the top of
+ * this view. The lookup is shared but draws nothing, so the Live card keeps
+ * what it showed. */
+"function bvPopup(s){var la=spLatin(s.sp+' ('+s.latin+')');if(!la)return;"
+"g_yrCur=la;"
+"spLookup(la,function(){if(g_yrCur!==la)return;refRender(la,s.sp,g_ref[la],0,1);refInit(1);});}"
 "function bvDetail(i){g_bvSel=i;var s=g_bv[i],el=$g('bvList');"
 "var h=document.createElement('h3');h.className='sh';h.textContent='Best visits: '+s.sp;"
 "var grid=document.createElement('div');grid.className='grid';"
@@ -1318,7 +1332,7 @@ ROT_OPTIONS
  * means "request in flight". Declared HERE, above tick(), because tick() runs
  * once immediately - var hoisting would otherwise leave the cache undefined on
  * that first call. */
-"var g_ref={},g_refCur='',g_refCo='',g_refCf=0;"
+"var g_ref={},g_refCur='',g_refCo='',g_refCf=0,g_refQ={};"
 /* The binomial is the parenthesised half of the localized display name, e.g.
  * "Kjottmeis (Parus major)". Non-species outcomes - unclassified, no bird,
  * Uidentifisert fugl - carry no parentheses and correctly yield "", which is
@@ -1341,17 +1355,21 @@ ROT_OPTIONS
 /* Minimize is a per-browser view preference, so it lives in localStorage, not
  * in device settings - two people watching the same box can disagree. Wrapped
  * because a browser with storage disabled must still toggle, just not remember. */
-"function refBtn(m){var b=$g('rfx');if(b){b.innerHTML=m?'\\uD83D\\uDDBC':'\\u00D7';"
+/* The Live card and the Year statistics card are the same card in two places.
+ * k selects the Year one; its minimized state has its own key. */
+"function refEls(k){return k?{e:$g('yrref'),b:$g('yrrefb'),x:$g('yrfx'),key:'bbYearMin'}"
+":{e:$g('livref'),b:$g('livrefb'),x:$g('rfx'),key:'bbRefMin'};}"
+"function refBtn(m,k){var b=refEls(k).x;if(b){b.innerHTML=m?'\\uD83D\\uDDBC':'\\u00D7';"
 "b.title=m?'show reference photo':'minimize';}}"
-"function refToggle(){var e=$g('livref');if(!e)return;"
-"var m=!e.classList.contains('min');e.classList.toggle('min',m);"
-"try{localStorage.setItem('bbRefMin',m?'1':'0');}catch(x){}refBtn(m);}"
-"function refInit(){var m=false;try{m=localStorage.getItem('bbRefMin')==='1';}catch(x){}"
-"var e=$g('livref');if(e)e.classList.toggle('min',m);refBtn(m);}"
+"function refToggle(k){var R=refEls(k);if(!R.e)return;"
+"var m=!R.e.classList.contains('min');R.e.classList.toggle('min',m);"
+"try{localStorage.setItem(R.key,m?'1':'0');}catch(x){}refBtn(m,k);}"
+"function refInit(k){var R=refEls(k),m=false;try{m=localStorage.getItem(R.key)==='1';}catch(x){}"
+"if(R.e)R.e.classList.toggle('min',m);refBtn(m,k);}"
 /* The thumbnail is iNat's 75px square; the link opens the medium (~500px) copy
  * in a new tab. The attribution line is NOT optional - these photos are CC
  * licensed (BY-NC and similar), so the credit renders with every image. */
-"function refRender(la,co,d,cf){var e=$g('livref'),b=$g('livrefb');if(!e||!b)return;"
+"function refRender(la,co,d,cf,k){var R=refEls(k),e=R.e,b=R.b;if(!e||!b)return;"
 "if(!d||!d.t){e.classList.remove('on');return;}"
 /* Two affordances, deliberately split (v2.94): the THUMBNAIL keeps its original
  * link to iNat's medium copy, and the NAME BLOCK is a button that opens the
@@ -1360,7 +1378,7 @@ ROT_OPTIONS
 "var h='<a href=\"'+esc(d.b)+'\" target=_blank rel=noopener>'"
 "+'<img src=\"'+esc(d.t)+'\" alt=\"'+esc(la)+'\">'"
 "+'<\\/a>'"
-"+'<button type=button class=rfi onclick=\"spiOpen()\">'"
+"+'<button type=button class=rfi onclick=\"spiOpen('+(k?'g_yrCur':'')+')\">'"
 "+'<div class=rfn>'+esc(co||d.c||la)+'<\\/div>'"
 "+'<div class=rfl>'+esc(la)+'<\\/div>'"
 "+(cf?'<div class=rfc>'+cf+'%<\\/div>':'')"
@@ -1382,7 +1400,14 @@ ROT_OPTIONS
  * follows the Language setting) instead of iNat's English one (v2.94). */
 "g_refCur=la;g_refCo=co;g_refCf=cf||0;"
 "if(g_ref[la]!==undefined){refRender(la,co,g_ref[la],cf);return;}"
-"g_ref[la]=null;"
+"spLookup(la,function(){if(g_refCur===la)refRender(la,co,g_ref[la],cf);});}"
+/* spLookup fills g_ref[la] once and then calls every caller waiting on it. It
+ * draws nothing. A second caller while the first request is in flight joins the
+ * queue instead of starting another request. */
+"function spLookup(la,done){"
+"if(g_ref[la]===null){(g_refQ[la]=g_refQ[la]||[]).push(done);return;}"
+"if(g_ref[la]!==undefined){done();return;}"
+"g_ref[la]=null;g_refQ[la]=[done];"
 "fetch('https://api.inaturalist.org/v1/taxa?rank=species&per_page=8&locale='+spiLoc()+'&q='+encodeURIComponent(la))"
 ".then(function(r){return r.json();}).then(function(j){"
 "var rs=(j&&j.results)||[],lc=la.toLowerCase(),hit=null;"
@@ -1395,9 +1420,9 @@ ROT_OPTIONS
 "else{var p=hit.default_photo;"
 "g_ref[la]={id:hit.id,t:p.square_url||p.url,b:p.medium_url||p.url,"
 "a:p.attribution||'',c:hit.preferred_common_name||''};}"
-"if(g_refCur===la)refRender(la,co,g_ref[la],cf);"
-"if(g_refWant===la){g_refWant='';if(g_ref[la]&&g_ref[la].id)spiOpen();}})"
-".catch(function(){g_ref[la]={};});}"
+"spLookupDone(la);})"
+".catch(function(){g_ref[la]={};spLookupDone(la);});}"
+"function spLookupDone(la){var q=g_refQ[la]||[];delete g_refQ[la];q.forEach(function(f){f();});}"
 /* ── Species info panel (v2.94) ────────────────────────────────────────────
  * Opened from the reference card's name block. Same rule as the card: the
  * BROWSER fetches this and nothing touches the ESP32 - no firmware fetch, no
@@ -1542,7 +1567,7 @@ ROT_OPTIONS
  * the same bird lands where you left it while a different bird starts at 0. It
  * is NOT persisted: an open modal is a transient state, unlike the card's
  * minimize, which is a real per-browser preference and does live in localStorage. */
-"function spiOpen(){var la=g_refCur,d=g_ref[la];"
+"function spiOpen(la){la=la||g_refCur;var d=g_ref[la];"
 "if(!la||!d||!d.id)return;"
 "g_spi.la=la;g_spi.i=d.pi||0;"
 "var e=$g('spop');if(!e)return;e.style.display='flex';"
