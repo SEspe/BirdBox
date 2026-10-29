@@ -1,3 +1,82 @@
+# Session notes — 2026-10-29 (on top of 2026-10-12)
+
+Branch `best-visits-stats`, pushed to origin. `master` untouched (still 1.4.4),
+no tag. Test unit `.205` runs this branch's build (1.5.10), not coredump.
+
+## Shipped: Year statistics card (1.5.5 → 1.5.10)
+
+The Year statistics view (best visits per species, per calendar year) was already
+committed at the start of the session as 1.5.3–1.5.5. This session turned its
+species popup into a card that matches the Live view's reference card.
+
+| Version | FSD | What | Where it is in git |
+|---|---|---|---|
+| 1.5.6 | v3.57 | Row click no longer redraws the Live card: lookup split out as `spLookup(la, done)`; `refShow` = lookup + card render | in `320aaf3` (not committed alone) |
+| 1.5.7 | v3.58 | Species panel shown as a card at the top of the view; the panel node moved between two hosts (`spiHost`) | in `320aaf3` |
+| 1.5.8 | v3.59 | Year card replaced by the Live reference card itself, same size; `refEls(k)` flag picks Live or Year | in `320aaf3` |
+| 1.5.9 | v3.60 | Card to the left of the two photos (`.bvrow` flex row, card kept outside `#bvList`) | `320aaf3` |
+| 1.5.10 | v3.61 | Below 560 px the card stacks above the photos | `a3431b3`, pushed |
+
+**Commit caveat:** `320aaf3`'s message names only 1.5.9, but its diff holds
+1.5.6–1.5.9, because I left those changes uncommitted until asked. The
+changelog (v3.57–v3.60) is the per-version record. Read `git log` for 1.5.10
+and newer; do not expect a commit per version before that.
+
+**Decisions made with the operator:**
+- "Popup" meant the species panel (photo scroller, details), not the Live card.
+  Asked once with options; operator chose "split the lookup" first.
+- The Year card's minimize state is its own key (`bbYearMin`); the Live card's
+  stays `bbRefMin`.
+- The Year card's name opens the Live species overlay (`spiOpen(g_yrCur)`), as
+  the Live card does.
+- Fetch failure now clears the card instead of keeping the previous bird (v3.57).
+
+**Verification (what is proven and what is not):**
+
+| Check | Result |
+|---|---|
+| build + `check-ui-js` gate | clean for every version |
+| OTA to `.205` (1.5.6, 1.5.7, 1.5.8, 1.5.9, 1.5.10) | `OK` each time; `software` reset, `guardReboots` 0 |
+| served page grep | new ids/functions present each time |
+| operator's browser | sent a screenshot of 1.5.9: card beside the two photos, layout renders |
+| narrow-window rule (<560 px) | **not seen in a browser yet** |
+| card minimize/restore, name → overlay | **not clicked in a browser by us** |
+
+No JS test runner on this PC, so the browser-side logic is checked only by the
+gate (syntax) and by the operator's eyes.
+
+## Where things stand
+
+- `.205`: 1.5.10, the branch build. No coredump partition, so the serial flash
+  for coredump is still pending (see 10-28 state).
+- `.240`: not looked for this session.
+- Branches: `master` 1.4.4 (`v1.4.4` tag); `best-visits-stats` `a3431b3`
+  (pushed); `coredump-1.4.5` `8b76726` (unmerged). Merge order: operator decides.
+
+## Open
+
+1. Browser check of the narrow layout at `http://192.168.10.205/?v=160`
+   (narrow the window below 560 px), plus minimize/restore on the Year card.
+2. Name click on the Year card → Live species overlay: not yet clicked.
+3. Coredump serial flash on `.205` (needs USB, daylight, COM port check).
+4. Host unit tests (`test/host/test_best_core.c`) still have never run locally.
+
+## Lessons
+
+1. **Commit per version when asked to commit, or say which versions a commit
+   holds.** Bundling 1.5.6–1.5.9 under one message made the git history
+   misleading. The changelog carries the detail, but the commit should name it.
+2. **`python` on this machine is the Microsoft Store alias.** The UI gate must
+   use the IDF Python: `C:\Users\Stein\.espressif\python_env\idf6.0_py3.11_env\Scripts\python.exe tools\check-ui-js.py build\BirdBox.bin`.
+   The CLAUDE.md line `python tools/check-ui-js.py` does not work here.
+3. **The Bash tool blocks `sleep` chains.** Use a status call after the OTA
+   instead (it came back in one go after the 120 s upload).
+4. **Memory went stale within a day.** The 10-28 state file still named
+   `bdb215b` as the branch head; the real head was `866968f` then. Check
+   `git log` before trusting a branch note.
+
+---
+
 # Session notes — 2026-10-12 (on top of 2026-10-06 and 2026-10-04)
 
 ## 2026-10-12: 1.4.3 — HA visit labels (released)
