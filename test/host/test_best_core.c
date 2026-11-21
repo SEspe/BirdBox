@@ -72,7 +72,7 @@ void test_best_core(void)
     /* Year scope: only that year's rows; unsynced rows only in all-time. */
     {
         best_t *b = fresh();
-        feed(b, "2025-12-31T23:00:00,Gråspurv,60,3,/captures/2025.jpg,,Passer domesticus", 2025);
+        feed(b, "2025-12-31T23:00:00,Gråspurv,60,3,/captures/2025.jpg,,Passer domesticus", 2026);
         feed(b, "2026-01-01T08:00:00,Gråspurv,60,3,/captures/2026.jpg,,Passer domesticus", 2026);
         feed(b, "unsynced,Gråspurv,60,3,/captures/nodate.jpg,,Passer domesticus", 2026);
         CHECK_INT(b->sp[0].n, 1);                       /* 2026 row only; unsynced never matches a year */
