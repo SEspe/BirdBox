@@ -490,3 +490,38 @@ the cert-bundle DRAM leak (the ~107 min reboot cycle) is fixed by cert-pinning
   floor. The nominal 200 ms fast-burst gap is unreachable on this sensor.
 - OAuth for iNat login — needs a registered app (~2-month approval); form-login is the
   deliberate workaround.
+
+## Open — stream heat (OV5640 test unit, 2026-11-21)
+Measured on `.219` (HD 1280x720, OV5640): SoC idle 66–68 °C; with the stream open
+64.9 → 78.9 °C over 6 min and still rising; back to 70.9 °C after 3 min idle. Target
+stays HD for classification, so the goal is less heat during streaming, not lower res.
+- [ ] **Option 1 — limit stream time.** Investigate: `stream_task` (`web_server.c`) has
+  no server-side limit; it grabs frames while a client stays connected. Options: close
+  after N minutes, close after N minutes without a new client request, or show a warning
+  in the UI. Check whether the Live page reconnects the stream on its own, so a limit
+  does not leave the page blank without a message.
+- [ ] **Option 2 — separate stream resolution.** Investigated 2026-11-21: NOT practical as
+  a switch. The stream uses the same `camera_grab()` frames as capture and detection, and
+  there is no second framesize path. Lower-res stream would need sensor reconfiguration
+  per request, or a software downscale-and-encode on the S3, which adds heat. Keep this
+  item open only if the option-1 limit proves insufficient.
+- [ ] Measure again with the box installed and a realistic view (sunlight, enclosure),
+  before and after option 1.
+- [ ] Option 3 (cooling and placement, no code): ventilation, heatsink on the S3 module,
+  keep the chip away from the nest-box walls and direct sun.
+
+## Open — setup page and test-unit follow-ups (2026-11-21)
+- [ ] **Phone test of the DHCP address screen (1.5.15/1.5.16).** Not yet confirmed on a
+  phone: the address appears, the phone stays on the page after the join, and the Reboot
+  now button works. The DHCP fallback to `http://birdbox.local/api/portal-status` is
+  unverified.
+- [ ] **Static-IP test on the setup page.** Pick a free address first, then check it shows
+  at once and the unit answers there after the reboot.
+- [ ] **Live page stream reconnect.** Check what the Live page does when the stream is
+  closed by the server, before option 1 of the stream heat item is built.
+- [ ] **Setup network channel.** Confirm on a second network with a different channel
+  from the strongest one, that the phone still ends up on the page, or note that it
+  does not.
+- [ ] **Coredump branch** (`coredump-1.4.5`) still unmerged; merge order is the operator's
+  call and it now collides with the 1.5.x line in `version.h`, the FSD header and the
+  changelog numbers.
