@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.72
+**Version:** 3.73
 This is **the clean, current specification**: what the device is required to do,
 stated in the present tense.
 
@@ -524,7 +524,7 @@ a target, so it holds near 140 as the light fails and only collapses once the
 sensor runs out of gain. A dusk frame too dark to photograph measures a HIGHER
 mean than noon. Amplifying a dark scene amplifies its noise too and leaves the
 frame flat, so contrast separates cleanly: 48-60 in real light, 12-18 at
-unusable dusk, ~0 in true dark. The OV5640's auto-gain is capped at 8× (1.5.20), so a dark room reads as noisy-but-dim rather than as contrast: at the sensor's 15.5× power-on default, amplified noise alone pushed the reading into the bright range. A frame is called dark only if it is also
+unusable dusk, ~0 in true dark. The OV5640's auto-gain is capped at 4× (1.5.21), so a dark room reads as noisy-but-dim rather than as contrast: at the sensor's 15.5× power-on default, amplified noise alone pushed the reading into the bright range. A frame is called dark only if it is also
 without highlights, so a flat but genuinely lit scene — a blank wall, fog,
 snow — is not mistaken for night. The same hysteresis drives the illuminator. No location, no clock and no sunrise table
 are required, so a shaded or north-facing site behaves correctly and nothing
