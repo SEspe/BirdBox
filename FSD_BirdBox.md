@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.49
+**Version:** 3.51
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -281,7 +281,7 @@ Identical in design to the RemoteStart project's provisioning (its FSD §4 / `ma
    | `BirdBox-Config` | `birdbox1234` |
 
 2. The portal page (served at the AP's root, `192.168.4.1`) offers a **WiFi network scan** — the user picks their SSID from the scanned list (or types a hidden one) and enters the password.
-3. Credentials are URL-decoded and saved to NVS (`ssid`/`pass` in the `birdbox` namespace); the unit reboots and connects as a STA.
+3. Credentials are URL-decoded and saved to NVS (`ssid`/`pass` in the `birdbox` namespace). The unit joins the network with them to verify, and the portal page shows the address it received (`Your BirdBox is at http://<ip>`) for **5 minutes** while the unit stays on both networks. The unit then reboots and connects as a STA, so the address stays on screen long enough to copy. A static IP (below) is never shown this way, since the unit already has the address.
 4. Boot-time connect: 15 s timeout / 5 retries. On failure **with stored credentials**, the unit reopens the portal *in APSTA mode* while continuing to retry in the background (a nest box may be at the edge of range; the portal must not permanently strand a temporarily-offline unit). Once connected the first time, in-service disconnects retry indefinitely and never reopen the portal (RemoteStart v1.25 lesson).
 5. A **WiFi tab** in the normal web UI (always available, not just first boot) allows changing SSID/password and choosing **DHCP or static IP** (IP/mask/gateway/DNS, server-side IPv4 validation, invalid saved config falls back to DHCP) — the RemoteStart v1.37/v1.38 design.
 6. Credentials reset: hold the boot button ≥ 5 s at power-up → NVS WiFi namespace erased → portal reopens.

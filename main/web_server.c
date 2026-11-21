@@ -215,7 +215,7 @@ static const char WIFI_SETUP_HTML[] =
 "<button class=\"btn btn-c\" onclick=\"location.reload()\">Try again</button>';}"
 "else{setTimeout(poll,1500);}"
 "}).catch(function(){setTimeout(poll,1500);});}"
-"function done(ip){var n=10;"
+"function done(ip){var n=300;"
 "function tick(){"
 "document.getElementById('res').innerHTML="
 "'<div class=\"sts\" style=\"color:#7fc98b\">&#9989; Connected!</div>'+"

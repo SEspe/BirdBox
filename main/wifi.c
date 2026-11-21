@@ -51,7 +51,7 @@ static const char *TAG = "wifi";
  * within a few seconds), capped by PORTAL_SEEN_MS in case it never comes back,
  * then leave the IP on screen for PORTAL_SHOW_MS before rebooting. */
 #define PORTAL_VERIFY_MS    25000
-#define PORTAL_SHOW_MS      10000
+#define PORTAL_SHOW_MS      300000
 #define PORTAL_SEEN_MS      60000
 
 static EventGroupHandle_t s_wifi_eg;
