@@ -11,10 +11,10 @@ static const char *TAG = "settings";
 
 settings_t g_settings = {
     .mode              = MODE_FEEDER,
-    .motion_sensitivity = 50,
+    .motion_sensitivity = 88,
     .capture_count      = 4,
     .capture_interval_ms = 1000,
-    .cooldown_s         = 120,
+    .cooldown_s         = 30,
     .confidence_pct     = 30,
     .sd_cap_pct         = 80,
     .stream_quality     = 12,
@@ -72,8 +72,8 @@ settings_t g_settings = {
                                 * operator enables it and names a broker */
     .ha_host            = "",
     .ha_port            = 1883,
-    .ha_interval_s      = 120,  /* two minutes: halves the steady work of the
-                                 * old 60 s and costs nothing a trend notices */
+    .ha_interval_s      = 30,   /* 30 s, the field unit's setting (v3.70). Was 120 s, which halved
+                                 * the steady HA work against the old 60 s; a trend is still visible. */
     .ha_user            = "",
     .ha_pass            = "",
     .sleep_mode         = 0,    /* opt-in: a box that sleeps when nobody asked
