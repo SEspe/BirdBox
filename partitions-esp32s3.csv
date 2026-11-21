@@ -1,9 +1,11 @@
-# 16 MB flash (N16R8 ESP32-S3-CAM) — dual 4 MB OTA app slots + a FAT data
-# partition for the species model (FSD §3.2: SD-card model preferred, this
-# is the on-flash fallback/default location)
-# Name,   Type, SubType, Offset,   Size,     Flags
-nvs,      data, nvs,     0x9000,   0x5000,
-otadata,  data, ota,     0xe000,   0x2000,
-app0,     app,  ota_0,   0x10000,  0x400000,
-app1,     app,  ota_1,   0x410000, 0x400000,
-model,    data, fat,     0x810000, 0x7E0000,
+# 16 MB flash (N16R8 ESP32-S3-CAM) — dual 4 MB OTA app slots + a 256 KB
+# coredump partition. The coredump keeps the first panic's core dump across
+# reboots (CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE); served by GET /api/coredump.
+# The on-device species model that once lived in a FAT partition here was
+# removed in 0.74.0 (online classification only).
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x400000,
+app1,     app,  ota_1,    0x410000, 0x400000,
+coredump, data, coredump, 0x810000, 0x40000,
