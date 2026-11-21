@@ -185,15 +185,26 @@ static const char WIFI_SETUP_HTML[] =
 "<input id='sid' name='ssid' type='text' placeholder='tap network or type' required>"
 "<label>Password</label>"
 "<input id='pw' name='pass' type='password' placeholder='leave blank if open'>"
-"<div class='note'>&#8505;&#65039; IP is assigned automatically (DHCP).</div>"
+"<label><input type='radio' name='mode' value='dhcp' id='pmDhcp' checked onchange='pmChange()'> Automatic (DHCP)</label>"
+"<label><input type='radio' name='mode' value='static' id='pmStatic' onchange='pmChange()'> Static IP</label>"
+"<div id='pmFields' style='display:none'>"
+"<label>IP Address</label><input id='pIp' name='ip' type='text' placeholder='192.168.10.x'>"
+"<label>Subnet Mask</label><input id='pMask' name='mask' type='text' value='255.255.255.0'>"
+"<label>Gateway</label><input id='pGw' name='gw' type='text' placeholder='192.168.10.1'>"
+"<label>DNS Server</label><input id='pDns' name='dns' type='text' placeholder='192.168.10.1'>"
+"<div class='note'>Fill in DNS as well: without it the box cannot reach iNaturalist.</div>"
+"</div>"
 "<button class='btn btn-c' type='submit'>Connect &amp; Save</button>"
 "</form>"
 "<div id='res' style='display:none'></div>"
 "<script>"
 "function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
+"function pmChange(){document.getElementById('pmFields').style.display=document.getElementById('pmStatic').checked?'block':'none';}"
 "function doSave(e){e.preventDefault();"
 "var sid=document.getElementById('sid').value;"
 "if(!sid){return false;}"
+"var st=document.getElementById('pmStatic').checked;"
+"if(st&&!document.getElementById('pIp').value.trim()){alert('Enter the IP address, or choose Automatic (DHCP).');return false;}"
 "var pw=document.getElementById('pw').value;"
 "document.getElementById('wf').style.display='none';"
 "var r=document.getElementById('res');r.style.display='block';"
@@ -202,6 +213,8 @@ static const char WIFI_SETUP_HTML[] =
 "the box joins the network \\u2014 if it does, just reconnect to "
 "<b>BirdBox-Config</b> and the address will appear here.</p>';"
 "var body='ssid='+encodeURIComponent(sid)+'&pass='+encodeURIComponent(pw);"
+"body+='&mode='+(st?'static':'dhcp');"
+"if(st){['ip','mask','gw','dns'].forEach(function(k){body+='&'+k+'='+encodeURIComponent(document.getElementById('p'+k.charAt(0).toUpperCase()+k.slice(1)).value.trim());});}"
 "fetch('/wifi-save',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});"
 "setTimeout(poll,2000);return false;}"
@@ -222,7 +235,7 @@ static const char WIFI_SETUP_HTML[] =
 "'<p style=\"font-size:.9rem\">Your BirdBox is at</p>'+"
 "'<a class=\"iplink\" href=\"http://'+ip+'\">http://'+ip+'</a>'+"
 "'<p class=\"note\">Reconnect your phone to your home WiFi, then open that "
-"address. Rebooting in '+n+'s\\u2026</p>';"
+"address (or http://birdbox.local/). Rebooting in '+n+'s\\u2026</p>';"
 "if(n<=0){return;}n--;setTimeout(tick,1000);}"
 "tick();}"
 "function doScan(){"
@@ -3117,12 +3130,43 @@ static void url_decode(char *s)
     *o = '\0';
 }
 
+static void form_field(const char *body, const char *key, char *out, size_t olen);
+
 /* POST /wifi-save — credentials from the portal form / WiFi tab */
 static esp_err_t h_wifi_save(httpd_req_t *req)
 {
-    char body[256] = {0};
+    char body[384] = {0};
     int  len = MIN(req->content_len, (int) sizeof(body) - 1);
     httpd_req_recv(req, body, len);
+
+    /* The portal form sends mode=dhcp|static (plus ip/mask/gw/dns when static).
+     * The WiFi tab does not send mode, so its save leaves the IP config alone. */
+    bool has_mode = strstr(body, "&mode=") != NULL || strncmp(body, "mode=", 5) == 0;
+    if (has_mode) {
+        char mode[12] = {0}, ip[16] = {0}, mask[16] = {0}, gw[16] = {0}, dns[16] = {0};
+        form_field(body, "mode=", mode, sizeof(mode));
+        form_field(body, "ip=",   ip,   sizeof(ip));
+        form_field(body, "mask=", mask, sizeof(mask));
+        form_field(body, "gw=",   gw,   sizeof(gw));
+        form_field(body, "dns=",  dns,  sizeof(dns));
+        bool is_static = (strcmp(mode, "static") == 0);
+        esp_ip4_addr_t a;
+        if (is_static &&
+            (esp_netif_str_to_ip4(ip, &a) != ESP_OK ||
+             esp_netif_str_to_ip4(mask, &a) != ESP_OK ||
+             (gw[0]  && esp_netif_str_to_ip4(gw,  &a) != ESP_OK) ||
+             (dns[0] && esp_netif_str_to_ip4(dns, &a) != ESP_OK))) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid IPv4 address");
+            return ESP_OK;
+        }
+        g_ipcfg_static = is_static;
+        if (is_static) {
+            strlcpy(g_ipcfg_ip,   ip,   sizeof(g_ipcfg_ip));
+            strlcpy(g_ipcfg_mask, mask, sizeof(g_ipcfg_mask));
+            strlcpy(g_ipcfg_gw,   gw,   sizeof(g_ipcfg_gw));
+            strlcpy(g_ipcfg_dns,  dns,  sizeof(g_ipcfg_dns));
+        }
+    }
 
     char *sp = strstr(body, "ssid=");
     char *pp = strstr(body, "pass=");

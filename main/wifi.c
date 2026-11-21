@@ -347,6 +347,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             /* In portal (APSTA) mode the STA config still holds the failed
              * credentials — the portal loop owns retry timing there. */
             if (!s_portal_mode) esp_wifi_connect();
+        } else if (id == WIFI_EVENT_STA_CONNECTED) {
+            /* Static verify: no DHCP exchange follows, so association with the
+             * submitted address is the success signal (DHCP reports via GOT_IP). */
+            if (s_portal_mode && g_ipcfg_static && s_portal_state == WIFI_PORTAL_PENDING) {
+                snprintf(s_portal_ip, sizeof(s_portal_ip), "%s", g_ipcfg_ip);
+                s_portal_state = WIFI_PORTAL_CONNECTED;
+                ESP_LOGI(TAG, "Portal verify connected (static) — IP %s", s_portal_ip);
+            }
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             s_connected = false;
             g_wifi_disconnect_count++;
@@ -476,7 +484,13 @@ static void start_config_portal(void)
          * a wrong, out-of-subnet address. */
         esp_wifi_disconnect();
         esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (sta) esp_netif_dhcpc_start(sta);   /* ALREADY_STARTED is harmless */
+        if (g_ipcfg_static) {
+            /* Submitted with a static address: apply it now. Association alone
+             * reports the address (no DHCP event follows, see WIFI_EVENT). */
+            apply_static_ip(sta);
+        } else if (sta) {
+            esp_netif_dhcpc_start(sta);        /* ALREADY_STARTED is harmless */
+        }
         wifi_config_t sta_cfg = {0};
         strlcpy((char *) sta_cfg.sta.ssid,     g_new_ssid, sizeof(sta_cfg.sta.ssid));
         strlcpy((char *) sta_cfg.sta.password, g_new_pass, sizeof(sta_cfg.sta.password));
@@ -495,7 +509,10 @@ static void start_config_portal(void)
 
         if (s_portal_state == WIFI_PORTAL_CONNECTED) {
             nvs_save_wifi(g_new_slot, g_new_ssid, g_new_pass);
-            nvs_reset_ipcfg_dhcp();   /* new location ⇒ drop stale static IP (§4.5) */
+            /* New location ⇒ drop a stale static IP (§4.5), unless this
+             * submission chose a static address: then keep that one. */
+            if (g_ipcfg_static) nvs_save_ipcfg();
+            else                nvs_reset_ipcfg_dhcp();
             /* Associating with the STA's AP hopped our SoftAP to its channel,
              * dropping the phone; wait for it to rejoin and actually fetch the
              * IP (s_portal_ip_seen) before starting the reboot countdown, so
