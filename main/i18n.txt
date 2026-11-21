@@ -239,7 +239,7 @@ IP Address	IP-adresse
 Subnet Mask	Subnettmaske
 Gateway	Gateway
 DNS Server	DNS-server
-Saving reboots the device to apply. If a static IP is unreachable afterward, hold the boot button 5 s while powering on to reset WiFi + IP settings.	Lagring starter enheten på nytt. Hvis en statisk IP er utilgjengelig etterpå, hold boot-knappen inne i 5 s under oppstart for å nullstille WiFi- og IP-innstillinger.
+Saving reboots the device to apply. If a static IP is unreachable afterward, plug the unit in, wait about 1 s, then hold the BOOT button about 8 s to reset WiFi + IP settings.	Lagring starter enheten på nytt. Hvis en statisk IP er utilgjengelig etterpå, koble til enheten, vent ca. 1 s, og hold BOOT-knappen inne i ca. 8 s for å nullstille WiFi- og IP-innstillinger.
 Save & Apply	Lagre og bruk
 Device	Enhet
 Reboot Now	Start på nytt nå

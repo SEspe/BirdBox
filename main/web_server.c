@@ -1169,7 +1169,7 @@ ROT_OPTIONS
 "<label class='wl'>DNS Server</label><input class='wi' name='dns' id='ipDns' placeholder='optional'>"
 "</div>"
 "<p class='sts'>Saving reboots the device to apply. If a static IP is unreachable afterward, "
-"hold the boot button 5 s while powering on to reset WiFi + IP settings.</p>"
+"plug the unit in, wait about 1 s, then hold the BOOT button about 8 s to reset WiFi + IP settings.</p>"
 "<button class='act' type='submit'>Save &amp; Apply</button></form>"
 "<h3 class='sh'>Device</h3>"
 "<button class='act' onclick='rebootDev()'>&#128260; Reboot Now</button>"

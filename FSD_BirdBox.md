@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.63
+**Version:** 3.65
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -284,7 +284,7 @@ Identical in design to the RemoteStart project's provisioning (its FSD §4 / `ma
 3. Credentials are URL-decoded and saved to NVS (`ssid`/`pass` in the `birdbox` namespace). The unit joins the network with them to verify, and the portal page shows the address it received (`Your BirdBox is at http://<ip>`) for **5 minutes** while the unit stays on both networks. The unit then reboots and connects as a STA, so the address stays on screen long enough to copy. With a static address the unit verifies by association and the page shows the submitted address at once; with DHCP it shows the leased address, and also names `http://birdbox.local/` for when the phone is back on the home network.
 4. Boot-time connect: 15 s timeout / 5 retries. On failure **with stored credentials**, the unit reopens the portal *in APSTA mode* while continuing to retry in the background (a nest box may be at the edge of range; the portal must not permanently strand a temporarily-offline unit). Once connected the first time, in-service disconnects retry indefinitely and never reopen the portal (RemoteStart v1.25 lesson).
 5. A **WiFi tab** in the normal web UI (always available, not just first boot) allows changing SSID/password and choosing **DHCP or static IP** (IP/mask/gateway/DNS, server-side IPv4 validation, invalid saved config falls back to DHCP) — the RemoteStart v1.37/v1.38 design.
-6. Credentials reset: hold the boot button ≥ 5 s at power-up → NVS WiFi namespace erased → portal reopens.
+6. Credentials reset: the **BOOT button (GPIO0)** is read once the app starts, in `wifi_start()` about 2–3 s after power-up. The button must be **released** while the chip starts; if it is held at power-up the ROM enters download mode and the app never runs. So: plug in, wait about 1 s, then press and hold BOOT for about 8 s. If it is still held at the check, the NVS WiFi namespace is erased (the IP config with it) and the portal reopens. Releasing early cancels the erase.
 7. `WIFI_PS_NONE` and max TX power from day one (RemoteStart v1.32 lesson — modem-sleep latency ruins HTTP streaming), and `httpd` with `lru_purge_enable = true` and handler-count headroom (v1.35/v1.27 lessons).
 
 ### 4.7 Alternative network (alt1) & failover
