@@ -211,6 +211,24 @@ esp_err_t camera_init(void)
     return camera_hw_init();   /* s_mux is statically initialized */
 }
 
+/* Caps the OV5640's auto-gain ceiling at 8x (v3.72). The power-on default is
+ * 0x0F8 = 248 in the sensor's real gain format (1/16 steps), about 15.5x. In a
+ * dark room that amplifies sensor noise until the frame is mostly noise, and
+ * the night check reads that noise as contrast, so the box stayed awake.
+ * 8x is 0x080. The driver's set_gainceiling() takes an enum index rather than
+ * the register value, so the registers are written directly with masks that
+ * keep the debug bits of 0x3A18 unchanged. Only the OV5640 (PID 0x5640) has
+ * this register; the OV2640 is left alone. */
+static void apply_gain_ceiling(sensor_t *s)
+{
+    if (!s || s->id.PID != 0x5640) return;
+    if (s->set_reg(s, 0x3A18, 0x03, 0x00) != 0 ||
+        s->set_reg(s, 0x3A19, 0xFF, 0x80) != 0)
+        ESP_LOGW(TAG, "gain ceiling not set; the sensor keeps its default");
+    else
+        ESP_LOGI(TAG, "OV5640 AGC ceiling set to 8x");
+}
+
 /* The actual esp_camera_init sequence, shared by boot and by watchdog
  * recovery. Callers other than camera_init() (i.e. recovery) already hold
  * s_cam_mtx. */
@@ -287,6 +305,7 @@ static esp_err_t camera_hw_init(void)
                                          exposure — motion.c's ambient-dark
                                          check (FSD v1.38) decides from here
                                          whether fast_shutter should engage */
+    apply_gain_ceiling(s);            /* after every (re)init, see above */
     s_last_good_us = esp_timer_get_time();       /* seed heartbeat: no false
                                                     stall before the 1st grab */
     /* Bump LAST, and only on success. Anything outside this file that caches

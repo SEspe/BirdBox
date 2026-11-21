@@ -76,8 +76,8 @@ settings_t g_settings = {
                                  * the steady HA work against the old 60 s; a trend is still visible. */
     .ha_user            = "",
     .ha_pass            = "",
-    .sleep_mode         = 0,    /* opt-in: a box that sleeps when nobody asked
-                                 * it to would look broken after dark */
+    .sleep_mode         = 1,    /* pause detection in the dark (§14, v3.71). The web UI, OTA and HA
+                                 * stay up; on by default since v3.71 */
     .sleep_probe_min    = 10,
 };
 
