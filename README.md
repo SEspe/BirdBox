@@ -181,7 +181,7 @@ fallback. The old on-device model is gone — see the note under *Features* and
 3. Pick your home WiFi from the scanned list, enter the password, save.
 4. The device reboots onto your network — open its IP in a browser.
 
-To reset WiFi credentials: hold the boot button ≥ 5 s while powering on.
+To reset WiFi credentials: plug the unit in, wait about 1 s, then hold the BOOT button about 8 s (it is read about 2–3 s after the app starts; holding it during power-up enters download mode).
 
 ## Web UI
 

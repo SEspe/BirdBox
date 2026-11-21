@@ -178,7 +178,7 @@ verified empirically, on real hardware:
 
 - **HTTP route table is capped (`max_uri_handlers`).** Registrations past the
   cap are silently dropped and the endpoint 404s while the handler code looks
-  fine. When adding routes, keep headroom (currently 48).
+  fine. When adding routes, keep headroom: `max_uri_handlers` is 72 in `web_server.c` and there are 63 routes.
 
 - **Guard every "today"/date comparison against the pre-SNTP ~1970 clock.**
   Right after boot `clockSrc` is not yet `ntp`; a naive date compare

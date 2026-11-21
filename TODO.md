@@ -522,6 +522,4 @@ stays HD for classification, so the goal is less heat during streaming, not lowe
 - [ ] **Setup network channel.** Confirm on a second network with a different channel
   from the strongest one, that the phone still ends up on the page, or note that it
   does not.
-- [ ] **Coredump branch** (`coredump-1.4.5`) still unmerged; merge order is the operator's
-  call and it now collides with the 1.5.x line in `version.h`, the FSD header and the
-  changelog numbers.
+- [x] **Coredump branch** (`coredump-1.4.5`) merged 2026-11-21 as 1.5.17 (FSD v3.69); needs a serial flash per unit (partition table).
