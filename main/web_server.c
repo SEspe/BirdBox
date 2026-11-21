@@ -219,8 +219,9 @@ static const char WIFI_SETUP_HTML[] =
 "fetch('/wifi-save',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});"
 "setTimeout(poll,2000);return false;}"
+"function pst(){return fetch('/api/portal-status').catch(function(){return fetch('http://birdbox.local/api/portal-status');});}"
 "function poll(){"
-"fetch('/api/portal-status').then(function(r){return r.json();}).then(function(s){"
+"pst().then(function(r){return r.json();}).then(function(s){"
 "var r=document.getElementById('res');"
 "if(s.state==='connected'){done(s.ip);}"
 "else if(s.state==='failed'){"
@@ -3465,6 +3466,10 @@ static esp_err_t h_portal_status(httpd_req_t *req)
                   : st == WIFI_PORTAL_PENDING   ? "pending" : "idle";
     char buf[96];
     int n = snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"ip\":\"%s\"}", s, ip);
+    /* The setup page falls back to http://birdbox.local/api/portal-status once
+     * the phone is back on the home network, so this one reply must be readable
+     * cross-origin. It carries only the verify state and the address. */
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
