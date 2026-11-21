@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.66
+**Version:** 3.67
 **Author:** SEspe
 **Date:** 2026-09-22
 
@@ -280,7 +280,7 @@ Identical in design to the RemoteStart project's provisioning (its FSD §4 / `ma
    |---|---|
    | `BirdBox-Config` | `birdbox1234` |
 
-2. The portal page (served at the AP's root, `192.168.4.1`) offers a **WiFi network scan** — the user picks their SSID from the scanned list (or types a hidden one) and enters the password — and an **IP mode**: **Automatic (DHCP)**, the default, or **Static IP** with address, subnet mask, gateway and DNS. Static fields are validated as IPv4 before anything is saved.
+2. The portal page (served at the AP's root, `192.168.4.1`) offers a **WiFi network scan** — the user picks their SSID from the scanned list (or types a hidden one) and enters the password — and an **IP mode**: **Automatic (DHCP)**, the default, or **Static IP** with address, subnet mask, gateway and DNS. Static fields are validated as IPv4 before anything is saved. The setup network starts on the channel of the strongest network in range, so joining the home network normally does not move it, and the phone stays on the setup page.
 3. Credentials are URL-decoded and saved to NVS (`ssid`/`pass` in the `birdbox` namespace). The unit joins the network with them to verify, and the portal page shows the address it received (`Your BirdBox is at http://<ip>`) for **5 minutes** while the unit stays on both networks. The unit then reboots and connects as a STA, so the address stays on screen long enough to copy. With a static address the unit verifies by association and the page shows the submitted address at once; with DHCP it shows the leased address. A phone that rejoins the home network drops the setup page, so the page also reads the status from `http://birdbox.local/api/portal-status` (cross-origin, `Access-Control-Allow-Origin: *`, that reply only) and shows the address from there. The page also names `http://birdbox.local/` for when the phone is back on the home network.
 4. Boot-time connect: 15 s timeout / 5 retries. On failure **with stored credentials**, the unit reopens the portal *in APSTA mode* while continuing to retry in the background (a nest box may be at the edge of range; the portal must not permanently strand a temporarily-offline unit). Once connected the first time, in-service disconnects retry indefinitely and never reopen the portal (RemoteStart v1.25 lesson).
 5. A **WiFi tab** in the normal web UI (always available, not just first boot) allows changing SSID/password and choosing **DHCP or static IP** (IP/mask/gateway/DNS, server-side IPv4 validation, invalid saved config falls back to DHCP) — the RemoteStart v1.37/v1.38 design.

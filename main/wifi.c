@@ -45,10 +45,11 @@ static const char *TAG = "wifi";
 /* Portal credential verification (§4.4). PORTAL_VERIFY_MS: how long to wait
  * for the submitted network to associate + get a DHCP lease. Then, because a
  * single-radio ESP32 in APSTA must move the SoftAP to the STA's channel when
- * it associates — briefly kicking the phone off BirdBox-Config — we do NOT
- * reboot on a blind timer. We wait until the setup page has actually fetched
- * the acquired IP (the phone auto-rejoins the AP, now co-channel with the STA,
- * within a few seconds), capped by PORTAL_SEEN_MS in case it never comes back,
+ * it associates — we do NOT reboot on a blind timer. The SoftAP starts on the
+ * strongest network's channel so a home-network join normally leaves it where
+ * it is (1.5.14 test: a channel move at join dropped the phone, and the phone
+ * did not follow it back). We wait until the setup page has actually fetched
+ * the acquired IP, capped by PORTAL_SEEN_MS in case it never comes back,
  * then leave the IP on screen for PORTAL_SHOW_MS before rebooting. */
 #define PORTAL_VERIFY_MS    25000
 #define PORTAL_SHOW_MS      300000
@@ -451,6 +452,37 @@ static void start_config_portal(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* Start the SoftAP on the channel of the strongest network in range. The
+     * home network is usually that one, so joining it does not move the SoftAP
+     * and the phone on the setup page stays associated. A fixed channel 1 moved
+     * the SoftAP off the phone's channel at verify (1.5.13 test: the phone left
+     * at the join, so the DHCP address never reached the page). Best effort: if
+     * the scan fails the SoftAP keeps channel 1. */
+    {
+        wifi_scan_config_t scan_cfg = {0};
+        if (esp_wifi_scan_start(&scan_cfg, true) == ESP_OK) {
+            uint16_t num = 0;
+            esp_wifi_scan_get_ap_num(&num);
+            wifi_ap_record_t recs[16];
+            uint16_t cap = (num > 16) ? 16 : num;
+            if (cap > 0 && esp_wifi_scan_get_ap_records(&cap, recs) == ESP_OK) {
+                int best_rssi = -128;
+                uint8_t best_ch = 0;
+                for (uint16_t i = 0; i < cap; i++) {
+                    if (recs[i].primary >= 1 && recs[i].primary <= 13 && recs[i].rssi > best_rssi) {
+                        best_rssi = recs[i].rssi;
+                        best_ch = recs[i].primary;
+                    }
+                }
+                if (best_ch) {
+                    esp_wifi_set_channel(best_ch, WIFI_SECOND_CHAN_NONE);
+                    ESP_LOGI(TAG, "Portal SoftAP on channel %u (strongest network, %d dBm)",
+                             (unsigned) best_ch, best_rssi);
+                }
+            }
+        }
+    }
 
     web_server_start();   /* serves the setup page, /api/scan and /wifi-save */
 
