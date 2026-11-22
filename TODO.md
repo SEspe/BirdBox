@@ -523,3 +523,12 @@ stays HD for classification, so the goal is less heat during streaming, not lowe
   from the strongest one, that the phone still ends up on the page, or note that it
   does not.
 - [x] **Coredump branch** (`coredump-1.4.5`) merged 2026-11-21 as 1.5.17 (FSD v3.69); needs a serial flash per unit (partition table).
+
+## Open — firmware language (2026-11-22)
+- [ ] **Settle the default UI language.** The firmware defaults to Norwegian (`settings.c`:
+  `.lang = LANG_NO`), and the species-name setting (FSD §3.2) uses the same enum. Decide:
+  Norwegian stays the default for the field units, or English becomes the default for new
+  units. Decide also whether the UI language and the species-name language stay one
+  setting, since the spec has the species setting as a separate choice. The i18n table
+  (`main/i18n.txt`) has both languages, so the change is a default and documentation,
+  not a rewrite. Needs the operator's call before any change.
