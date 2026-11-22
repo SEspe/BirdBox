@@ -228,6 +228,9 @@ typedef struct {
      * creates no client, spawns no task and opens no socket. */
     uint8_t  ha_enabled;            /* 1 = publish diagnostics to the broker
                                        every HA_PUBLISH_INTERVAL_S. default 0 */
+    char     ha_name[32];           /* HA device name (v3.78): the entity IDs start
+                                     * with it, so two units need different names.
+                                     * Default "BirdBox" */
     char     ha_host[64];           /* broker IP or hostname; "" = off however
                                        ha_enabled is set */
     uint16_t ha_interval_s;         /* seconds between state publishes (v3.36).

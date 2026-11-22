@@ -211,7 +211,7 @@ esp_err_t camera_init(void)
     return camera_hw_init();   /* s_mux is statically initialized */
 }
 
-/* Caps the OV5640's auto-gain ceiling at 4x (v3.74). The power-on default is
+/* Caps the OV5640's auto-gain ceiling at 4x (v3.73). The power-on default is
  * 0x0F8 = 248 in the sensor's real gain format (1/16 steps), about 15.5x. In a
  * dark room that amplifies sensor noise until the frame is mostly noise, and
  * the night check reads that noise as contrast, so the box stayed awake.
