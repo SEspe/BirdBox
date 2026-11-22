@@ -1,3 +1,93 @@
+# Session notes — 2026-11-22 (on top of 2026-10-29)
+
+Long day. `master` is at **1.5.26** (`v1.5.26`, released). `v1.5.25` and `v1.5.17` through
+`v1.5.24` were released along the way. Nothing here is unpushed except what is listed under
+"Still open".
+
+## Releases and merges
+
+| Version | What | Where |
+|---|---|---|
+| 1.5.17 | Panic core dump kept in flash (`coredump` partition, serial flash needed); route `GET /api/coredump`. Merged from `coredump-1.4.5`, renumbered from 1.4.5 / v3.50 | `master` |
+| 1.5.18 | Field tuning as firmware defaults: sensitivity 88, cool-down 30 s, HA interval 30 s | `master` |
+| 1.5.19 | Night mode on by default (pause mode, `sleep_mode = 1`) | `master` |
+| 1.5.20 | OV5640 auto-gain ceiling capped at 8x (`0x3A19 = 0x80`), after every camera init | `master` |
+| 1.5.21 | Ceiling lowered to 4x (`0x40`). An edge-skip change in the night stats was tried and reverted (it hid part of the image) | `master` |
+| 1.5.22 | HA device name setting `ha_name` (default `BirdBox`) | merged in 1.5.26 |
+| 1.5.23 | Reset Statistics moved to Maintenance; Refresh statistics button on Statistics | `master` via `stats-refresh` |
+| 1.5.24 | Settings / Advanced settings split (in-page dropdown) | `master` via `stats-refresh` |
+| 1.5.25 | Settings menu in the top bar, like Stats (Settings / Advanced settings) | `master` (`v1.5.25`) |
+| 1.5.26 | Merge of `ha-name`, with test-only focus routes removed (they had been swept into that branch) | `master` (`v1.5.26`) |
+
+Renumbering: `ha-name` was 1.5.22 / v3.74 and became 1.5.26 / v3.78 in the merge. v3.74 was
+already taken on master, and `camera.c` comments were corrected to v3.73.
+
+Branches now:
+- `master`: 1.5.26.
+- `stats-refresh`: merged into master, pushed.
+- `ha-name`: merged into master (its test routes were removed in the merge).
+- `coredump-1.4.5`: merged as 1.5.17. Still exists locally and on origin; can be deleted.
+- `focus-assist`: pushed (scripts and TODO only). Its focus-lock code is in
+  `git stash` (`focus-lock test code`), not on any branch and not released.
+
+## Test units (MAC → address, as of end of day)
+
+- `192.168.10.35` (MAC 28:84:85:65:…): 1.5.26, account `SteinE`. Shared iNat account with .36 until .36 changed.
+- `192.168.10.36` (MAC 28:84:85:65:68:f4): 1.5.26, account `Maanite64` (password entered on unit). Sensitivity 81, cool-down 30 s. Night mode on. Detail zoom off.
+- Board MAC 44:1b:f6:ca:ab:10: 1.5.26 at `192.168.10.38`, static (saved). This is the board the setup tests ran on.
+- Board MAC 28:84:85:65:5c:d8: the board that went silent and wouldn't flash reliably; it sometimes showed as `192.168.10.37`/`.223`. Unplugged for the day.
+
+## Classification and iNaturalist (test units)
+
+- `.36` on its own account: 25 identified / 75 visits in the morning; cool-down blocks dropped after the switch.
+- `.35` on the shared account: far more cool-down blocks (185 against 76) in the 10:00 and 12:00 hours. Calls per visit about the same (4.8 against 4.7). Cause: shared account rate limit; `.35` hits the cool-down more. Fixed by giving it its own account (still to do on .35).
+- Many visits are low confidence on birds that are clearly there (for example a great tit at 3–13 %). Not an iNat fault; threshold/geometry question.
+
+## Motion false positive
+
+- A sun/shadow edge on the feeder floor triggered motion (no bird in the frame). Cause: sensitivity 88 gives a 2 % per-cell threshold (`1 + (100 − sens)/10`). At 70 it's 4 %; at 81 the same 2 % as 88.
+- Set `.35` and `.36` to 70, then 81 (as asked). Watch the next day for shadow-edge triggers. If they return, go back to 70.
+
+## Focus assist (investigation, not for release)
+
+- Idea: a sharpness meter, like old 35 mm focus aids (split-image / microprism are optical and need a prism; this sensor has none). Digital equivalent: gradient energy of the frame, peaking at best focus.
+- Method works in principle: the score rose to a clear peak and fell on both sides (first run, cup as object).
+- Problems found: lens positions not marked; camera moved sideways with lens turns; light changed during runs (score moved with brightness); exposure drifted (fixed by a register-level lock, `0x3503 = 3` confirmed); the stream was slow after boot and sometimes returned old buffered frames.
+- Score disagreed with the eye on one frame (scored 35 on a frame that looked sharp). Centre crop is mostly low-contrast wall.
+- Next time: mark the lens at quarter-turns, clamp camera and body, lamp on the object for the whole run, lock exposure from the start, score a region around the object normalised for brightness and contrast.
+- Details in TODO.md under "focus assist" on `focus-assist`.
+
+## Settings UI
+
+- Settings menu in the top bar (Settings ▾ → Settings / Advanced settings), like Stats. Advanced holds cloud keys (Claude / Gemini), camera tuning, image/stream options, storage, NTP, illuminator, iNat session/token fields. Advanced shows a warning. Hiding changes only the page; saved values unchanged.
+- Reset Statistics is under Maintenance; Statistics page has Refresh statistics (a browser refresh opens Live).
+
+## Hardware problems (board-specific)
+
+- Two S3 boards (one with MAC 28:84:85:65:5c:d8, the other with 44:1b:f6:ca:ab:10) showed an onboard PCB antenna that is sensitive to touch. Ping with a finger near the antenna: 15 % loss, 85 ms average. Without: 0 % loss, 2 ms.
+- Finally: wiggling the board changes the link, so it's a physical fault (loose or cracked antenna feed / joint), not firmware.
+- The silent / won't-flash behaviour came from USB and power instability once WiFi starts (USB port drops, COM number changes, download mode after resets). Flashing worked when the chip answered on a stable port.
+- Camera: the new boards have no camera module fitted (`camera probe failed: not supported`), so the firmware runs without one. Expected.
+- The flash slot confusion: a 1.4.4 write reported verified but slot 0 held 1.5.26 when read back. Read back the header (`v1.4.4` / build date) to confirm which image is in a slot before trusting a flash.
+
+## Decisions made with the operator
+
+- Settings split into Settings / Advanced (keys and rarely used tuning under Advanced).
+- Night mode on by default (pause mode, not deep sleep).
+- Device name in HA is a setting; test units named `BirdBox` and `BirdBoxWroom` on `.36`.
+- Iuser for `.36` is `Maanite64`; `.35` still on `SteinE`.
+- Focus-assist routes stay out of releases.
+
+## Still open
+
+1. Give `.35` its own iNaturalist account (its cool-down count is the shared-limit problem).
+2. Antenna / connector on the S3 board(s) with the intermittent link: reflow or replace. Use a board with an external antenna connector for field units.
+3. Setup-network test on a working board: the phone joined `BirdBox-Config` but the setup page never showed the address on the board tested. Retest on a good board.
+4. Settings menu: verify clicks in a browser (served page checked; behaviour not clicked).
+5. Night mode check on `.35` and `.36` next dark evening (pause, not sleep, and no false wake from the edge light).
+6. Focus test: redo with the notes above, when there's time.
+7. `coredump-1.4.5` branch can be deleted (merged as 1.5.17).
+8. `focus-lock` stash: keep or drop.
 # Session notes — 2026-10-29 (on top of 2026-10-12)
 
 Branch `best-visits-stats`, pushed to origin. `master` untouched (still 1.4.4),
