@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Focus sweep: score the sharpness of live-stream frames while the lens is turned.
 
-Usage:  python tools/focus_sweep.py http://192.168.10.35 SECONDS OUTDIR
+Usage:  python tools/focus_sweep.py http://192.168.10.35 SECONDS OUTDIR   (sweep)
+        python tools/focus_sweep.py one http://192.168.10.35 OUTDIR          (one frame, step by step)
 
 Reads /stream for SECONDS, scores each frame's centre half, and writes
 OUTDIR/frames.csv (time, score, mean brightness) and the JPEG of every frame.
@@ -51,7 +52,26 @@ def frames(url, seconds):
                 buf = buf[e + 2:]
 
 
+def grab_one(url, outdir):
+    """Save and score the next full frame from the stream (one step of the test)."""
+    os.makedirs(outdir, exist_ok=True)
+    for t, jpeg in frames(url, 20):
+        s, m = score(jpeg)
+        n = len([f for f in os.listdir(outdir) if f.endswith('.jpg')])
+        path = os.path.join(outdir, f'step_{n:02d}.jpg')
+        with open(path, 'wb') as f:
+            f.write(jpeg)
+        with open(os.path.join(outdir, 'steps.csv'), 'a', newline='') as f:
+            csv.writer(f).writerow([n, round(s, 1), round(m, 1)])
+        print(f'step {n}: score {s:.1f}  mean {m:.1f}  saved {path}', flush=True)
+        return
+    print('no frame received', flush=True)
+
+
 def main():
+    if sys.argv[1] == 'one':
+        grab_one(sys.argv[2], sys.argv[3])
+        return
     url, seconds, outdir = sys.argv[1], float(sys.argv[2]), sys.argv[3]
     os.makedirs(outdir, exist_ok=True)
     t0 = time.time()
