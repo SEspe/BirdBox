@@ -523,3 +523,30 @@ stays HD for classification, so the goal is less heat during streaming, not lowe
   from the strongest one, that the phone still ends up on the page, or note that it
   does not.
 - [x] **Coredump branch** (`coredump-1.4.5`) merged 2026-11-21 as 1.5.17 (FSD v3.69); needs a serial flash per unit (partition table).
+
+## Open — focus assist (investigated 2026-11-22, branch `focus-assist`)
+Question: can the box help set focus, like the old 35 mm aids? Feasible in principle: a
+sharpness score (gradient energy) rises to a peak at best focus and falls on both sides.
+Test on `.36` with a cup and a desk lamp, then a retry with a fixed camera and exposure.
+- [x] **Method shown in principle.** First run: score rose to a clear peak, then fell.
+- [x] **Exposure lock works.** `POST /api/focus-lock` sets manual exposure and gain;
+  `GET /api/focus-reg` reads sensor registers. Registers confirmed the lock (`0x3503 = 3`).
+  Test-only, on the branch, not for release.
+- [ ] **Score disagreed with the eye.** A frame that looked sharp live scored low
+  (35 against 96 at the best step). The centre crop is mostly low-contrast wall; the
+  score tracks contrast and framing, not focus alone. Needs a region around the object,
+  normalised for contrast.
+- [ ] **Normalise by brightness.** The room light changed during runs; raw scores moved
+  with it. Divide the gradient energy by mean brightness squared before comparing.
+- [ ] **Lens positions were not marked.** Without marks the sharpest step could not be
+  revisited. Mark the lens (tape or a count of quarter-turns) at every capture.
+- [ ] **The camera moved** when the lens was turned, changing the framing between steps.
+  Clamp the camera and body, or align frames before scoring.
+- [ ] **Keep the light steady.** Use a lamp on the object for the whole run.
+- [ ] **Stream stalls.** Captures timed out at times (the stream is slow right after boot).
+  Wait a few seconds after a boot before a run.
+- [ ] **Retry plan:** clamp camera, lamp on, exposure locked, lens marked at quarter-turns
+  from closest focus, one capture per mark, normalised score, then compare the curve with
+  what the eye sees at the same marks.
+- [ ] **Decide what ships.** Test code (`/api/focus-lock`, `/api/focus-reg`, the step
+  script) stays on the branch unless a focus aid is approved for release.
