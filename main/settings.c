@@ -70,6 +70,7 @@ settings_t g_settings = {
                                             * dropdown entry); "" = no geo */
     .ha_enabled         = 0,    /* opt-in: nothing is published until the
                                 * operator enables it and names a broker */
+    .ha_name            = "BirdBox",
     .ha_host            = "",
     .ha_port            = 1883,
     .ha_interval_s      = 30,   /* 30 s, the field unit's setting (v3.70). Was 120 s, which halved
@@ -163,6 +164,9 @@ esp_err_t settings_load(void)
     if (nvs_get_u8 (h, "s_haen",  &u8)  == ESP_OK) g_settings.ha_enabled = u8 ? 1 : 0;
     l = sizeof(g_settings.ha_host);
     nvs_get_str(h, "s_hahost", g_settings.ha_host, &l);
+    l = sizeof(g_settings.ha_name);
+    if (nvs_get_str(h, "s_haname", g_settings.ha_name, &l) != ESP_OK || !g_settings.ha_name[0])
+        strlcpy(g_settings.ha_name, "BirdBox", sizeof(g_settings.ha_name));
     if (nvs_get_u16(h, "s_haport", &u16) == ESP_OK && u16 > 0) g_settings.ha_port = u16;
     if (nvs_get_u16(h, "s_haiv", &u16)   == ESP_OK && u16 >= 30 && u16 <= 600)
         g_settings.ha_interval_s = u16;
@@ -231,6 +235,7 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "s_iloc",   g_settings.inat_loc);
     nvs_set_u8 (h, "s_haen",   g_settings.ha_enabled);
     nvs_set_str(h, "s_hahost", g_settings.ha_host);
+    nvs_set_str(h, "s_haname", g_settings.ha_name);
     nvs_set_u16(h, "s_haport", g_settings.ha_port);
     nvs_set_u16(h, "s_haiv",   g_settings.ha_interval_s);
     nvs_set_str(h, "s_hauser", g_settings.ha_user);

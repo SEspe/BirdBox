@@ -1021,6 +1021,8 @@ ROT_OPTIONS
 "<span class='inf' onclick='sInfo(\"ha\")'>i</span></label>"
 "<label class='wl'>Broker IP or hostname</label>"
 "<input class='wi' id='stHaHost' placeholder='192.168.10.50'>"
+"<label class='wl'>Device name in HA</label>"
+"<input class='wi' id='stHaName' placeholder='BirdBox'>"
 "<label class='wl'>Port</label>"
 "<input class='wi' type='number' min='1' max='65535' id='stHaPort'>"
 "<label class='wl'>Reporting interval (s)<span class='inf' onclick='sInfo(\"haiv\")'>i</span></label>"
@@ -2678,7 +2680,7 @@ ROT_OPTIONS
 /* System Monitoring (§13). The password follows the same present-only posture
  * as the cloud/iNat secrets: never sent back, blank means "keep stored". */
 "$g('stHaEn').checked=c.haen==1;"
-"$g('stHaHost').value=c.hahost||'';"
+"$g('stHaHost').value=c.hahost||'';$g('stHaName').value=c.haname||'';"
 "$g('stHaPort').value=c.haport||1883;$g('stHaIv').value=c.haiv||120;"
 "$g('stHaUser').value=c.hauser||'';"
 "$g('stHaPass').value='';"
@@ -2819,6 +2821,7 @@ ROT_OPTIONS
 "+'&gmdl='+encodeURIComponent($g('stGmodel').value.trim())"
 "+'&haen='+($g('stHaEn').checked?1:0)"
 "+'&hahost='+encodeURIComponent($g('stHaHost').value.trim())"
+"+'&haname='+encodeURIComponent($g('stHaName').value.trim())"
 "+'&haport='+$g('stHaPort').value+'&haiv='+$g('stHaIv').value"
 "+'&hauser='+encodeURIComponent($g('stHaUser').value)"
 "+($g('stHaPass').value?'&hapass='+encodeURIComponent($g('stHaPass').value):'')"
@@ -3622,6 +3625,39 @@ static esp_err_t h_time_set(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
+}
+
+/* TEST ONLY (focus-assist branch): GET /api/focus-reg?reg=0x3503 returns one
+ * sensor register. Read-only. Not for release. */
+static esp_err_t h_focus_reg(httpd_req_t *req)
+{
+    char query[64] = {0}, val[16] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    int reg = 0;
+    if (httpd_query_key_value(query, "reg", val, sizeof(val)) == ESP_OK) reg = (int) strtol(val, NULL, 0);
+    sensor_t *s = esp_camera_sensor_get();
+    int v = s ? s->get_reg(s, reg, 0xFF) : -1;
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"reg\":%d,\"val\":%d}", reg, v);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
+    return ESP_OK;
+}
+
+/* TEST ONLY (focus-assist branch): POST /api/focus-lock?on=1&aec=400&agc=8 holds
+ * exposure and gain fixed; on=0 restores auto. Not for release. */
+static esp_err_t h_focus_lock(httpd_req_t *req)
+{
+    char query[96] = {0}, val[16] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    bool on = true;
+    int aec = 400, agc = 8;
+    if (httpd_query_key_value(query, "on", val, sizeof(val)) == ESP_OK) on = atoi(val) != 0;
+    if (httpd_query_key_value(query, "aec", val, sizeof(val)) == ESP_OK) aec = atoi(val);
+    if (httpd_query_key_value(query, "agc", val, sizeof(val)) == ESP_OK) agc = atoi(val);
+    esp_err_t err = camera_lock_exposure(on, aec, agc);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, err == ESP_OK ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 
 /* POST /api/focus — one-shot refocus, the Settings "Focus now" button (FSD §5).
@@ -4995,7 +5031,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         "\"iuser\":\"%s\",\"ipass_set\":%s,\"loc\":\"%s\","
         /* System Monitoring (§13). hapass_set, never the password — same posture
          * as every other secret in this reply. */
-        "\"haen\":%u,\"hahost\":\"%s\",\"haport\":%u,\"haiv\":%u,\"hauser\":\"%s\","
+        "\"haen\":%u,\"hahost\":\"%s\",\"haname\":\"%s\",\"haport\":%u,\"haiv\":%u,\"hauser\":\"%s\","
         "\"hapass_set\":%s,"
         /* Night sleep (§14). */
         "\"night\":%u,\"nprobe\":%u}",
@@ -5044,6 +5080,7 @@ static esp_err_t h_settings_get(httpd_req_t *req)
         g_settings.inat_loc,    /* [0-9.,-] only (validated on save) — JSON-safe */
         (unsigned) g_settings.ha_enabled,
         g_settings.ha_host,     /* quote/backslash/space rejected on save — JSON-safe */
+        g_settings.ha_name,     /* quote/backslash/control chars rejected on save */
         (unsigned) g_settings.ha_port,
         (unsigned) g_settings.ha_interval_s,
         g_settings.ha_user,     /* same validation as ha_host */
@@ -5322,6 +5359,16 @@ static esp_err_t h_settings_post(httpd_req_t *req)
     g_settings.ha_port    = field_num(body, "haport=", 1, 65535, g_settings.ha_port);
     g_settings.ha_interval_s = field_num(body, "haiv=", HA_INTERVAL_MIN_S,
                                          HA_INTERVAL_MAX_S, g_settings.ha_interval_s);
+    if (has_field(body, "haname=")) {
+        /* HA device name (v3.74). Spaces are fine in HA; quotes, backslashes and
+         * control characters would break the discovery JSON, so they are refused. */
+        char n[40];
+        form_field(body, "haname=", n, sizeof(n));
+        bool ok = n[0] != '\0';
+        for (const char *p = n; *p && ok; p++)
+            if (*p == '"' || *p == '\\' || (unsigned char) *p < 0x20) ok = false;
+        if (ok) strlcpy(g_settings.ha_name, n, sizeof(g_settings.ha_name));
+    }
     if (has_field(body, "hahost=")) {
         char h[64];
         form_field(body, "hahost=", h, sizeof(h));
@@ -7123,6 +7170,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/motion",  .method = HTTP_GET,  .handler = h_motion     },
         { .uri = "/api/capture", .method = HTTP_POST, .handler = h_capture    },
         { .uri = "/api/focus",   .method = HTTP_POST, .handler = h_focus      },
+        { .uri = "/api/focus-lock", .method = HTTP_POST, .handler = h_focus_lock },   /* TEST ONLY */
+        { .uri = "/api/focus-reg", .method = HTTP_GET, .handler = h_focus_reg },   /* TEST ONLY */
         { .uri = "/api/detect",  .method = HTTP_POST, .handler = h_detect     },
         { .uri = "/api/time",    .method = HTTP_POST, .handler = h_time_set   },
         { .uri = "/api/days",    .method = HTTP_GET,  .handler = h_days       },

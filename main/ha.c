@@ -435,7 +435,7 @@ static void publish_discovery(void)
         n = jcat(payload, sizeof(payload), n,
             ",\"dev\":{\"ids\":[\"birdbox_%s\"],\"name\":\"%s\",\"mf\":\"BirdBox\","
             "\"mdl\":\"%s\",\"sw\":\"%s\",\"cu\":\"http://%s/\"}}",
-            s_id, FIRMWARE_NAME, camera_caps()->name[0] ? camera_caps()->name : "ESP32",
+            s_id, g_settings.ha_name, camera_caps()->name[0] ? camera_caps()->name : "ESP32",
             FIRMWARE_VERSION, ip);
 
         /* A clipped discovery config is invalid JSON, and HA answers by simply
