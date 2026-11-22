@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## BirdBox — WiFi Nest Box / Feeder Camera with AI Species Identification
-**Version:** 3.75
+**Version:** 3.76
 This is **the clean, current specification**: what the device is required to do,
 stated in the present tense.
 
