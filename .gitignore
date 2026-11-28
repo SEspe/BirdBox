@@ -8,7 +8,6 @@ build/
 # ESP-IDF generated files (regenerated from sdkconfig.defaults / idf_component.yml)
 sdkconfig
 sdkconfig.old
-dependencies.lock
 managed_components/
 
 # IDE files

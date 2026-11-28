@@ -1,12 +1,12 @@
 dependencies:
   idf: ">=5.0"
-  espressif/esp32-camera: "^2.0.0"
+  espressif/esp32-camera: "2.2.0"
   # WS2812 illuminator on the reference unit (GPIO48, found via Debug-tab GPIO probe) —
   # a raw gpio_set_level can't reliably light/clear it, needs the real bit-timed protocol
-  espressif/led_strip: "*"
+  espressif/led_strip: "3.1.1"
   # mDNS responder — the box answers to http://birdbox.local/ so the UI/OTA
   # survive DHCP address changes (the unit has moved subnets before)
-  espressif/mdns: "^1.0.0"
+  espressif/mdns: "1.15.1"
   # esp-mqtt — moved OUT of core IDF at v6.0 and now lives in the registry.
   # Carries the Home Assistant integration (FSD §9); nothing else uses MQTT.
   espressif/mqtt: "^1.1.0"
