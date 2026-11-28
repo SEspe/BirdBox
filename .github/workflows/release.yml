@@ -30,6 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Component pins match the lock file
+        run: python3 tools/check-component-pins.py
+
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:

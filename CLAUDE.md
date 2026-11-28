@@ -68,6 +68,17 @@ $env:IDF_PATH = "D:\esp\v6.0.1\esp-idf"
   `/api/x/*` inside a C comment; it fails the build.
 - Changing any `sdkconfig.defaults*` requires deleting the generated
   `sdkconfig` (or re-running `idf.py set-target esp32s3`) to take effect.
+- **ESP-IDF components are pinned, and the lock file is committed.** Each
+  `espressif/*` entry in `main/idf_component.yml` is an exact version, and
+  `dependencies.lock` resolves to the same versions. Do not put `^`, `~` or `*`
+  back: a range lets each fresh build pick the newest version. That mattered
+  on hardware: `espressif/mdns` 1.11.3 gave the test unit a slow link (hundreds
+  of ms average ping, packet loss), and 1.15.1 gave 2 ms with the same source.
+  The pinned set (mdns 1.15.1, esp32-camera 2.2.0, led_strip 3.1.1, mqtt 1.1.0)
+  is the one that tested fast. `python3 tools/check-component-pins.py` checks
+  both files and runs in the CI build job. To change a version, edit the pin,
+  run `idf.py reconfigure` to regenerate the lock, then retest the ping before
+  committing (`ping -n 60 <box>`, average should stay in single-digit ms).
 
 ## Flash & OTA
 
