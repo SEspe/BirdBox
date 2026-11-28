@@ -231,18 +231,19 @@ static const char WIFI_SETUP_HTML[] =
 "<button class=\"btn btn-c\" onclick=\"location.reload()\">Try again</button>';}"
 "else{setTimeout(poll,1500);}"
 "}).catch(function(){setTimeout(poll,1500);});}"
-"function done(ip){var n=300;"
-"function tick(){"
+"function done(ip){"
 "document.getElementById('res').innerHTML="
 "'<div class=\"sts\" style=\"color:#7fc98b\">&#9989; Connected!</div>'+"
 "'<p style=\"font-size:.9rem\">Your BirdBox is at</p>'+"
 "'<a class=\"iplink\" href=\"http://'+ip+'\">http://'+ip+'</a>'+"
 "'<p><button class=\"btn btn-c\" id=\"rbNow\">Reboot now</button></p>'+"
-"'<p class=\"note\">Reconnect your phone to your home WiFi, then open that "
-"address (or http://birdbox.local/). Rebooting in '+n+'s\\u2026</p>';"
-"var rb=document.getElementById('rbNow');if(rb){rb.onclick=function(){fetch('/api/reboot',{method:'POST'});rb.textContent='Rebooting\\u2026';};}"
-"if(n<=0){return;}n--;setTimeout(tick,1000);}"
-"tick();}"
+"'<p class=\"note\">Press Reboot now to move the box onto your home WiFi. "
+"Then reconnect your phone to your home WiFi and open that address "
+"(or http://birdbox.local/). The box also restarts by itself if this page "
+"stops checking in for 10 minutes.</p>';"
+"var rb=document.getElementById('rbNow');"
+"if(rb){rb.onclick=function(){rb.textContent='Rebooting\\u2026';fetch('/api/portal-confirm',{method:'POST'}).catch(function(){});};}"
+"setInterval(function(){pst().catch(function(){});},4000);}"
 "function doScan(){"
 "var st=document.getElementById('sts');"
 "st.textContent='Scanning\\u2026';"
@@ -3566,6 +3567,32 @@ static esp_err_t h_portal_status(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, json_fit(__func__, n, sizeof(buf)));
     return ESP_OK;
+}
+
+/* POST /api/portal-confirm — the setup page's Reboot now button (1.5.27). Only
+ * a verified portal acts on it; anywhere else it is a no-op. */
+static esp_err_t h_portal_confirm(httpd_req_t *req)
+{
+    wifi_portal_confirm();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* 404 handler (1.5.27). In portal mode every unknown path redirects to the
+ * setup page. Phones probe a known URL after joining (generate_204,
+ * hotspot-detect.html and similar); the redirect makes them offer the sign-in
+ * page. Outside the portal it is an ordinary 404. */
+static esp_err_t h_not_found(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void) err;
+    if (wifi_in_portal_mode()) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+    return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
 }
 
 /* GET /api/scan — WiFi scan, JSON array (works in STA and APSTA/portal) */
@@ -7155,6 +7182,7 @@ esp_err_t web_server_start(void)
         ESP_LOGE(TAG, "Failed to start HTTP server");
         return ESP_FAIL;
     }
+    httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, h_not_found);
 
     static const httpd_uri_t routes[] = {
         { .uri = "/",            .method = HTTP_GET,  .handler = h_root       },
@@ -7162,6 +7190,7 @@ esp_err_t web_server_start(void)
         { .uri = "/wifi-setup",  .method = HTTP_GET,  .handler = h_wifi_setup },
         { .uri = "/wifi-save",   .method = HTTP_POST, .handler = h_wifi_save  },
         { .uri = "/api/portal-status", .method = HTTP_GET, .handler = h_portal_status },
+        { .uri = "/api/portal-confirm", .method = HTTP_POST, .handler = h_portal_confirm },
         { .uri = "/api/scan",    .method = HTTP_GET,  .handler = h_scan       },
         { .uri = "/api/wificfg", .method = HTTP_GET,  .handler = h_wificfg    },
         { .uri = "/api/stats/best", .method = HTTP_GET, .handler = h_stats_best },

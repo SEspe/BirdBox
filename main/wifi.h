@@ -29,6 +29,11 @@ typedef enum {
 } wifi_portal_state_t;
 wifi_portal_state_t wifi_portal_status(char *ip_out, size_t len);
 
+/* 1.5.27: POST /api/portal-confirm (the setup page's Reboot now button). A
+ * verified portal reboots only after this, or after the setup page has gone
+ * quiet for ten minutes (FSD §4.4). */
+void wifi_portal_confirm(void);
+
 /* Re-applies g_settings.ntp_server (FSD §3.4/§5): a no-op until the first
  * successful connect starts SNTP, after which the Settings tab can call
  * this to switch server without a reboot. */

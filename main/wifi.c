@@ -33,6 +33,7 @@
 #include "nvs.h"
 #include "driver/gpio.h"
 #include "mdns.h"
+#include "lwip/sockets.h"
 
 static const char *TAG = "wifi";
 
@@ -43,17 +44,14 @@ static const char *TAG = "wifi";
 #define BOOT_BTN_HOLD_MS    5000
 #define PORTAL_RETRY_MS     60000
 /* Portal credential verification (§4.4). PORTAL_VERIFY_MS: how long to wait
- * for the submitted network to associate + get a DHCP lease. Then, because a
- * single-radio ESP32 in APSTA must move the SoftAP to the STA's channel when
- * it associates — we do NOT reboot on a blind timer. The SoftAP starts on the
- * strongest network's channel so a home-network join normally leaves it where
- * it is (1.5.14 test: a channel move at join dropped the phone, and the phone
- * did not follow it back). We wait until the setup page has actually fetched
- * the acquired IP, capped by PORTAL_SEEN_MS in case it never comes back,
- * then leave the IP on screen for PORTAL_SHOW_MS before rebooting. */
+ * for the submitted network to associate and get a DHCP lease. After that the
+ * SoftAP stays up and the box does NOT reboot on a timer (1.5.27): the reboot
+ * comes when the setup page asks for it (POST /api/portal-confirm), or when no
+ * page has polled the portal status for PORTAL_IDLE_MS. The SoftAP starts on
+ * the strongest network's channel so a home-network join normally leaves it
+ * where it is (1.5.14 test: a channel move at join dropped the phone). */
 #define PORTAL_VERIFY_MS    25000
-#define PORTAL_SHOW_MS      300000
-#define PORTAL_SEEN_MS      60000
+#define PORTAL_IDLE_MS      600000
 
 static EventGroupHandle_t s_wifi_eg;
 static int                s_retry_count = 0;
@@ -69,9 +67,13 @@ static bool               s_sntp_started = false;
 static volatile wifi_portal_state_t s_portal_state = WIFI_PORTAL_IDLE;
 static char               s_portal_ip[16] = {0};
 /* Set once the setup page has fetched the CONNECTED status (i.e. the phone
- * rejoined the AP and actually saw the IP) — the portal loop waits for this
- * before rebooting so the address is never shown to nobody. */
+ * rejoined the AP and actually saw the IP). Informational only since 1.5.27. */
 static volatile bool      s_portal_ip_seen = false;
+/* 1.5.27: the reboot after a verified submit waits for the page. The last
+ * status poll time feeds the idle fallback; the confirm flag is set by
+ * POST /api/portal-confirm (the page's Reboot now button). */
+static volatile int64_t   s_portal_seen_us = 0;
+static volatile bool      s_portal_confirm = false;
 
 /* Up to two stored networks (FSD §4.7). s_nets[0] = primary, s_nets[1] =
  * alternative ("alt1"); ssid is "" when a slot is unconfigured. s_net_count is
@@ -401,11 +403,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 ESP_LOGI(TAG, "Portal verify connected — IP %s", s_portal_ip);
                 return;
             }
-            /* Stored network came back into reach while the portal was open —
-             * reboot into a clean normal-mode connect (FSD §4.4). */
-            ESP_LOGI(TAG, "Connected during portal mode — rebooting to apply");
-            vTaskDelay(pdMS_TO_TICKS(500));
-            esp_restart();
+            /* A stored network came back into reach while the portal was open.
+             * Do not reboot (1.5.27): that closed the setup page under the user
+             * before it could be used. The portal stays up until the page
+             * confirms the reboot, or goes quiet (FSD §4.4). */
+            ESP_LOGI(TAG, "Stored network reachable during portal mode — staying in the portal");
         }
         xEventGroupSetBits(s_wifi_eg, WIFI_CONNECTED_BIT);
     }
@@ -434,6 +436,8 @@ static void config_apply_task(void *arg)
 }
 
 /* ── SoftAP config portal ───────────────────────────────────────────────── */
+static void captive_dns_task(void *arg);
+
 static void start_config_portal(void)
 {
     ESP_LOGI(TAG, "Starting config portal AP: %s (pw: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
@@ -484,6 +488,7 @@ static void start_config_portal(void)
         }
     }
 
+    xTaskCreate(captive_dns_task, "captive_dns", 3072, NULL, 5, NULL);
     web_server_start();   /* serves the setup page, /api/scan and /wifi-save */
 
     /* Outer loop so a failed verify (e.g. mistyped password) drops back to
@@ -550,16 +555,21 @@ static void start_config_portal(void)
              * IP (s_portal_ip_seen) before starting the reboot countdown, so
              * the address is never shown to a disconnected phone. Capped in
              * case the phone never returns. */
-            ESP_LOGI(TAG, "Credentials verified (IP %s) — awaiting page fetch", s_portal_ip);
-            int64_t seen0 = esp_timer_get_time();
-            while (!s_portal_ip_seen &&
-                   esp_timer_get_time() - seen0 < (int64_t) PORTAL_SEEN_MS * 1000) {
-                vTaskDelay(pdMS_TO_TICKS(200));
+            ESP_LOGI(TAG, "Credentials verified (IP %s) — waiting for the page to confirm the reboot",
+                     s_portal_ip);
+            /* Keep the SoftAP up and wait. Every status poll refreshes
+             * s_portal_seen_us; the reboot comes on confirm or after the page
+             * has been quiet for PORTAL_IDLE_MS. */
+            s_portal_confirm = false;
+            s_portal_seen_us = esp_timer_get_time();
+            while (!s_portal_confirm &&
+                   esp_timer_get_time() - s_portal_seen_us < (int64_t) PORTAL_IDLE_MS * 1000) {
+                vTaskDelay(pdMS_TO_TICKS(500));
             }
-            ESP_LOGI(TAG, "%s — rebooting onto the LAN in %d s",
-                     s_portal_ip_seen ? "Page showed the IP" : "Page never returned",
-                     PORTAL_SHOW_MS / 1000);
-            vTaskDelay(pdMS_TO_TICKS(PORTAL_SHOW_MS));   /* countdown window */
+            ESP_LOGI(TAG, "%s — rebooting onto the LAN",
+                     s_portal_confirm ? "Reboot confirmed by the setup page"
+                                      : "Setup page quiet for 10 min");
+            vTaskDelay(pdMS_TO_TICKS(500));
             esp_restart();
         }
 
@@ -775,8 +785,65 @@ bool wifi_in_portal_mode(void) { return s_portal_mode; }
 wifi_portal_state_t wifi_portal_status(char *ip_out, size_t len)
 {
     if (ip_out && len) strlcpy(ip_out, s_portal_ip, len);
-    /* The page reached us and is reading a CONNECTED result — it can now show
-     * the IP, so the portal loop is free to run its reboot countdown. */
+    /* Any poll from the setup page is a sign it is still in use: it resets
+     * the idle fallback that reboots a verified portal (FSD §4.4). */
+    s_portal_seen_us = esp_timer_get_time();
     if (s_portal_state == WIFI_PORTAL_CONNECTED) s_portal_ip_seen = true;
     return s_portal_state;
+}
+
+void wifi_portal_confirm(void)
+{
+    if (s_portal_mode) s_portal_confirm = true;
+}
+
+/* Captive DNS (1.5.27): while the portal is open, every A query is answered
+ * with the SoftAP address, so a phone that asks for any name ends up at the
+ * setup page. Other query types get an empty answer. Runs only in portal mode;
+ * the task is not stopped (the box reboots out of the portal). */
+static void captive_dns_task(void *arg)
+{
+    (void) arg;
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock < 0) { vTaskDelete(NULL); return; }
+    struct sockaddr_in addr = {0};
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(53);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+        ESP_LOGW(TAG, "captive DNS: bind failed");
+        close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+    uint8_t buf[512];
+    for (;;) {
+        struct sockaddr_in from;
+        socklen_t flen = sizeof(from);
+        int n = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr *) &from, &flen);
+        if (n < 12 || (buf[2] & 0x80)) continue;          /* short, or a response */
+        int p = 12;                                       /* walk the question name */
+        while (p < n && buf[p]) p += buf[p] + 1;
+        p += 5;                                           /* zero, QTYPE, QCLASS */
+        if (p > n) continue;
+        bool is_a = (buf[p - 4] == 0 && buf[p - 3] == 1) && (p + 16 <= (int) sizeof(buf));
+        buf[2] = 0x84 | (buf[2] & 0x01);                  /* QR, AA, keep RD */
+        buf[3] = 0x00;                                    /* no error */
+        buf[6] = 0; buf[7] = is_a ? 1 : 0;                /* ANCOUNT */
+        buf[8] = buf[9] = buf[10] = buf[11] = 0;          /* NSCOUNT, ARCOUNT */
+        int len = p;                                      /* drop any EDNS records */
+        if (is_a) {
+            static const uint8_t rr[] = {
+                0xC0, 0x0C,             /* name: pointer to the question */
+                0x00, 0x01,             /* type A */
+                0x00, 0x01,             /* class IN */
+                0x00, 0x00, 0x00, 0x3C, /* TTL 60 s */
+                0x00, 0x04,             /* RDLENGTH */
+                192, 168, 4, 1,         /* the SoftAP address */
+            };
+            memcpy(&buf[len], rr, sizeof(rr));
+            len += sizeof(rr);
+        }
+        sendto(sock, buf, len, 0, (struct sockaddr *) &from, flen);
+    }
 }
